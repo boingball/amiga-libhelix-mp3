@@ -125,22 +125,115 @@ static int AmigaArgIsProgramName(const char *arg)
 	return *base == '\0' || *base == '.';
 }
 
+
+static int AmigaIsArgSpace(char c)
+{
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static int AmigaTailHasSplittableSpace(const char *arg)
+{
+	if (!arg)
+		return 0;
+	while (*arg) {
+		if (AmigaIsArgSpace(*arg))
+			return 1;
+		arg++;
+	}
+	return 0;
+}
+
+static int AmigaCountTailTokens(const char *src)
+{
+	int tokens = 0;
+	char quote = '\0';
+	int inToken = 0;
+
+	while (*src) {
+		if (quote) {
+			if (*src == quote)
+				quote = '\0';
+			inToken = 1;
+		} else if (*src == '"' || *src == '\'') {
+			quote = *src;
+			if (!inToken) {
+				tokens++;
+				inToken = 1;
+			}
+		} else if (AmigaIsArgSpace(*src)) {
+			inToken = 0;
+		} else if (!inToken) {
+			tokens++;
+			inToken = 1;
+		}
+		src++;
+	}
+
+	return tokens;
+}
+
+static void AmigaSplitTail(char *src, char **argv, int *argc)
+{
+	char *read;
+	char *write;
+	char *token;
+	char quote;
+
+	read = src;
+	while (*read) {
+		while (AmigaIsArgSpace(*read))
+			read++;
+		if (!*read)
+			break;
+
+		token = read;
+		write = read;
+		quote = '\0';
+		while (*read) {
+			if (quote) {
+				if (*read == quote) {
+					quote = '\0';
+					read++;
+					continue;
+				}
+			} else if (*read == '"' || *read == '\'') {
+				quote = *read++;
+				continue;
+			} else if (AmigaIsArgSpace(*read)) {
+				break;
+			}
+			*write++ = *read++;
+		}
+		if (*read)
+			read++;
+		*write = '\0';
+		argv[(*argc)++] = token;
+		while (AmigaIsArgSpace(*read))
+			read++;
+	}
+}
+
 static int AmigaArgStringNeedsSplit(int argc, char **argv)
 {
-	if (argc != 1 || !argv || !argv[0])
+	if (!argv)
 		return 0;
 
-	return !AmigaArgIsProgramName(argv[0]);
+	if (argc == 1 && argv[0])
+		return !AmigaArgIsProgramName(argv[0]) ||
+			AmigaTailHasSplittableSpace(argv[0]);
+
+	if (argc == 2 && argv[0] && argv[1] && AmigaArgIsProgramName(argv[0]))
+		return AmigaTailHasSplittableSpace(argv[1]);
+
+	return 0;
 }
+
 
 static int AmigaNormalizeArgs(int argc, char **argv, NormalizedArgs *normalized)
 {
 	const char *src;
-	const char *p;
-	char *dst;
 	int tokens;
-	int inToken;
-	int i;
+	int outArgc;
 
 	normalized->argc = argc;
 	normalized->argv = argv;
@@ -149,18 +242,12 @@ static int AmigaNormalizeArgs(int argc, char **argv, NormalizedArgs *normalized)
 	if (!AmigaArgStringNeedsSplit(argc, argv))
 		return 0;
 
-	src = argv[0];
-	tokens = 0;
-	inToken = 0;
-	for (p = src; *p; p++) {
-		if (*p == ' ' || *p == '\t') {
-			inToken = 0;
-		} else if (!inToken) {
-			tokens++;
-			inToken = 1;
-		}
-	}
+	if (argc == 2 && argv[0] && AmigaArgIsProgramName(argv[0]))
+		src = argv[1];
+	else
+		src = argv[0];
 
+	tokens = AmigaCountTailTokens(src);
 	normalized->argv = (char **)malloc((tokens + 2) * sizeof(char *));
 	if (!normalized->argv)
 		return -1;
@@ -174,24 +261,20 @@ static int AmigaNormalizeArgs(int argc, char **argv, NormalizedArgs *normalized)
 
 	strcpy(normalized->storage, src);
 	normalized->argv[0] = (char *)"amiga_mp3dec";
-	i = 1;
-	dst = normalized->storage;
-	while (*dst) {
-		while (*dst == ' ' || *dst == '\t') {
-			*dst = '\0';
-			dst++;
-		}
-		if (!*dst)
-			break;
-		normalized->argv[i++] = dst;
-		while (*dst && *dst != ' ' && *dst != '\t')
-			dst++;
+	outArgc = 1;
+	AmigaSplitTail(normalized->storage, normalized->argv, &outArgc);
+	if (outArgc > 1 && AmigaArgIsProgramName(normalized->argv[1])) {
+		int i;
+		for (i = 1; i < outArgc; i++)
+			normalized->argv[i] = normalized->argv[i + 1];
+		outArgc--;
 	}
-	normalized->argv[i] = NULL;
-	normalized->argc = i;
+	normalized->argv[outArgc] = NULL;
+	normalized->argc = outArgc;
 
 	return 0;
 }
+
 
 static void AmigaFreeNormalizedArgs(NormalizedArgs *normalized)
 {
@@ -248,6 +331,7 @@ static void PrintUsage(const char *prog)
 	printf("  --show-argv  alias for --debug-argv\n");
 	printf("\n");
 	printf("default output is raw signed 16-bit big-endian PCM.\n");
+	printf("outfile ending in :, /, or \\ is treated as a directory/volume.\n");
 }
 
 static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
@@ -315,6 +399,69 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 		return -1;
 
 	return 0;
+}
+
+
+static const char *PathBaseName(const char *path)
+{
+	const char *base;
+
+	base = path;
+	while (path && *path) {
+		if (*path == '/' || *path == ':' || *path == '\\')
+			base = path + 1;
+		path++;
+	}
+
+	return base ? base : "";
+}
+
+static int OutputNameIsDirectory(const char *path)
+{
+	size_t len;
+
+	if (!path || !path[0])
+		return 0;
+	len = strlen(path);
+	return path[len - 1] == ':' || path[len - 1] == '/' || path[len - 1] == '\\';
+}
+
+static const char *DefaultOutputExtension(const DecodeOptions *opt)
+{
+	if (opt->outFormat == OUT_8SVX)
+		return ".8svx";
+	if (opt->outFormat == OUT_S8)
+		return ".s8";
+	return ".pcm";
+}
+
+static char *BuildDirectoryOutputName(const char *dir, const char *input,
+	const DecodeOptions *opt)
+{
+	const char *base;
+	const char *dot;
+	const char *ext;
+	size_t dirLen;
+	size_t stemLen;
+	size_t extLen;
+	char *name;
+
+	base = PathBaseName(input);
+	if (!base[0])
+		base = "output";
+	dot = strrchr(base, '.');
+	stemLen = dot && dot != base ? (size_t)(dot - base) : strlen(base);
+	ext = DefaultOutputExtension(opt);
+	dirLen = strlen(dir);
+	extLen = strlen(ext);
+
+	name = (char *)malloc(dirLen + stemLen + extLen + 1);
+	if (!name)
+		return NULL;
+	memcpy(name, dir, dirLen);
+	memcpy(name + dirLen, base, stemLen);
+	memcpy(name + dirLen + stemLen, ext, extLen + 1);
+	return name;
 }
 
 static int FillReadBuffer(unsigned char *readBuf, unsigned char *readPtr, int bufSize,
@@ -739,6 +886,9 @@ int main(int argc, char **argv)
 	NormalizedArgs normalized;
 	int debugArgv;
 	int effectiveRate;
+	char *resolvedOutName;
+
+	resolvedOutName = NULL;
 
 	if (AmigaNormalizeArgs(argc, argv, &normalized) != 0) {
 		fprintf(stderr, "cannot normalize command arguments\n");
@@ -777,6 +927,16 @@ int main(int argc, char **argv)
 		return selftestErr;
 	}
 
+	if (opt.outName && OutputNameIsDirectory(opt.outName)) {
+		resolvedOutName = BuildDirectoryOutputName(opt.outName, opt.inName, &opt);
+		if (!resolvedOutName) {
+			fprintf(stderr, "cannot build output path\n");
+			AmigaFreeNormalizedArgs(&normalized);
+			return 1;
+		}
+		opt.outName = resolvedOutName;
+	}
+
 	memset(&stats, 0, sizeof(stats));
 	memset(&timing, 0, sizeof(timing));
 	memset(&rateState, 0, sizeof(rateState));
@@ -785,16 +945,18 @@ int main(int argc, char **argv)
 	infile = fopen(opt.inName, "rb");
 	if (!infile) {
 		fprintf(stderr, "cannot open input: %s\n", opt.inName);
+		free(resolvedOutName);
 		AmigaFreeNormalizedArgs(&normalized);
 		return 1;
 	}
 
 	outfile = NULL;
 	if (!opt.noOutput) {
-		outfile = fopen(opt.outName, "wb+");
+		outfile = fopen(opt.outName, opt.outFormat == OUT_8SVX ? "wb+" : "wb");
 		if (!outfile) {
 			fprintf(stderr, "cannot open output: %s\n", opt.outName);
 			fclose(infile);
+			free(resolvedOutName);
 			AmigaFreeNormalizedArgs(&normalized);
 			return 1;
 		}
@@ -806,6 +968,7 @@ int main(int argc, char **argv)
 		fclose(infile);
 		if (outfile)
 			fclose(outfile);
+		free(resolvedOutName);
 		AmigaFreeNormalizedArgs(&normalized);
 		return 1;
 	}
@@ -969,6 +1132,7 @@ int main(int argc, char **argv)
 	if (outfile)
 		fclose(outfile);
 	gTiming = NULL;
+	free(resolvedOutName);
 	AmigaFreeNormalizedArgs(&normalized);
 
 	return 0;

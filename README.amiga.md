@@ -29,7 +29,11 @@ fallback.
 amiga_mp3dec [options] infile.mp3 outfile
 ```
 
-Default output is raw signed 16-bit big-endian PCM. Options:
+Default output is raw signed 16-bit big-endian PCM. If `outfile` names an
+Amiga volume or directory and ends in `:`, `/`, or `\`, the decoder creates
+an output file there from the input basename, using `.pcm`, `.s8`, or `.8svx`
+for the selected output format.  For example, `RAM:` with `song.mp3` writes
+`RAM:song.pcm`. Options:
 
 - `--mono` mixes stereo input down to mono before writing.
 - `--s8` writes raw signed 8-bit PCM.
@@ -53,7 +57,9 @@ Default output is raw signed 16-bit big-endian PCM. Options:
   optional 68020+ assembly helper over edge cases and 100,000 pseudo-random
   input pairs.
 - `--debug-argv` or `--show-argv` prints `argc` and `argv` after Amiga
-  command-tail normalization.
+  command-tail normalization.  The normalizer also handles Amiga C runtimes
+  that pass the whole command tail as one argument, including CR/LF
+  whitespace and quoted paths.
 
 The program prints the first decoded frame's sample rate, channel count, and
 bitrate when available, followed by decoded frame count and output sample count.
