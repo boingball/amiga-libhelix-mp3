@@ -56,6 +56,9 @@
 #
 #elif defined(__GNUC__) && defined(ARM)
 #
+#elif defined(AMIGA_M68K) || \
+	(defined(__GNUC__) && (defined(__mc68000__) || defined(__mc68020__) || defined(mc68000)))
+#
 #elif defined(__GNUC__) && defined(__i386__)
 #
 #elif defined(_OPENWAVE_SIMULATOR) || defined(_OPENWAVE_ARMULATOR)

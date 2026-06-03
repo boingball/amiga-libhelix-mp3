@@ -217,6 +217,74 @@ static __inline int CLZ(int x)
 	return numZeros;
 }
 
+
+#elif defined(AMIGA_M68K) || \
+	(defined(__GNUC__) && (defined(__mc68000__) || defined(__mc68020__) || defined(mc68000)))
+
+/*
+ * Correctness-first AmigaOS/m68k backend.
+ *
+ * m68k-amigaos-gcc targets 32-bit int/long and supports long long, which is
+ * enough for the fixed-point helpers used by the portable RealNetworks decoder.
+ * Keep this block free of ARM/x86/RISC-V assembly so the initial Amiga port can
+ * build cleanly; 68020-specific inline assembly can be added later behind a
+ * dedicated opt-in guard while retaining these C fallbacks.
+ */
+#ifndef AMIGA_M68K
+#define AMIGA_M68K 1
+#endif
+
+typedef long long Word64;
+
+static __inline int MULSHIFT32(int x, int y)
+{
+	return (int)(((Word64)x * (Word64)y) >> 32);
+}
+
+static __inline int FASTABS(int x)
+{
+	int sign;
+
+	sign = x >> (sizeof(int) * 8 - 1);
+	x ^= sign;
+	x -= sign;
+
+	return x;
+}
+
+static __inline int CLZ(int x)
+{
+	unsigned int ux;
+	int numZeros;
+
+	ux = (unsigned int)x;
+	if (!ux)
+		return (sizeof(int) * 8);
+
+	numZeros = 0;
+	while (!(ux & 0x80000000UL)) {
+		numZeros++;
+		ux <<= 1;
+	}
+
+	return numZeros;
+}
+
+static __inline Word64 MADD64(Word64 sum, int x, int y)
+{
+	return sum + (Word64)x * (Word64)y;
+}
+
+static __inline Word64 SHL64(Word64 x, int n)
+{
+	return x << n;
+}
+
+static __inline Word64 SAR64(Word64 x, int n)
+{
+	return x >> n;
+}
+
 #elif defined ARM_ADS
 
 static __inline int MULSHIFT32(int x, int y)
