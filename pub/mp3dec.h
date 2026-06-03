@@ -44,6 +44,8 @@
 #ifndef _MP3DEC_H
 #define _MP3DEC_H
 
+#include <time.h>
+
 #if defined(_WIN32) && !defined(_WIN32_WCE)
 #
 #elif defined(_WIN32) && defined(_WIN32_WCE) && defined(ARM)
@@ -119,6 +121,26 @@ typedef struct _MP3FrameInfo {
 	int version;
 } MP3FrameInfo;
 
+typedef struct _MP3DecodeCoreProfile {
+	clock_t bitstreamFrameParsing;
+	clock_t huffman;
+	clock_t dequant;
+	clock_t stereoPost;
+	clock_t imdct;
+	clock_t subbandDct32;
+	clock_t polyphase;
+} MP3DecodeCoreProfile;
+
+enum {
+	MP3_DECODE_CORE_PROFILE_BITSTREAM_FRAME_PARSING = 0,
+	MP3_DECODE_CORE_PROFILE_HUFFMAN,
+	MP3_DECODE_CORE_PROFILE_DEQUANT,
+	MP3_DECODE_CORE_PROFILE_STEREO_POST,
+	MP3_DECODE_CORE_PROFILE_IMDCT,
+	MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32,
+	MP3_DECODE_CORE_PROFILE_POLYPHASE
+};
+
 /* public API */
 HMP3Decoder MP3InitDecoder(void);
 void MP3FreeDecoder(HMP3Decoder hMP3Decoder);
@@ -127,6 +149,11 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 void MP3GetLastFrameInfo(HMP3Decoder hMP3Decoder, MP3FrameInfo *mp3FrameInfo);
 int MP3GetNextFrameInfo(HMP3Decoder hMP3Decoder, MP3FrameInfo *mp3FrameInfo, unsigned char *buf);
 int MP3FindSyncWord(unsigned char *buf, int nBytes);
+
+void MP3ResetDecodeCoreProfile(void);
+void MP3GetDecodeCoreProfile(MP3DecodeCoreProfile *profile);
+int MP3DecodeCoreProfileIsEnabled(void);
+void MP3AddDecodeCoreProfile(int bucket, clock_t elapsed);
 
 #ifdef __cplusplus
 }
