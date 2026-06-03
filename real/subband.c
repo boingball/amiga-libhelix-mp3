@@ -65,6 +65,9 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 	IMDCTInfo *mi;
 	SubbandInfo *sbi;
 	clock_t amigaProfileStart;
+	int oddBlock;
+	int vindex;
+	int stride;
 
 	/* validate pointers */
 	if (!mp3DecInfo || !mp3DecInfo->HuffmanInfoPS || !mp3DecInfo->IMDCTInfoPS || !mp3DecInfo->SubbandInfoPS)
@@ -73,54 +76,100 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 	hi = (HuffmanInfo *)mp3DecInfo->HuffmanInfoPS;
 	mi = (IMDCTInfo *)(mp3DecInfo->IMDCTInfoPS);
 	sbi = (SubbandInfo*)(mp3DecInfo->SubbandInfoPS);
+	(void)hi;
 
+	vindex = sbi->vindex;
+	stride = mp3DecInfo->fastLowrateStride;
 	if (mp3DecInfo->nChans == 2) {
 		/* stereo */
-		for (b = 0; b < BLOCK_SIZE; b++) {
-			int produced;
-			AMIGA_PROFILE_START(amigaProfileStart);
-			FDCT32(mi->outBuf[0][b], sbi->vbuf + 0*32, sbi->vindex, (b & 0x01), mi->gb[0]);
-			FDCT32(mi->outBuf[1][b], sbi->vbuf + 1*32, sbi->vindex, (b & 0x01), mi->gb[1]);
-			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32, amigaProfileStart);
-			AMIGA_PROFILE_START(amigaProfileStart);
-			if (mp3DecInfo->fastLowrateStride > 1) {
-				produced = PolyphaseStereoFastLowrate(pcmBuf,
-					sbi->vbuf + sbi->vindex + VBUF_LENGTH * (b & 0x01),
-					polyCoef, mp3DecInfo->fastLowrateStride,
-					&mp3DecInfo->fastLowratePhase);
-				mp3DecInfo->fastLowrateOutputSamps += produced;
+		if (stride > 1) {
+			int phase;
+			int lowrateOutputSamps;
+
+			phase = mp3DecInfo->fastLowratePhase;
+			lowrateOutputSamps = mp3DecInfo->fastLowrateOutputSamps;
+			for (b = 0; b < BLOCK_SIZE; b++) {
+				int produced;
+				int *vbase;
+
+				oddBlock = b & 0x01;
+				AMIGA_PROFILE_START(amigaProfileStart);
+				FDCT32(mi->outBuf[0][b], sbi->vbuf + 0*32, vindex, oddBlock, mi->gb[0]);
+				FDCT32(mi->outBuf[1][b], sbi->vbuf + 1*32, vindex, oddBlock, mi->gb[1]);
+				AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32, amigaProfileStart);
+				AMIGA_PROFILE_START(amigaProfileStart);
+				vbase = sbi->vbuf + vindex + (oddBlock ? VBUF_LENGTH : 0);
+				produced = PolyphaseStereoFastLowrate(pcmBuf, vbase, polyCoef,
+					stride, &phase);
+				lowrateOutputSamps += produced;
 				pcmBuf += produced;
-			} else {
-				PolyphaseStereo(pcmBuf, sbi->vbuf + sbi->vindex + VBUF_LENGTH * (b & 0x01), polyCoef);
-				pcmBuf += (2 * NBANDS);
+				AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_POLYPHASE, amigaProfileStart);
+				vindex = (vindex - oddBlock) & 7;
 			}
-			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_POLYPHASE, amigaProfileStart);
-			sbi->vindex = (sbi->vindex - (b & 0x01)) & 7;
+			mp3DecInfo->fastLowratePhase = phase;
+			mp3DecInfo->fastLowrateOutputSamps = lowrateOutputSamps;
+		} else {
+			for (b = 0; b < BLOCK_SIZE; b++) {
+				int *vbase;
+
+				oddBlock = b & 0x01;
+				AMIGA_PROFILE_START(amigaProfileStart);
+				FDCT32(mi->outBuf[0][b], sbi->vbuf + 0*32, vindex, oddBlock, mi->gb[0]);
+				FDCT32(mi->outBuf[1][b], sbi->vbuf + 1*32, vindex, oddBlock, mi->gb[1]);
+				AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32, amigaProfileStart);
+				AMIGA_PROFILE_START(amigaProfileStart);
+				vbase = sbi->vbuf + vindex + (oddBlock ? VBUF_LENGTH : 0);
+				PolyphaseStereo(pcmBuf, vbase, polyCoef);
+				pcmBuf += (2 * NBANDS);
+				AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_POLYPHASE, amigaProfileStart);
+				vindex = (vindex - oddBlock) & 7;
+			}
 		}
 	} else {
 		/* mono */
-		for (b = 0; b < BLOCK_SIZE; b++) {
-			int produced;
-			AMIGA_PROFILE_START(amigaProfileStart);
-			FDCT32(mi->outBuf[0][b], sbi->vbuf + 0*32, sbi->vindex, (b & 0x01), mi->gb[0]);
-			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32, amigaProfileStart);
-			AMIGA_PROFILE_START(amigaProfileStart);
-			if (mp3DecInfo->fastLowrateStride > 1) {
-				produced = PolyphaseMonoFastLowrate(pcmBuf,
-					sbi->vbuf + sbi->vindex + VBUF_LENGTH * (b & 0x01),
-					polyCoef, mp3DecInfo->fastLowrateStride,
-					&mp3DecInfo->fastLowratePhase);
-				mp3DecInfo->fastLowrateOutputSamps += produced;
+		if (stride > 1) {
+			int phase;
+			int lowrateOutputSamps;
+
+			phase = mp3DecInfo->fastLowratePhase;
+			lowrateOutputSamps = mp3DecInfo->fastLowrateOutputSamps;
+			for (b = 0; b < BLOCK_SIZE; b++) {
+				int produced;
+				int *vbase;
+
+				oddBlock = b & 0x01;
+				AMIGA_PROFILE_START(amigaProfileStart);
+				FDCT32(mi->outBuf[0][b], sbi->vbuf + 0*32, vindex, oddBlock, mi->gb[0]);
+				AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32, amigaProfileStart);
+				AMIGA_PROFILE_START(amigaProfileStart);
+				vbase = sbi->vbuf + vindex + (oddBlock ? VBUF_LENGTH : 0);
+				produced = PolyphaseMonoFastLowrate(pcmBuf, vbase, polyCoef,
+					stride, &phase);
+				lowrateOutputSamps += produced;
 				pcmBuf += produced;
-			} else {
-				PolyphaseMono(pcmBuf, sbi->vbuf + sbi->vindex + VBUF_LENGTH * (b & 0x01), polyCoef);
-				pcmBuf += NBANDS;
+				AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_POLYPHASE, amigaProfileStart);
+				vindex = (vindex - oddBlock) & 7;
 			}
-			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_POLYPHASE, amigaProfileStart);
-			sbi->vindex = (sbi->vindex - (b & 0x01)) & 7;
+			mp3DecInfo->fastLowratePhase = phase;
+			mp3DecInfo->fastLowrateOutputSamps = lowrateOutputSamps;
+		} else {
+			for (b = 0; b < BLOCK_SIZE; b++) {
+				int *vbase;
+
+				oddBlock = b & 0x01;
+				AMIGA_PROFILE_START(amigaProfileStart);
+				FDCT32(mi->outBuf[0][b], sbi->vbuf + 0*32, vindex, oddBlock, mi->gb[0]);
+				AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32, amigaProfileStart);
+				AMIGA_PROFILE_START(amigaProfileStart);
+				vbase = sbi->vbuf + vindex + (oddBlock ? VBUF_LENGTH : 0);
+				PolyphaseMono(pcmBuf, vbase, polyCoef);
+				pcmBuf += NBANDS;
+				AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_POLYPHASE, amigaProfileStart);
+				vindex = (vindex - oddBlock) & 7;
+			}
 		}
 	}
 
+	sbi->vindex = vindex;
 	return 0;
 }
-

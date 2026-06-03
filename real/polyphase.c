@@ -500,7 +500,7 @@ static void PolyphaseStereoFast(short *pcm, int *vbuf, const int *coefBase)
 }
 
 
-static void PolyphaseMonoFastSample(short *pcm, int sample, int *vbuf, const int *coefBase)
+static __inline void PolyphaseMonoFastSample(short *pcm, int sample, int *vbuf, const int *coefBase)
 {
 	const int *coef;
 	int *vb1;
@@ -531,7 +531,7 @@ static void PolyphaseMonoFastSample(short *pcm, int sample, int *vbuf, const int
 	}
 }
 
-static void PolyphaseStereoFastSample(short *pcm, int sample, int *vbuf, const int *coefBase)
+static __inline void PolyphaseStereoFastSample(short *pcm, int sample, int *vbuf, const int *coefBase)
 {
 	const int *coef;
 	int *vb1;
@@ -574,6 +574,56 @@ static void PolyphaseStereoFastSample(short *pcm, int sample, int *vbuf, const i
 	}
 }
 
+
+static int PolyphaseMonoFastLowrateList(short *pcm, int *vbuf, const int *coefBase, const unsigned char *samples, int count)
+{
+	short *out;
+	const unsigned char *samplePtr;
+	int remaining;
+
+	out = pcm;
+	samplePtr = samples;
+	remaining = count;
+	while (remaining-- > 0) {
+		PolyphaseMonoFastSample(out, *samplePtr++, vbuf, coefBase);
+		out++;
+	}
+	return count;
+}
+
+static int PolyphaseStereoFastLowrateList(short *pcm, int *vbuf, const int *coefBase, const unsigned char *samples, int count)
+{
+	short *out;
+	const unsigned char *samplePtr;
+	int remaining;
+
+	out = pcm;
+	samplePtr = samples;
+	remaining = count;
+	while (remaining-- > 0) {
+		PolyphaseStereoFastSample(out, *samplePtr++, vbuf, coefBase);
+		out += 2;
+	}
+	return count * 2;
+}
+
+static const unsigned char fastLowrateStride4Samples[4][8] = {
+	{ 0, 4, 8, 12, 16, 20, 24, 28 },
+	{ 3, 7, 11, 15, 19, 23, 27, 31 },
+	{ 2, 6, 10, 14, 18, 22, 26, 30 },
+	{ 1, 5, 9, 13, 17, 21, 25, 29 }
+};
+
+static const unsigned char fastLowrateStride5Samples[5][7] = {
+	{ 0, 5, 10, 15, 20, 25, 30 },
+	{ 4, 9, 14, 19, 24, 29, 0 },
+	{ 3, 8, 13, 18, 23, 28, 0 },
+	{ 2, 7, 12, 17, 22, 27, 0 },
+	{ 1, 6, 11, 16, 21, 26, 31 }
+};
+
+static const unsigned char fastLowrateStride5Count[5] = { 7, 6, 6, 6, 7 };
+
 #endif /* AMIGA_M68K && AMIGA_FAST_POLYPHASE */
 
 int PolyphaseMonoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int stride, int *phase)
@@ -581,22 +631,42 @@ int PolyphaseMonoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int str
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE)
 	int sample;
 	int produced;
+	int localPhase;
+	short *out;
 
 	if (stride < 2) {
 		PolyphaseMono(pcm, vbuf, coefBase);
 		return NBANDS;
 	}
 
+	localPhase = *phase;
+	if (stride == 4)
+		return PolyphaseMonoFastLowrateList(pcm, vbuf, coefBase,
+			fastLowrateStride4Samples[localPhase], 8);
+	if (stride == 5) {
+		produced = PolyphaseMonoFastLowrateList(pcm, vbuf, coefBase,
+			fastLowrateStride5Samples[localPhase],
+			fastLowrateStride5Count[localPhase]);
+		localPhase += 2;
+		if (localPhase >= 5)
+			localPhase -= 5;
+		*phase = localPhase;
+		return produced;
+	}
+
 	produced = 0;
+	out = pcm;
 	for (sample = 0; sample < NBANDS; sample++) {
-		if (*phase == 0) {
-			PolyphaseMonoFastSample(pcm + produced, sample, vbuf, coefBase);
+		if (localPhase == 0) {
+			PolyphaseMonoFastSample(out, sample, vbuf, coefBase);
+			out++;
 			produced++;
 		}
-		(*phase)++;
-		if (*phase >= stride)
-			*phase = 0;
+		localPhase++;
+		if (localPhase >= stride)
+			localPhase = 0;
 	}
+	*phase = localPhase;
 	return produced;
 #else
 	int fullPhase;
@@ -628,22 +698,42 @@ int PolyphaseStereoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int s
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE)
 	int sample;
 	int produced;
+	int localPhase;
+	short *out;
 
 	if (stride < 2) {
 		PolyphaseStereo(pcm, vbuf, coefBase);
 		return NBANDS * 2;
 	}
 
+	localPhase = *phase;
+	if (stride == 4)
+		return PolyphaseStereoFastLowrateList(pcm, vbuf, coefBase,
+			fastLowrateStride4Samples[localPhase], 8);
+	if (stride == 5) {
+		produced = PolyphaseStereoFastLowrateList(pcm, vbuf, coefBase,
+			fastLowrateStride5Samples[localPhase],
+			fastLowrateStride5Count[localPhase]);
+		localPhase += 2;
+		if (localPhase >= 5)
+			localPhase -= 5;
+		*phase = localPhase;
+		return produced;
+	}
+
 	produced = 0;
+	out = pcm;
 	for (sample = 0; sample < NBANDS; sample++) {
-		if (*phase == 0) {
-			PolyphaseStereoFastSample(pcm + produced * 2, sample, vbuf, coefBase);
+		if (localPhase == 0) {
+			PolyphaseStereoFastSample(out, sample, vbuf, coefBase);
+			out += 2;
 			produced++;
 		}
-		(*phase)++;
-		if (*phase >= stride)
-			*phase = 0;
+		localPhase++;
+		if (localPhase >= stride)
+			localPhase = 0;
 	}
+	*phase = localPhase;
 	return produced * 2;
 #else
 	int fullPhase;
