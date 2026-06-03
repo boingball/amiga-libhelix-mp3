@@ -43,6 +43,7 @@
  **************************************************************************************/
 
 #include "coder.h"
+#include "amiga_profile_decode.h"
 #include "assembly.h"
 
 /**************************************************************************************
@@ -63,6 +64,7 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 	HuffmanInfo *hi;
 	IMDCTInfo *mi;
 	SubbandInfo *sbi;
+	clock_t amigaProfileStart;
 
 	/* validate pointers */
 	if (!mp3DecInfo || !mp3DecInfo->HuffmanInfoPS || !mp3DecInfo->IMDCTInfoPS || !mp3DecInfo->SubbandInfoPS)
@@ -75,17 +77,25 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 	if (mp3DecInfo->nChans == 2) {
 		/* stereo */
 		for (b = 0; b < BLOCK_SIZE; b++) {
+			AMIGA_PROFILE_START(amigaProfileStart);
 			FDCT32(mi->outBuf[0][b], sbi->vbuf + 0*32, sbi->vindex, (b & 0x01), mi->gb[0]);
 			FDCT32(mi->outBuf[1][b], sbi->vbuf + 1*32, sbi->vindex, (b & 0x01), mi->gb[1]);
+			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32, amigaProfileStart);
+			AMIGA_PROFILE_START(amigaProfileStart);
 			PolyphaseStereo(pcmBuf, sbi->vbuf + sbi->vindex + VBUF_LENGTH * (b & 0x01), polyCoef);
+			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_POLYPHASE, amigaProfileStart);
 			sbi->vindex = (sbi->vindex - (b & 0x01)) & 7;
 			pcmBuf += (2 * NBANDS);
 		}
 	} else {
 		/* mono */
 		for (b = 0; b < BLOCK_SIZE; b++) {
+			AMIGA_PROFILE_START(amigaProfileStart);
 			FDCT32(mi->outBuf[0][b], sbi->vbuf + 0*32, sbi->vindex, (b & 0x01), mi->gb[0]);
+			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32, amigaProfileStart);
+			AMIGA_PROFILE_START(amigaProfileStart);
 			PolyphaseMono(pcmBuf, sbi->vbuf + sbi->vindex + VBUF_LENGTH * (b & 0x01), polyCoef);
+			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_POLYPHASE, amigaProfileStart);
 			sbi->vindex = (sbi->vindex - (b & 0x01)) & 7;
 			pcmBuf += NBANDS;
 		}

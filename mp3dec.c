@@ -44,12 +44,70 @@
 #include "string.h"
 //#include "hlxclib/string.h"		/* for memmove, memcpy (can replace with different implementations if desired) */
 #include "mp3common.h"	/* includes mp3dec.h (public API) and internal, platform-independent API */
+#include "amiga_profile_decode.h"
 
 
 //#define PROFILE
 #ifdef PROFILE
 #include "systime.h"
 #endif
+
+
+static MP3DecodeCoreProfile gDecodeCoreProfile;
+
+void MP3ResetDecodeCoreProfile(void)
+{
+	memset(&gDecodeCoreProfile, 0, sizeof(gDecodeCoreProfile));
+}
+
+void MP3GetDecodeCoreProfile(MP3DecodeCoreProfile *profile)
+{
+	if (profile)
+		memcpy(profile, &gDecodeCoreProfile, sizeof(*profile));
+}
+
+int MP3DecodeCoreProfileIsEnabled(void)
+{
+#ifdef AMIGA_PROFILE_DECODE
+	return 1;
+#else
+	return 0;
+#endif
+}
+
+void MP3AddDecodeCoreProfile(int bucket, clock_t elapsed)
+{
+#ifdef AMIGA_PROFILE_DECODE
+	switch (bucket) {
+	case MP3_DECODE_CORE_PROFILE_BITSTREAM_FRAME_PARSING:
+		gDecodeCoreProfile.bitstreamFrameParsing += elapsed;
+		break;
+	case MP3_DECODE_CORE_PROFILE_HUFFMAN:
+		gDecodeCoreProfile.huffman += elapsed;
+		break;
+	case MP3_DECODE_CORE_PROFILE_DEQUANT:
+		gDecodeCoreProfile.dequant += elapsed;
+		break;
+	case MP3_DECODE_CORE_PROFILE_STEREO_POST:
+		gDecodeCoreProfile.stereoPost += elapsed;
+		break;
+	case MP3_DECODE_CORE_PROFILE_IMDCT:
+		gDecodeCoreProfile.imdct += elapsed;
+		break;
+	case MP3_DECODE_CORE_PROFILE_SUBBAND_DCT32:
+		gDecodeCoreProfile.subbandDct32 += elapsed;
+		break;
+	case MP3_DECODE_CORE_PROFILE_POLYPHASE:
+		gDecodeCoreProfile.polyphase += elapsed;
+		break;
+	default:
+		break;
+	}
+#else
+	(void)bucket;
+	(void)elapsed;
+#endif
+}
 
 /**************************************************************************************
  * Function:    MP3InitDecoder
@@ -288,6 +346,7 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 	int offset, bitOffset, mainBits, gr, ch, fhBytes, siBytes, freeFrameBytes;
 	int prevBitOffset, sfBlockBits, huffBlockBits;
 	unsigned char *mainPtr;
+	clock_t amigaProfileStart;
 	MP3DecInfo *mp3DecInfo = (MP3DecInfo *)hMP3Decoder;
 	
 	#ifdef PROFILE
@@ -298,7 +357,9 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 		return ERR_MP3_NULL_POINTER;
 
 	/* unpack frame header */
+	AMIGA_PROFILE_START(amigaProfileStart);
 	fhBytes = UnpackFrameHeader(mp3DecInfo, *inbuf);
+	AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_BITSTREAM_FRAME_PARSING, amigaProfileStart);
 	if (fhBytes < 0)	
 		return ERR_MP3_INVALID_FRAMEHEADER;		/* don't clear outbuf since we don't know size (failed to parse header) */
 	*inbuf += fhBytes;
@@ -307,7 +368,9 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 	time = systime_get();
 #endif
 	/* unpack side info */
+	AMIGA_PROFILE_START(amigaProfileStart);
 	siBytes = UnpackSideInfo(mp3DecInfo, *inbuf);
+	AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_BITSTREAM_FRAME_PARSING, amigaProfileStart);
 	if (siBytes < 0) {
 		MP3ClearBadFrame(mp3DecInfo, outbuf);
 		return ERR_MP3_INVALID_SIDEINFO;
@@ -325,7 +388,9 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 		if (!mp3DecInfo->freeBitrateFlag) {
 			/* first time through, need to scan for next sync word and figure out frame size */
 			mp3DecInfo->freeBitrateFlag = 1;
+			AMIGA_PROFILE_START(amigaProfileStart);
 			mp3DecInfo->freeBitrateSlots = MP3FindFreeSync(*inbuf, *inbuf - fhBytes - siBytes, *bytesLeft);
+			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_BITSTREAM_FRAME_PARSING, amigaProfileStart);
 			if (mp3DecInfo->freeBitrateSlots < 0) {
 				MP3ClearBadFrame(mp3DecInfo, outbuf);
 				return ERR_MP3_FREE_BITRATE_SYNC;
@@ -366,6 +431,7 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 	time = systime_get();
 #endif
 		/* fill main data buffer with enough new data for this frame */
+		AMIGA_PROFILE_START(amigaProfileStart);
 		if (mp3DecInfo->mainDataBytes >= mp3DecInfo->mainDataBegin) {
 			/* adequate "old" main data available (i.e. bit reservoir) */
 			memmove(mp3DecInfo->mainBuf, mp3DecInfo->mainBuf + mp3DecInfo->mainDataBytes - mp3DecInfo->mainDataBegin, mp3DecInfo->mainDataBegin);
@@ -382,8 +448,10 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 			*inbuf += mp3DecInfo->nSlots;
 			*bytesLeft -= (mp3DecInfo->nSlots);
 			MP3ClearBadFrame(mp3DecInfo, outbuf);
+			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_BITSTREAM_FRAME_PARSING, amigaProfileStart);
 			return ERR_MP3_MAINDATA_UNDERFLOW;
 		}
+		AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_BITSTREAM_FRAME_PARSING, amigaProfileStart);
 #ifdef PROFILE
 	time = systime_get() - time;
 	printf("data buffer filling: %i ms\n", time);
@@ -402,7 +470,9 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 			#endif
 			/* unpack scale factors and compute size of scale factor block */
 			prevBitOffset = bitOffset;
+			AMIGA_PROFILE_START(amigaProfileStart);
 			offset = UnpackScaleFactors(mp3DecInfo, mainPtr, &bitOffset, mainBits, gr, ch);
+			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_BITSTREAM_FRAME_PARSING, amigaProfileStart);
 			#ifdef PROFILE
 				time = systime_get() - time;
 				printf("UnpackScaleFactors: %i ms\n", time);
@@ -423,7 +493,9 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 			#endif
 			/* decode Huffman code words */
 			prevBitOffset = bitOffset;
+			AMIGA_PROFILE_START(amigaProfileStart);
 			offset = DecodeHuffman(mp3DecInfo, mainPtr, &bitOffset, huffBlockBits, gr, ch);
+			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_HUFFMAN, amigaProfileStart);
 			if (offset < 0) {
 				MP3ClearBadFrame(mp3DecInfo, outbuf);
 				return ERR_MP3_INVALID_HUFFCODES;
@@ -456,10 +528,13 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 		#ifdef PROFILE
 			time = systime_get();
 		#endif
+			AMIGA_PROFILE_START(amigaProfileStart);
 			if (IMDCT(mp3DecInfo, gr, ch) < 0) {
+				AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_IMDCT, amigaProfileStart);
 				MP3ClearBadFrame(mp3DecInfo, outbuf);
 				return ERR_MP3_INVALID_IMDCT;			
 			}
+			AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_IMDCT, amigaProfileStart);
 		#ifdef PROFILE
 			time = systime_get() - time;
 			printf("IMDCT: %i ms\n", time);

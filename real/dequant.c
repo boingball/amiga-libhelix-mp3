@@ -44,6 +44,7 @@
 
 #include "coder.h"
 #include "assembly.h"
+#include "amiga_profile_decode.h"
 
 /**************************************************************************************
  * Function:    Dequantize
@@ -79,6 +80,7 @@ int Dequantize(MP3DecInfo *mp3DecInfo, int gr)
 	HuffmanInfo *hi;
 	DequantInfo *di;
 	CriticalBandInfo *cbi;
+	clock_t amigaProfileStart;
 
 	/* validate pointers */
 	if (!mp3DecInfo || !mp3DecInfo->FrameHeaderPS || !mp3DecInfo->SideInfoPS || !mp3DecInfo->ScaleFactorInfoPS || 
@@ -96,10 +98,14 @@ int Dequantize(MP3DecInfo *mp3DecInfo, int gr)
 	mOut[0] = mOut[1] = 0;
 
 	/* dequantize all the samples in each channel */
+	AMIGA_PROFILE_START(amigaProfileStart);
 	for (ch = 0; ch < mp3DecInfo->nChans; ch++) {
 		hi->gb[ch] = DequantChannel(hi->huffDecBuf[ch], di->workBuf, &hi->nonZeroBound[ch], fh, 
 			&si->sis[gr][ch], &sfi->sfis[gr][ch], &cbi[ch]);
 	}
+	AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_DEQUANT, amigaProfileStart);
+
+	AMIGA_PROFILE_START(amigaProfileStart);
 
 	/* joint stereo processing assumes one guard bit in input samples
 	 * it's extremely rare not to have at least one gb, so if this is the case
@@ -152,6 +158,8 @@ int Dequantize(MP3DecInfo *mp3DecInfo, int gr)
 		hi->nonZeroBound[0] = nSamps;
 		hi->nonZeroBound[1] = nSamps;
 	}
+
+	AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_STEREO_POST, amigaProfileStart);
 
 	/* output format Q(DQ_FRACBITS_OUT) */
 	return 0;

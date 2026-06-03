@@ -979,6 +979,7 @@ int main(int argc, char **argv)
 	svxOpen = 0;
 	readPtr = readBuf;
 	gTiming = &timing;
+	MP3ResetDecodeCoreProfile();
 	effectiveRate = 0;
 	startClock = clock();
 
@@ -1120,6 +1121,29 @@ int main(int argc, char **argv)
 		printf("elapsed seconds: %.3f\n", elapsed);
 		if (elapsed > 0.0 && audioSeconds > 0.0)
 			printf("decode speed: %.2fx realtime\n", audioSeconds / elapsed);
+		{
+			MP3DecodeCoreProfile coreProfile;
+
+			MP3GetDecodeCoreProfile(&coreProfile);
+			printf("decode-core profiling: %s\n",
+				MP3DecodeCoreProfileIsEnabled() ? "enabled" : "disabled");
+			if (MP3DecodeCoreProfileIsEnabled()) {
+				printf("timing core bitstream/frame parsing: %.3f s\n",
+					ClocksToSeconds(coreProfile.bitstreamFrameParsing));
+				printf("timing core huffman: %.3f s\n",
+					ClocksToSeconds(coreProfile.huffman));
+				printf("timing core dequant: %.3f s\n",
+					ClocksToSeconds(coreProfile.dequant));
+				printf("timing core stereo/post: %.3f s\n",
+					ClocksToSeconds(coreProfile.stereoPost));
+				printf("timing core imdct: %.3f s\n",
+					ClocksToSeconds(coreProfile.imdct));
+				printf("timing core subband/dct32: %.3f s\n",
+					ClocksToSeconds(coreProfile.subbandDct32));
+				printf("timing core polyphase: %.3f s\n",
+					ClocksToSeconds(coreProfile.polyphase));
+			}
+		}
 		printf("timing frame decode: %.3f s\n", ClocksToSeconds(timing.frameDecode));
 		printf("timing PCM conversion: %.3f s\n", ClocksToSeconds(timing.pcmConvert));
 		printf("timing 8SVX write: %.3f s\n", ClocksToSeconds(timing.svxWrite));
