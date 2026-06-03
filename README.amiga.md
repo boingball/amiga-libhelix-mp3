@@ -52,6 +52,8 @@ Default output is raw signed 16-bit big-endian PCM. Options:
 - `--selftest-mulshift` compares the portable C `MULSHIFT32` reference with the
   optional 68020+ assembly helper over edge cases and 100,000 pseudo-random
   input pairs.
+- `--debug-argv` or `--show-argv` prints `argc` and `argv` after Amiga
+  command-tail normalization.
 
 The program prints the first decoded frame's sample rate, channel count, and
 bitrate when available, followed by decoded frame count and output sample count.

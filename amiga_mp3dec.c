@@ -83,24 +83,54 @@ typedef struct NormalizedArgs {
 	char *storage;
 } NormalizedArgs;
 
+static const char *AmigaBaseName(const char *path)
+{
+	const char *base;
+
+	base = path;
+	while (*path) {
+		if (*path == '/' || *path == ':' || *path == '\\')
+			base = path + 1;
+		path++;
+	}
+
+	return base;
+}
+
+static int AmigaAsciiLower(int c)
+{
+	if (c >= 'A' && c <= 'Z')
+		return c - 'A' + 'a';
+
+	return c;
+}
+
+static int AmigaArgIsProgramName(const char *arg)
+{
+	const char *base;
+	const char *prefix;
+
+	if (!arg || !arg[0])
+		return 0;
+
+	base = AmigaBaseName(arg);
+	prefix = "amiga_mp3dec";
+	while (*prefix) {
+		if (AmigaAsciiLower((unsigned char)*base) != *prefix)
+			return 0;
+		base++;
+		prefix++;
+	}
+
+	return *base == '\0' || *base == '.';
+}
+
 static int AmigaArgStringNeedsSplit(int argc, char **argv)
 {
-	const char *s;
-
 	if (argc != 1 || !argv || !argv[0])
 		return 0;
 
-	s = argv[0];
-	if (s[0] == '-')
-		return 1;
-
-	while (*s) {
-		if (*s == ' ' || *s == '\t')
-			return 1;
-		s++;
-	}
-
-	return 0;
+	return !AmigaArgIsProgramName(argv[0]);
 }
 
 static int AmigaNormalizeArgs(int argc, char **argv, NormalizedArgs *normalized)
@@ -215,6 +245,7 @@ static void PrintUsage(const char *prog)
 	printf("  --rate HZ     output/downsample rate: 22050, 11025, or 8287 Hz\n");
 	printf("  --selftest-mulshift compare C and optional asm MULSHIFT32 helpers\n");
 	printf("  --debug-argv print argc/argv after Amiga argument normalization\n");
+	printf("  --show-argv  alias for --debug-argv\n");
 	printf("\n");
 	printf("default output is raw signed 16-bit big-endian PCM.\n");
 }
@@ -256,12 +287,14 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			if (opt->outputRate != 22050 && opt->outputRate != 11025 &&
 				opt->outputRate != 8287)
 				return -1;
-		} else if (!strcmp(argv[i], "--debug-argv")) {
+		} else if (!strcmp(argv[i], "--debug-argv") ||
+			!strcmp(argv[i], "--show-argv")) {
 			opt->debugArgv = 1;
 		} else if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
 			opt->help = 1;
 			return 0;
 		} else if (argv[i][0] == '-') {
+			fprintf(stderr, "unknown option: %s\n", argv[i]);
 			return -1;
 		} else if (!opt->inName) {
 			opt->inName = argv[i];
@@ -718,7 +751,8 @@ int main(int argc, char **argv)
 	{
 		int i;
 		for (i = 1; i < argc; i++) {
-			if (!strcmp(argv[i], "--debug-argv")) {
+			if (!strcmp(argv[i], "--debug-argv") ||
+				!strcmp(argv[i], "--show-argv")) {
 				debugArgv = 1;
 				break;
 			}
