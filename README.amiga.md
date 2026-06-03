@@ -73,8 +73,9 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   that pass the whole command tail as one argument, including CR/LF
   whitespace and quoted paths.
 
-The program prints the first decoded frame's sample rate, channel count, and
-bitrate when available, followed by decoded frame count and output sample count.
+The program prints the first decoded frame's input sample rate, output sample
+rate when it differs, channel count, and bitrate when available, followed by
+decoded frame count and output sample count.
 
 ## Optimization roadmap
 

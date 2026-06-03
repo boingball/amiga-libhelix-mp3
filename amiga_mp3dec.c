@@ -45,6 +45,7 @@ typedef struct DecodeStats {
 	unsigned long outputSamples;
 	unsigned long pcmChecksum;
 	int sampleRate;
+	int outputSampleRate;
 	int channels;
 	int bitrate;
 } DecodeStats;
@@ -782,6 +783,47 @@ static void UpdateFirstFrameStats(DecodeStats *stats, const MP3FrameInfo *info)
 		stats->bitrate = info->bitrate;
 }
 
+static int EffectiveOutputSampleRate(const DecodeOptions *opt, int inputSampleRate)
+{
+	if (inputSampleRate <= 0)
+		return opt->outputRate;
+	if (opt->fastLowrate)
+		return opt->outputRate;
+	if (!opt->decodeOnly && opt->outputRate && inputSampleRate > opt->outputRate)
+		return opt->outputRate;
+
+	return inputSampleRate;
+}
+
+static double DecodedAudioSeconds(const DecodeOptions *opt,
+	const DecodeStats *stats)
+{
+	int sampleRate;
+	int outputChannels;
+
+	if (stats->outputSamples == 0)
+		return 0.0;
+
+	if (opt->fastLowrate) {
+		sampleRate = stats->outputSampleRate ?
+			stats->outputSampleRate : opt->outputRate;
+		return sampleRate > 0 ?
+			(double)stats->outputSamples / (double)sampleRate : 0.0;
+	}
+
+	sampleRate = stats->outputSampleRate ?
+		stats->outputSampleRate : stats->sampleRate;
+	if (sampleRate <= 0)
+		return 0.0;
+
+	outputChannels = opt->mono ? 1 : stats->channels;
+	if (outputChannels <= 0)
+		outputChannels = 1;
+
+	return (double)stats->outputSamples /
+		((double)sampleRate * (double)outputChannels);
+}
+
 static int DownsampleFrame(RateState *rate, const short *in, short *out, int nSamps,
 	int inRate, int outRate, int channels)
 {
@@ -1073,8 +1115,10 @@ int main(int argc, char **argv)
 		if (opt.checksum && !opt.fastLowrate)
 			stats.pcmChecksum = UpdatePcmChecksum(stats.pcmChecksum, decodeBuf,
 				info.outputSamps);
-		if (!effectiveRate)
-			effectiveRate = (opt.outputRate && info.samprate > opt.outputRate) ? opt.outputRate : info.samprate;
+		if (!effectiveRate) {
+			effectiveRate = EffectiveOutputSampleRate(&opt, info.samprate);
+			stats.outputSampleRate = effectiveRate;
+		}
 
 		if (!opt.decodeOnly && opt.outFormat == OUT_8SVX && !svxOpen) {
 			if (!info.samprate) {
@@ -1151,9 +1195,11 @@ int main(int argc, char **argv)
 
 	endClock = clock();
 
-	printf("sample rate: %d Hz\n", stats.sampleRate);
-	if (opt.outputRate)
-		printf("output rate: %d Hz\n", effectiveRate ? effectiveRate : opt.outputRate);
+	if (!stats.outputSampleRate)
+		stats.outputSampleRate = effectiveRate ? effectiveRate : stats.sampleRate;
+	printf("input sample rate: %d Hz\n", stats.sampleRate);
+	if (stats.outputSampleRate && stats.outputSampleRate != stats.sampleRate)
+		printf("output sample rate: %d Hz\n", stats.outputSampleRate);
 	printf("channels: %d%s\n", stats.channels, opt.mono ? " (mono output)" : "");
 	printf("bitrate: %d bps\n", stats.bitrate);
 	printf("decoded frames: %lu\n", stats.decodedFrames);
@@ -1171,15 +1217,7 @@ int main(int argc, char **argv)
 		double audioSeconds = 0.0;
 		if (CLOCKS_PER_SEC > 0)
 			elapsed = (double)(endClock - startClock) / (double)CLOCKS_PER_SEC;
-		if ((opt.decodeOnly ? stats.sampleRate : (effectiveRate ? effectiveRate : stats.sampleRate)) > 0) {
-			int outputChannels = opt.mono ? 1 : stats.channels;
-			if (outputChannels <= 0)
-				outputChannels = 1;
-			audioSeconds = (double)stats.outputSamples /
-				((double)(opt.decodeOnly ? stats.sampleRate :
-				(effectiveRate ? effectiveRate : stats.sampleRate)) *
-				(double)outputChannels);
-		}
+		audioSeconds = DecodedAudioSeconds(&opt, &stats);
 		printf("elapsed seconds: %.3f\n", elapsed);
 		if (elapsed > 0.0 && audioSeconds > 0.0)
 			printf("decode speed: %.2fx realtime\n", audioSeconds / elapsed);
