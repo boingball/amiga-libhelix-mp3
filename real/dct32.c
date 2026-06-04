@@ -1,44 +1,44 @@
-/* ***** BEGIN LICENSE BLOCK ***** 
- * Version: RCSL 1.0/RPSL 1.0 
- *  
- * Portions Copyright (c) 1995-2002 RealNetworks, Inc. All Rights Reserved. 
- *      
- * The contents of this file, and the files included with this file, are 
- * subject to the current version of the RealNetworks Public Source License 
- * Version 1.0 (the "RPSL") available at 
- * http://www.helixcommunity.org/content/rpsl unless you have licensed 
- * the file under the RealNetworks Community Source License Version 1.0 
- * (the "RCSL") available at http://www.helixcommunity.org/content/rcsl, 
- * in which case the RCSL will apply. You may also obtain the license terms 
- * directly from RealNetworks.  You may not use this file except in 
- * compliance with the RPSL or, if you have a valid RCSL with RealNetworks 
- * applicable to this file, the RCSL.  Please see the applicable RPSL or 
- * RCSL for the rights, obligations and limitations governing use of the 
- * contents of the file.  
- *  
- * This file is part of the Helix DNA Technology. RealNetworks is the 
- * developer of the Original Code and owns the copyrights in the portions 
- * it created. 
- *  
- * This file, and the files included with this file, is distributed and made 
- * available on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER 
- * EXPRESS OR IMPLIED, AND REALNETWORKS HEREBY DISCLAIMS ALL SUCH WARRANTIES, 
- * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY, FITNESS 
- * FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT. 
- * 
- * Technology Compatibility Kit Test Suite(s) Location: 
- *    http://www.helixcommunity.org/content/tck 
- * 
- * Contributor(s): 
- *  
- * ***** END LICENSE BLOCK ***** */ 
+/* ***** BEGIN LICENSE BLOCK *****
+ * Version: RCSL 1.0/RPSL 1.0
+ *
+ * Portions Copyright (c) 1995-2002 RealNetworks, Inc. All Rights Reserved.
+ *
+ * The contents of this file, and the files included with this file, are
+ * subject to the current version of the RealNetworks Public Source License
+ * Version 1.0 (the "RPSL") available at
+ * http://www.helixcommunity.org/content/rpsl unless you have licensed
+ * the file under the RealNetworks Community Source License Version 1.0
+ * (the "RCSL") available at http://www.helixcommunity.org/content/rcsl,
+ * in which case the RCSL will apply. You may also obtain the license terms
+ * directly from RealNetworks.  You may not use this file except in
+ * compliance with the RPSL or, if you have a valid RCSL with RealNetworks
+ * applicable to this file, the RCSL.  Please see the applicable RPSL or
+ * RCSL for the rights, obligations and limitations governing use of the
+ * contents of the file.
+ *
+ * This file is part of the Helix DNA Technology. RealNetworks is the
+ * developer of the Original Code and owns the copyrights in the portions
+ * it created.
+ *
+ * This file, and the files included with this file, is distributed and made
+ * available on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * EXPRESS OR IMPLIED, AND REALNETWORKS HEREBY DISCLAIMS ALL SUCH WARRANTIES,
+ * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ *
+ * Technology Compatibility Kit Test Suite(s) Location:
+ *    http://www.helixcommunity.org/content/tck
+ *
+ * Contributor(s):
+ *
+ * ***** END LICENSE BLOCK ***** */
 
 /**************************************************************************************
  * Fixed-point MP3 decoder
  * Jon Recker (jrecker@real.com), Ken Cooke (kenc@real.com)
  * June 2003
  *
- * dct32.c - optimized implementations of 32-point DCT for matrixing stage of 
+ * dct32.c - optimized implementations of 32-point DCT for matrixing stage of
  *             polyphase filter
  **************************************************************************************/
 
@@ -103,19 +103,46 @@ static const int dcttab[48] = {
 	-COS2_1, -COS2_2, COS3_1, 	/* 31, 31, 30 */
 };
 
+
+#if defined(AMIGA_M68K) && defined(AMIGA_M68K_ASM_FDCT32) && defined(__GNUC__) && \
+	(defined(__mc68020__) || defined(__mc68030__) || defined(__mc68040__) || \
+	 defined(__mc68060__) || defined(mc68020))
+#define FDCT32_HAS_AMIGA_M68K_ASM 1
+static __inline int FDCT32_AMIGA_M68K_MULSHIFT32(int x, int y)
+{
+	int hi;
+	int lo;
+
+	lo = x;
+	__asm__ volatile ("muls.l %2,%0:%1"
+		: "=d" (hi), "+d" (lo)
+		: "dmi" (y));
+	(void)lo;
+	return hi;
+}
+#else
+#define FDCT32_HAS_AMIGA_M68K_ASM 0
+#endif
+
+#if defined(AMIGA_M68K)
+#define FDCT32_MULSHIFT32(x, y) MULSHIFT32_C_REFERENCE((x), (y))
+#else
+#define FDCT32_MULSHIFT32(x, y) MULSHIFT32((x), (y))
+#endif
+
 #define D32FP(i, s0, s1, s2) { \
     a0 = buf[i];			a3 = buf[31-i]; \
 	a1 = buf[15-i];			a2 = buf[16+i]; \
-    b0 = a0 + a3;			b3 = MULSHIFT32(*cptr++, a0 - a3) << (s0);	\
-	b1 = a1 + a2;			b2 = MULSHIFT32(*cptr++, a1 - a2) << (s1);	\
-	buf[i] = b0 + b1;		buf[15-i] = MULSHIFT32(*cptr,   b0 - b1) << (s2); \
-	buf[16+i] = b2 + b3;    buf[31-i] = MULSHIFT32(*cptr++, b3 - b2) << (s2); \
+    b0 = a0 + a3;			b3 = FDCT32_MULSHIFT32(*cptr++, a0 - a3) << (s0);	\
+	b1 = a1 + a2;			b2 = FDCT32_MULSHIFT32(*cptr++, a1 - a2) << (s1);	\
+	buf[i] = b0 + b1;		buf[15-i] = FDCT32_MULSHIFT32(*cptr,   b0 - b1) << (s2); \
+	buf[16+i] = b2 + b3;    buf[31-i] = FDCT32_MULSHIFT32(*cptr++, b3 - b2) << (s2); \
 }
 
 /**************************************************************************************
  * Function:    FDCT32
  *
- * Description: Ken's highly-optimized 32-point DCT (radix-4 + radix-8) 
+ * Description: Ken's highly-optimized 32-point DCT (radix-4 + radix-8)
  *
  * Inputs:      input buffer, length = 32 samples
  *              require at least 6 guard bits in input vector x to avoid possibility
@@ -133,15 +160,15 @@ static const int dcttab[48] = {
  *                for the polyphase filterbank
  *              fully unrolled stage 1, for max precision (scale the 1/cos() factors
  *                differently, depending on magnitude)
- *              guard bit analysis verified by exhaustive testing of all 2^32 
+ *              guard bit analysis verified by exhaustive testing of all 2^32
  *                combinations of max pos/max neg values in x[]
  *
  * TODO:        code organization and optimization for ARM
  *              possibly interleave stereo (cut # of coef loads in half - may not have
  *                enough registers)
  **************************************************************************************/
-// about 1ms faster in RAM
-void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
+/* about 1ms faster in RAM */
+void FDCT32_C_REFERENCE(int *buf, int *dest, int offset, int oddBlock, int gb)
 {
     int i, s, tmp, es, oddBase, evenBase, delayOff, clipBits;
     const int *cptr = dcttab;
@@ -149,7 +176,7 @@ void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
     int b0, b1, b2, b3, b4, b5, b6, b7;
 	int *d;
 
-	/* scaling - ensure at least 6 guard bits for DCT 
+	/* scaling - ensure at least 6 guard bits for DCT
 	 * (in practice this is already true 99% of time, so this code is
 	 *  almost never triggered)
 	 */
@@ -160,7 +187,7 @@ void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
 			buf[i] >>= es;
 	}
 
-	/* first pass */    
+	/* first pass */
 	D32FP(0, 1, 5, 1);
 	D32FP(1, 1, 3, 1);
 	D32FP(2, 1, 3, 1);
@@ -173,24 +200,24 @@ void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
 	/* second pass */
 	for (i = 4; i > 0; i--) {
 		a0 = buf[0]; 	    a7 = buf[7];		a3 = buf[3];	    a4 = buf[4];
-		b0 = a0 + a7;	    b7 = MULSHIFT32(*cptr++, a0 - a7) << 1;
-		b3 = a3 + a4;	    b4 = MULSHIFT32(*cptr++, a3 - a4) << 3;
-		a0 = b0 + b3;	    a3 = MULSHIFT32(*cptr,   b0 - b3) << 1;
-		a4 = b4 + b7;		a7 = MULSHIFT32(*cptr++, b7 - b4) << 1;
+		b0 = a0 + a7;	    b7 = FDCT32_MULSHIFT32(*cptr++, a0 - a7) << 1;
+		b3 = a3 + a4;	    b4 = FDCT32_MULSHIFT32(*cptr++, a3 - a4) << 3;
+		a0 = b0 + b3;	    a3 = FDCT32_MULSHIFT32(*cptr,   b0 - b3) << 1;
+		a4 = b4 + b7;		a7 = FDCT32_MULSHIFT32(*cptr++, b7 - b4) << 1;
 
 		a1 = buf[1];	    a6 = buf[6];	    a2 = buf[2];	    a5 = buf[5];
-		b1 = a1 + a6;	    b6 = MULSHIFT32(*cptr++, a1 - a6) << 1;
-		b2 = a2 + a5;	    b5 = MULSHIFT32(*cptr++, a2 - a5) << 1;
-		a1 = b1 + b2;		a2 = MULSHIFT32(*cptr,   b1 - b2) << 2;
-		a5 = b5 + b6;	    a6 = MULSHIFT32(*cptr++, b6 - b5) << 2;
+		b1 = a1 + a6;	    b6 = FDCT32_MULSHIFT32(*cptr++, a1 - a6) << 1;
+		b2 = a2 + a5;	    b5 = FDCT32_MULSHIFT32(*cptr++, a2 - a5) << 1;
+		a1 = b1 + b2;		a2 = FDCT32_MULSHIFT32(*cptr,   b1 - b2) << 2;
+		a5 = b5 + b6;	    a6 = FDCT32_MULSHIFT32(*cptr++, b6 - b5) << 2;
 
-		b0 = a0 + a1;	    b1 = MULSHIFT32(COS4_0, a0 - a1) << 1;
-		b2 = a2 + a3;	    b3 = MULSHIFT32(COS4_0, a3 - a2) << 1;
+		b0 = a0 + a1;	    b1 = FDCT32_MULSHIFT32(COS4_0, a0 - a1) << 1;
+		b2 = a2 + a3;	    b3 = FDCT32_MULSHIFT32(COS4_0, a3 - a2) << 1;
 		buf[0] = b0;	    buf[1] = b1;
 		buf[2] = b2 + b3;	buf[3] = b3;
 
-		b4 = a4 + a5;	    b5 = MULSHIFT32(COS4_0, a4 - a5) << 1;
-		b6 = a6 + a7;	    b7 = MULSHIFT32(COS4_0, a7 - a6) << 1;
+		b4 = a4 + a5;	    b5 = FDCT32_MULSHIFT32(COS4_0, a4 - a5) << 1;
+		b6 = a6 + a7;	    b7 = FDCT32_MULSHIFT32(COS4_0, a7 - a6) << 1;
 		b6 += b7;
 		buf[4] = b4 + b6;	buf[5] = b5 + b7;
 		buf[6] = b5 + b6;	buf[7] = b7;
@@ -206,7 +233,7 @@ void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
 	/* sample 0 - always delayed one block */
 	d = dest + 64*16 + delayOff + evenBase;
 	s = buf[ 0];				d[0] = d[8] = s;
-    
+
 	/* samples 16 to 31 */
 	d = dest + offset + oddBase;
 
@@ -271,7 +298,7 @@ void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
 		clipBits = 31 - es;
 		d = dest + 64*16 + delayOff + evenBase;
 		s = d[0];	CLIP_2N(s, clipBits);	d[0] = d[8] = (s << es);
-	
+
 		d = dest + offset + oddBase;
 		for (i = 16; i <= 31; i++) {
 			s = d[0];	CLIP_2N(s, clipBits);	d[0] = d[8] = (s << es);	d += 64;
@@ -282,4 +309,166 @@ void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
 			s = d[0];	CLIP_2N(s, clipBits);	d[0] = d[8] = (s << es);	d += 64;
 		}
 	}
+}
+
+#if FDCT32_HAS_AMIGA_M68K_ASM
+#undef FDCT32_MULSHIFT32
+#define FDCT32_MULSHIFT32(x, y) FDCT32_AMIGA_M68K_MULSHIFT32((x), (y))
+
+static void FDCT32_AMIGA_M68K_ASM(int *buf, int *dest, int offset, int oddBlock, int gb)
+{
+    int i, s, tmp, es, oddBase, evenBase, delayOff, clipBits;
+    const int *cptr = dcttab;
+    int a0, a1, a2, a3, a4, a5, a6, a7;
+    int b0, b1, b2, b3, b4, b5, b6, b7;
+	int *d;
+
+	/* scaling - ensure at least 6 guard bits for DCT
+	 * (in practice this is already true 99% of time, so this code is
+	 *  almost never triggered)
+	 */
+	es = 0;
+	if (gb < 6) {
+		es = 6 - gb;
+		for (i = 0; i < 32; i++)
+			buf[i] >>= es;
+	}
+
+	/* first pass */
+	D32FP(0, 1, 5, 1);
+	D32FP(1, 1, 3, 1);
+	D32FP(2, 1, 3, 1);
+	D32FP(3, 1, 2, 1);
+	D32FP(4, 1, 2, 1);
+	D32FP(5, 1, 1, 2);
+	D32FP(6, 1, 1, 2);
+	D32FP(7, 1, 1, 4);
+
+	/* second pass */
+	for (i = 4; i > 0; i--) {
+		a0 = buf[0]; 	    a7 = buf[7];		a3 = buf[3];	    a4 = buf[4];
+		b0 = a0 + a7;	    b7 = FDCT32_MULSHIFT32(*cptr++, a0 - a7) << 1;
+		b3 = a3 + a4;	    b4 = FDCT32_MULSHIFT32(*cptr++, a3 - a4) << 3;
+		a0 = b0 + b3;	    a3 = FDCT32_MULSHIFT32(*cptr,   b0 - b3) << 1;
+		a4 = b4 + b7;		a7 = FDCT32_MULSHIFT32(*cptr++, b7 - b4) << 1;
+
+		a1 = buf[1];	    a6 = buf[6];	    a2 = buf[2];	    a5 = buf[5];
+		b1 = a1 + a6;	    b6 = FDCT32_MULSHIFT32(*cptr++, a1 - a6) << 1;
+		b2 = a2 + a5;	    b5 = FDCT32_MULSHIFT32(*cptr++, a2 - a5) << 1;
+		a1 = b1 + b2;		a2 = FDCT32_MULSHIFT32(*cptr,   b1 - b2) << 2;
+		a5 = b5 + b6;	    a6 = FDCT32_MULSHIFT32(*cptr++, b6 - b5) << 2;
+
+		b0 = a0 + a1;	    b1 = FDCT32_MULSHIFT32(COS4_0, a0 - a1) << 1;
+		b2 = a2 + a3;	    b3 = FDCT32_MULSHIFT32(COS4_0, a3 - a2) << 1;
+		buf[0] = b0;	    buf[1] = b1;
+		buf[2] = b2 + b3;	buf[3] = b3;
+
+		b4 = a4 + a5;	    b5 = FDCT32_MULSHIFT32(COS4_0, a4 - a5) << 1;
+		b6 = a6 + a7;	    b7 = FDCT32_MULSHIFT32(COS4_0, a7 - a6) << 1;
+		b6 += b7;
+		buf[4] = b4 + b6;	buf[5] = b5 + b7;
+		buf[6] = b5 + b6;	buf[7] = b7;
+
+		buf += 8;
+	}
+	buf -= 32;	/* reset */
+
+	oddBase = oddBlock ? VBUF_LENGTH : 0;
+	evenBase = oddBlock ? 0 : VBUF_LENGTH;
+	delayOff = (offset - oddBlock) & 7;
+
+	/* sample 0 - always delayed one block */
+	d = dest + 64*16 + delayOff + evenBase;
+	s = buf[ 0];				d[0] = d[8] = s;
+
+	/* samples 16 to 31 */
+	d = dest + offset + oddBase;
+
+	s = buf[ 1];				d[0] = d[8] = s;	d += 64;
+
+	tmp = buf[25] + buf[29];
+	s = buf[17] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[ 9] + buf[13];		d[0] = d[8] = s;	d += 64;
+	s = buf[21] + tmp;			d[0] = d[8] = s;	d += 64;
+
+	tmp = buf[29] + buf[27];
+	s = buf[ 5];				d[0] = d[8] = s;	d += 64;
+	s = buf[21] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[13] + buf[11];		d[0] = d[8] = s;	d += 64;
+	s = buf[19] + tmp;			d[0] = d[8] = s;	d += 64;
+
+	tmp = buf[27] + buf[31];
+	s = buf[ 3];				d[0] = d[8] = s;	d += 64;
+	s = buf[19] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[11] + buf[15];		d[0] = d[8] = s;	d += 64;
+	s = buf[23] + tmp;			d[0] = d[8] = s;	d += 64;
+
+	tmp = buf[31];
+	s = buf[ 7];				d[0] = d[8] = s;	d += 64;
+	s = buf[23] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[15];				d[0] = d[8] = s;	d += 64;
+	s = tmp;					d[0] = d[8] = s;
+
+	/* samples 16 to 1 (sample 16 used again) */
+	d = dest + 16 + delayOff + evenBase;
+
+	s = buf[ 1];				d[0] = d[8] = s;	d += 64;
+
+	tmp = buf[30] + buf[25];
+	s = buf[17] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[14] + buf[ 9];		d[0] = d[8] = s;	d += 64;
+	s = buf[22] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[ 6];				d[0] = d[8] = s;	d += 64;
+
+	tmp = buf[26] + buf[30];
+	s = buf[22] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[10] + buf[14];		d[0] = d[8] = s;	d += 64;
+	s = buf[18] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[ 2];				d[0] = d[8] = s;	d += 64;
+
+	tmp = buf[28] + buf[26];
+	s = buf[18] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[12] + buf[10];		d[0] = d[8] = s;	d += 64;
+	s = buf[20] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[ 4];				d[0] = d[8] = s;	d += 64;
+
+	tmp = buf[24] + buf[28];
+	s = buf[20] + tmp;			d[0] = d[8] = s;	d += 64;
+	s = buf[ 8] + buf[12];		d[0] = d[8] = s;	d += 64;
+	s = buf[16] + tmp;			d[0] = d[8] = s;
+
+	/* this is so rarely invoked that it's not worth making two versions of the output
+	 *   shuffle code (one for no shift, one for clip + variable shift) like in IMDCT
+	 * here we just load, clip, shift, and store on the rare instances that es != 0
+	 */
+	if (es) {
+		clipBits = 31 - es;
+		d = dest + 64*16 + delayOff + evenBase;
+		s = d[0];	CLIP_2N(s, clipBits);	d[0] = d[8] = (s << es);
+
+		d = dest + offset + oddBase;
+		for (i = 16; i <= 31; i++) {
+			s = d[0];	CLIP_2N(s, clipBits);	d[0] = d[8] = (s << es);	d += 64;
+		}
+
+		d = dest + 16 + delayOff + evenBase;
+		for (i = 15; i >= 0; i--) {
+			s = d[0];	CLIP_2N(s, clipBits);	d[0] = d[8] = (s << es);	d += 64;
+		}
+	}
+}
+#endif
+
+int FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME(void)
+{
+	return FDCT32_HAS_AMIGA_M68K_ASM;
+}
+
+void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
+{
+#if FDCT32_HAS_AMIGA_M68K_ASM
+	FDCT32_AMIGA_M68K_ASM(buf, dest, offset, oddBlock, gb);
+#else
+	FDCT32_C_REFERENCE(buf, dest, offset, oddBlock, gb);
+#endif
 }
