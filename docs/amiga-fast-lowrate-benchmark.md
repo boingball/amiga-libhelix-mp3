@@ -12,6 +12,37 @@ samples that emit only one side of an existing polyphase pair. Coefficient
 tables, clipping, emitted sample order, and the multiply/accumulator order for
 each emitted sample are unchanged.
 
+## Dedicated mono fixed-stride emitter pass
+
+The mono `AMIGA_FAST_POLYPHASE` hot path now dispatches 11025 Hz stride-4 and
+8820 Hz stride-5 blocks to dedicated emitters.  Each emitter writes the selected
+samples in the same order as the previous phase/list walk, and calls a one-sided
+low or high accumulator for paired positions.  It therefore does not calculate
+the paired value that will not be emitted.  Stereo fast-lowrate, full-rate
+polyphase, and normal `--rate` downsampling retain their existing paths.
+
+The supplied target profiles for the comparison baseline are:
+
+| Fixture/mode | Supplied before polyphase time | After |
+| --- | ---: | ---: |
+| mono 56 kbps, `--fast-lowrate --rate 11025 --mono` | ~6.5 s | _record on target_ |
+| stereo input, `--fast-lowrate --rate 11025 --mono` | ~15.6 s | _record on target_ |
+
+No MP3 fixtures or m68k cross-compiler are available in this workspace, so the
+target after timings must be recorded on the Amiga build.  Use the confirmed
+FDCT32 ASM build as the baseline; keep `AMIGA_M68K_ASM_IMDCT` omitted because
+its profiling benefit remains unconfirmed:
+
+```sh
+amiga_mp3dec.fdct32 --decode-only --bench --checksum --fast-lowrate --rate 11025 --mono mono-56k-44100.mp3
+amiga_mp3dec.fdct32 --decode-only --bench --checksum --fast-lowrate --rate 11025 --mono stereo-44100.mp3
+amiga_mp3dec.fdct32 --decode-only --bench --checksum --fast-lowrate --rate 8820  --mono mono-56k-44100.mp3
+```
+
+For every fixture, compare the before/after PCM checksum and emitted sample
+count before accepting the timing result.  Also checksum a full-rate decode and
+a normal `--rate 11025` decode to confirm those unaffected paths remain exact.
+
 ## Before profile supplied for this pass
 
 Build/profile: `AMIGA_PROFILE_DECODE + AMIGA_FAST_POLYPHASE + --fast-lowrate --rate 11025`.
