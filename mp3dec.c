@@ -232,6 +232,26 @@ int MP3GetFastLowrateDebug(HMP3Decoder hMP3Decoder,
 }
 
 
+void MP3SetOutputMono(HMP3Decoder hMP3Decoder, int enabled)
+{
+	MP3DecInfo *mp3DecInfo = (MP3DecInfo *)hMP3Decoder;
+
+	if (!mp3DecInfo)
+		return;
+	mp3DecInfo->outputMono = enabled ? 1 : 0;
+}
+
+int MP3GetOutputChannels(HMP3Decoder hMP3Decoder)
+{
+	MP3DecInfo *mp3DecInfo = (MP3DecInfo *)hMP3Decoder;
+
+	if (!mp3DecInfo)
+		return 0;
+	if (mp3DecInfo->outputMono && mp3DecInfo->nChans > 1)
+		return 1;
+	return mp3DecInfo->nChans;
+}
+
 /**************************************************************************************
  * Function:    MP3FindFreeSync
  *
@@ -302,6 +322,7 @@ static int MP3FindFreeSync(unsigned char *buf, unsigned char firstFH[4], int nBy
 void MP3GetLastFrameInfo(HMP3Decoder hMP3Decoder, MP3FrameInfo *mp3FrameInfo)
 {
 	MP3DecInfo *mp3DecInfo = (MP3DecInfo *)hMP3Decoder;
+	int outputChans;
 
 	if (!mp3DecInfo || mp3DecInfo->layer != 3) {
 		mp3FrameInfo->bitrate = 0;
@@ -316,10 +337,12 @@ void MP3GetLastFrameInfo(HMP3Decoder hMP3Decoder, MP3FrameInfo *mp3FrameInfo)
 		mp3FrameInfo->nChans = mp3DecInfo->nChans;
 		mp3FrameInfo->samprate = mp3DecInfo->samprate;
 		mp3FrameInfo->bitsPerSample = 16;
-		if (mp3DecInfo->fastLowrateStride > 1 && mp3DecInfo->fastLowrateOutputSamps > 0)
+		if (mp3DecInfo->fastLowrateStride > 1 && mp3DecInfo->fastLowrateOutputSamps > 0) {
 			mp3FrameInfo->outputSamps = mp3DecInfo->fastLowrateOutputSamps;
-		else
-			mp3FrameInfo->outputSamps = mp3DecInfo->nChans * (int)samplesPerFrameTab[mp3DecInfo->version][mp3DecInfo->layer - 1];
+		} else {
+			outputChans = (mp3DecInfo->outputMono && mp3DecInfo->nChans > 1) ? 1 : mp3DecInfo->nChans;
+			mp3FrameInfo->outputSamps = outputChans * (int)samplesPerFrameTab[mp3DecInfo->version][mp3DecInfo->layer - 1];
+		}
 		mp3FrameInfo->layer = mp3DecInfo->layer;
 		mp3FrameInfo->version = mp3DecInfo->version;
 	}
@@ -390,7 +413,7 @@ static void MP3ClearBadFrame(MP3DecInfo *mp3DecInfo, short *outbuf)
  *                or reformatted as "self-contained" frames (useSize = 1)
  *
  * Outputs:     PCM data in outbuf, interleaved LRLRLR... if stereo
- *                number of output samples = nGrans * nGranSamps * nChans
+ *                number of output samples = nGrans * nGranSamps * output channels
  *              updated inbuf pointer, updated bytesLeft
  *
  * Return:      error code, defined in mp3dec.h (0 means no error, < 0 means error)
@@ -582,8 +605,12 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 		#endif
 
 		/* alias reduction, inverse MDCT, overlap-add, frequency inversion */
-		for (ch = 0; ch < mp3DecInfo->nChans; ch++)
 		{
+			int synthChans;
+
+			synthChans = (mp3DecInfo->outputMono && mp3DecInfo->nChans > 1) ? 1 : mp3DecInfo->nChans;
+			for (ch = 0; ch < synthChans; ch++)
+			{
 		#ifdef PROFILE
 			time = systime_get();
 		#endif
@@ -598,6 +625,7 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 			time = systime_get() - time;
 			printf("IMDCT: %i ms\n", time);
 		#endif
+			}
 		}
 		
 		#ifdef PROFILE
@@ -611,7 +639,8 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 			if (mp3DecInfo->fastLowrateStride > 1)
 				dstStart = mp3DecInfo->fastLowrateOutputSamps;
 			else
-				dstStart = gr * mp3DecInfo->nGranSamps * mp3DecInfo->nChans;
+				dstStart = gr * mp3DecInfo->nGranSamps *
+					((mp3DecInfo->outputMono && mp3DecInfo->nChans > 1) ? 1 : mp3DecInfo->nChans);
 
 			if (Subband(mp3DecInfo, outbuf + dstStart) < 0) {
 				MP3ClearBadFrame(mp3DecInfo, outbuf);
@@ -624,7 +653,8 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 					&mp3DecInfo->fastLowrateDebug[mp3DecInfo->fastLowrateDebugCount++];
 				dstEnd = mp3DecInfo->fastLowrateOutputSamps;
 				dbg->granule = gr;
-				dbg->fullRateSamps = mp3DecInfo->nGranSamps * mp3DecInfo->nChans;
+				dbg->fullRateSamps = mp3DecInfo->nGranSamps *
+					((mp3DecInfo->outputMono && mp3DecInfo->nChans > 1) ? 1 : mp3DecInfo->nChans);
 				dbg->lowrateSamps = dstEnd - dstStart;
 				dbg->cumulativeLowrateSamps = dstEnd;
 				dbg->destOffsetStart = dstStart;

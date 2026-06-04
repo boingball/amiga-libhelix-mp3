@@ -86,3 +86,40 @@ amiga_mp3dec_fastpoly.after  --decode-only --bench --checksum --fast-lowrate --r
   rate-conversion scratch movement, and output formatting.  These are outside
   `real/*.c` and outside the requested decode-core loop pass; no safe reduction
   was made here.
+
+
+## Stereo-to-mono synthesis optimization
+
+This pass adds a decoder-level mono-output hint used by the Amiga command-line
+front end whenever `--mono` is active.  Stereo and joint-stereo bitstream work is
+still decoded normally, but after mandatory MPEG stereo reconstruction the
+frequency-domain channels are collapsed to one mono channel before IMDCT/DCT32
+and polyphase synthesis.  The full stereo PCM buffer and the later CLI
+stereo-to-mono copy are therefore skipped for mono output.
+
+For joint stereo with mid/side enabled and intensity stereo disabled, mono can be
+collapsed more cheaply: `(L + R) / 2` after MPEG mid/side reconstruction equals
+the coded mid channel, so the decoder keeps channel 0 and avoids the mid/side
+sum/difference pass for the mono output path.  Joint-stereo frames that also use
+intensity stereo still run the existing reconstruction first, then collapse to
+mono.
+
+`--bench` with `AMIGA_PROFILE_DECODE` now remains the profiling entry point for
+stereo-to-mono investigation and prints the dominant core buckets required for
+this benchmark: huffman, dequant, stereo/post, imdct, subband/dct32, and
+polyphase.
+
+### Stereo-to-mono benchmark log
+
+Fixture unavailable in this workspace, so only the supplied before result is
+recorded here.  Re-run the same command on the target Amiga fixture to fill the
+after columns and capture the mono/stereo-to-mono checksums:
+
+```sh
+mp3dec_O3 --decode-only --bench --checksum --fast-lowrate --rate 11025 --mono "ZZ Top - Sharp Dressed Man.mp3"
+```
+
+| Build | Elapsed | Decode speed | Frame decode | Output samples | Mono checksum | Stereo-to-mono checksum | Notes |
+| --- | ---: | ---: | ---: | ---: | --- | --- | --- |
+| Before | 89.66 s | 0.45x | 86.40 s | 441504 | _record from mono fixture_ | _record from stereo fixture_ | Stereo synthesis plus CLI downmix still ran for mono output |
+| After | _record on target_ | _record on target_ | _record on target_ | 441504 expected | _must match current mono test_ | _record new optimized checksum_ | Right-channel IMDCT/DCT32/polyphase and stereo PCM downmix skipped for `--mono` |

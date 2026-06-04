@@ -1407,9 +1407,16 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 				}
 				outChannels = 2;
 			} else {
-				outSamps = MixFrame(stream->decodeBuf, stream->writeBuf,
-					info.outputSamps, info.nChans, 1);
-				outChannels = 1;
+				outChannels = MP3GetOutputChannels(stream->decoder);
+				if (info.nChans > 1 && outChannels == 1) {
+					memmove(stream->writeBuf, stream->decodeBuf,
+						info.outputSamps * sizeof(short));
+					outSamps = info.outputSamps;
+				} else {
+					outSamps = MixFrame(stream->decodeBuf, stream->writeBuf,
+						info.outputSamps, info.nChans, 1);
+					outChannels = 1;
+				}
 			}
 			if (!opt->fastLowrate && opt->outputRate &&
 				info.samprate > opt->outputRate) {
@@ -1943,6 +1950,8 @@ int main(int argc, char **argv)
 	if (opt.stereo)
 		fprintf(stderr, "Stereo playback needs significantly more CPU and may underrun on 030.\n");
 
+	MP3SetOutputMono(decoder, opt.mono && !opt.stereo);
+
 	if (opt.fastLowrate) {
 		int stride = FastLowrateStrideForOutputRate(opt.outputRate);
 		MP3SetFastLowrate(decoder, stride);
@@ -2129,10 +2138,12 @@ int main(int argc, char **argv)
 		if (opt.decodeOnly) {
 			const short *accountBuf;
 			int accountSamps;
+			int decoderOutputChannels;
 
 			accountBuf = decodeBuf;
 			accountSamps = info.outputSamps;
-			if (opt.mono && info.nChans > 1) {
+			decoderOutputChannels = MP3GetOutputChannels(decoder);
+			if (opt.mono && info.nChans > 1 && decoderOutputChannels != 1) {
 				accountSamps = MixFrame(decodeBuf, writeBuf, info.outputSamps,
 					info.nChans, 1);
 				accountBuf = writeBuf;
@@ -2149,9 +2160,16 @@ int main(int argc, char **argv)
 
 			if (opt.bench)
 				t0 = clock();
-			outSamps = MixFrame(decodeBuf, writeBuf, info.outputSamps,
-				info.nChans, opt.mono);
-			outChannels = (opt.mono || info.nChans <= 1) ? 1 : info.nChans;
+			outChannels = MP3GetOutputChannels(decoder);
+			if (opt.mono && info.nChans > 1 && outChannels == 1) {
+				if (writeBuf != decodeBuf)
+					memmove(writeBuf, decodeBuf, info.outputSamps * sizeof(short));
+				outSamps = info.outputSamps;
+			} else {
+				outSamps = MixFrame(decodeBuf, writeBuf, info.outputSamps,
+					info.nChans, opt.mono);
+				outChannels = (opt.mono || info.nChans <= 1) ? 1 : info.nChans;
+			}
 			stats.outputChannels = outChannels;
 			if (!opt.fastLowrate && opt.outputRate && info.samprate > opt.outputRate) {
 				outSamps = DownsampleFrame(&rateState, writeBuf, rateBuf, outSamps,
