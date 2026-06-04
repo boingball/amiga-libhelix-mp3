@@ -163,6 +163,7 @@ int MP3GetFastLowrateStride(HMP3Decoder hMP3Decoder);
 int MP3GetFastLowrateDebug(HMP3Decoder hMP3Decoder,
 	MP3FastLowrateGranuleDebug *debug, int maxDebug);
 
+void MP3SetDecodeCoreProfileEnabled(int enabled);
 void MP3ResetDecodeCoreProfile(void);
 void MP3GetDecodeCoreProfile(MP3DecodeCoreProfile *profile);
 int MP3DecodeCoreProfileIsEnabled(void);

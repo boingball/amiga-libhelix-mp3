@@ -347,6 +347,7 @@ static void PrintUsage(const char *prog)
 	printf("  --fibdelta   use 8SVX Fibonacci Delta compression (implies --8svx)\n");
 	printf("  --bench      print elapsed decode/write time and realtime ratio\n");
 	printf("  --play       AmigaOS experimental audio.device Paula playback (mono s8)\n");
+	printf("  --play-fast-path accepted alias; --play already uses reduced-overhead playback\n");
 	printf("  --decode-then-play decode whole MP3 to RAM, then play (debug for --play)\n");
 	printf("  --buffer-seconds N playback buffer seconds per double buffer (default 2)\n");
 	printf("  --decode-only decode frames only; skip PCM conversion and output\n");
@@ -390,6 +391,10 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 		} else if (!strcmp(argv[i], "--bench")) {
 			opt->bench = 1;
 		} else if (!strcmp(argv[i], "--play")) {
+			opt->play = 1;
+			opt->outFormat = OUT_S8;
+			opt->mono = 1;
+		} else if (!strcmp(argv[i], "--play-fast-path")) {
 			opt->play = 1;
 			opt->outFormat = OUT_S8;
 			opt->mono = 1;
@@ -570,10 +575,11 @@ static int TimedFputc(int c, FILE *fp)
 
 	if (!fp)
 		return c;
+	if (!gTiming)
+		return fputc(c, fp);
 	t0 = clock();
 	r = fputc(c, fp);
-	if (gTiming)
-		gTiming->fileWrite += clock() - t0;
+	gTiming->fileWrite += clock() - t0;
 	return r;
 }
 
@@ -584,10 +590,11 @@ static size_t TimedFwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp)
 
 	if (!fp)
 		return nmemb;
+	if (!gTiming)
+		return fwrite(ptr, size, nmemb, fp);
 	t0 = clock();
 	r = fwrite(ptr, size, nmemb, fp);
-	if (gTiming)
-		gTiming->fileWrite += clock() - t0;
+	gTiming->fileWrite += clock() - t0;
 	return r;
 }
 
@@ -757,11 +764,15 @@ static void SvxWriteFibSample(SvxWriter *svx, signed char sample)
 	if (!svx->fibStarted)
 		SvxStartFibDelta(svx, sample);
 
-	t0 = clock();
-	nibble = FibDeltaNibble(svx->fibPrev, sample);
-	svx->fibPrev = FibDeltaApply(svx->fibPrev, nibble);
-	if (gTiming)
+	if (gTiming) {
+		t0 = clock();
+		nibble = FibDeltaNibble(svx->fibPrev, sample);
+		svx->fibPrev = FibDeltaApply(svx->fibPrev, nibble);
 		gTiming->fibCompress += clock() - t0;
+	} else {
+		nibble = FibDeltaNibble(svx->fibPrev, sample);
+		svx->fibPrev = FibDeltaApply(svx->fibPrev, nibble);
+	}
 	if (!svx->fibHaveHighNibble) {
 		svx->fibPending = (unsigned char)((nibble & 15) << 4);
 		svx->fibHaveHighNibble = 1;
@@ -1202,12 +1213,14 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 		stream->readPtr += offset;
 		stream->bytesLeft -= offset;
 
-		{
+		if (stream->timing) {
 			clock_t t0 = clock();
 			err = MP3Decode(stream->decoder, &stream->readPtr,
 				&stream->bytesLeft, stream->decodeBuf, 0);
-			if (stream->timing)
-				stream->timing->frameDecode += clock() - t0;
+			stream->timing->frameDecode += clock() - t0;
+		} else {
+			err = MP3Decode(stream->decoder, &stream->readPtr,
+				&stream->bytesLeft, stream->decodeBuf, 0);
 		}
 		if (err) {
 			if (err == ERR_MP3_INDATA_UNDERFLOW) {
@@ -1235,7 +1248,8 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 			int i;
 			clock_t t0;
 
-			t0 = clock();
+			if (stream->timing)
+				t0 = clock();
 			outSamps = MixFrame(stream->decodeBuf, stream->writeBuf,
 				info.outputSamps, info.nChans, 1);
 			outChannels = 1;
@@ -1701,14 +1715,20 @@ int main(int argc, char **argv)
 
 	if (opt.play) {
 		int playErr;
-		gTiming = &timing;
-		MP3ResetDecodeCoreProfile();
-		startClock = clock();
+		TimingStats *playTiming;
+		playTiming = opt.bench ? &timing : NULL;
+		gTiming = playTiming;
+		MP3SetDecodeCoreProfileEnabled(opt.bench);
+		if (opt.bench) {
+			MP3ResetDecodeCoreProfile();
+			startClock = clock();
+		}
 		if (opt.decodeThenPlay)
-			playErr = AmigaPlayDecodeThenPlay(infile, decoder, &opt, &stats, &timing);
+			playErr = AmigaPlayDecodeThenPlay(infile, decoder, &opt, &stats, playTiming);
 		else
-			playErr = AmigaPlayStreaming(infile, decoder, &opt, &stats, &timing);
-		endClock = clock();
+			playErr = AmigaPlayStreaming(infile, decoder, &opt, &stats, playTiming);
+		if (opt.bench)
+			endClock = clock();
 		if (!stats.outputSampleRate)
 			stats.outputSampleRate = PlaybackOutputSampleRate(&opt, &stats);
 		printf("input sample rate: %d Hz\n", stats.sampleRate);
@@ -1738,6 +1758,7 @@ int main(int argc, char **argv)
 		MP3FreeDecoder(decoder);
 		fclose(infile);
 		gTiming = NULL;
+		MP3SetDecodeCoreProfileEnabled(0);
 		free(resolvedOutName);
 		AmigaFreeNormalizedArgs(&normalized);
 		return playErr == 0 ? 0 : 1;
@@ -1749,10 +1770,13 @@ int main(int argc, char **argv)
 	svxOpen = 0;
 	verifyError = 0;
 	readPtr = readBuf;
-	gTiming = &timing;
-	MP3ResetDecodeCoreProfile();
+	gTiming = opt.bench ? &timing : NULL;
+	MP3SetDecodeCoreProfileEnabled(opt.bench);
+	if (opt.bench)
+		MP3ResetDecodeCoreProfile();
 	effectiveRate = 0;
-	startClock = clock();
+	if (opt.bench)
+		startClock = clock();
 
 	while (!outOfData) {
 		int nRead;
@@ -1775,10 +1799,12 @@ int main(int argc, char **argv)
 		readPtr += offset;
 		bytesLeft -= offset;
 
-		{
+		if (opt.bench) {
 			clock_t t0 = clock();
 			err = MP3Decode(decoder, &readPtr, &bytesLeft, decodeBuf, 0);
 			timing.frameDecode += clock() - t0;
+		} else {
+			err = MP3Decode(decoder, &readPtr, &bytesLeft, decodeBuf, 0);
 		}
 		if (err) {
 			if (err == ERR_MP3_INDATA_UNDERFLOW) {
@@ -1829,9 +1855,14 @@ int main(int argc, char **argv)
 			if (opt.noOutput) {
 				InitNoOutputSvx(&svx, opt.compression);
 			} else {
-				clock_t t0 = clock();
-				int beginErr = SvxBegin(&svx, outfile, effectiveRate, opt.compression);
-				timing.svxWrite += clock() - t0;
+				int beginErr;
+				if (opt.bench) {
+					clock_t t0 = clock();
+					beginErr = SvxBegin(&svx, outfile, effectiveRate, opt.compression);
+					timing.svxWrite += clock() - t0;
+				} else {
+					beginErr = SvxBegin(&svx, outfile, effectiveRate, opt.compression);
+				}
 				if (beginErr != 0) {
 					fprintf(stderr, "cannot write 8SVX header\n");
 					outOfData = 1;
@@ -1852,7 +1883,8 @@ int main(int argc, char **argv)
 			int writeErr;
 			clock_t t0;
 
-			t0 = clock();
+			if (opt.bench)
+				t0 = clock();
 			outSamps = MixFrame(decodeBuf, writeBuf, info.outputSamps,
 				info.nChans, opt.mono);
 			outChannels = (opt.mono || info.nChans <= 1) ? 1 : info.nChans;
@@ -1864,12 +1896,17 @@ int main(int argc, char **argv)
 			if (opt.checksum && opt.fastLowrate)
 				stats.pcmChecksum = UpdatePcmChecksum(stats.pcmChecksum, writeBuf,
 					outSamps);
-			timing.pcmConvert += clock() - t0;
+			if (opt.bench)
+				timing.pcmConvert += clock() - t0;
 
 			if (opt.outFormat == OUT_8SVX) {
-				t0 = clock();
-				writeErr = SvxWriteSamples(&svx, writeBuf, outSamps);
-				timing.svxWrite += clock() - t0;
+				if (opt.bench) {
+					t0 = clock();
+					writeErr = SvxWriteSamples(&svx, writeBuf, outSamps);
+					timing.svxWrite += clock() - t0;
+				} else {
+					writeErr = SvxWriteSamples(&svx, writeBuf, outSamps);
+				}
 			} else {
 				writeErr = WriteRawSamples(opt.noOutput ? NULL : outfile, writeBuf,
 					outSamps, opt.outFormat);
@@ -1887,7 +1924,9 @@ int main(int argc, char **argv)
 	}
 
 	if (svxOpen) {
-		clock_t t0 = clock();
+		clock_t t0;
+		if (opt.bench)
+			t0 = clock();
 		if (SvxEnd(&svx) != 0) {
 			fprintf(stderr, "error finalizing 8SVX file\n");
 			verifyError = 1;
@@ -1904,10 +1943,12 @@ int main(int argc, char **argv)
 				svx.bodyBytes, svx.sourceSamples);
 			verifyError = 1;
 		}
-		timing.svxWrite += clock() - t0;
+		if (opt.bench)
+			timing.svxWrite += clock() - t0;
 	}
 
-	endClock = clock();
+	if (opt.bench)
+		endClock = clock();
 
 	if (!stats.outputSampleRate)
 		stats.outputSampleRate = effectiveRate ? effectiveRate : stats.sampleRate;
@@ -1971,6 +2012,7 @@ int main(int argc, char **argv)
 	if (outfile)
 		fclose(outfile);
 	gTiming = NULL;
+	MP3SetDecodeCoreProfileEnabled(0);
 	free(resolvedOutName);
 	AmigaFreeNormalizedArgs(&normalized);
 

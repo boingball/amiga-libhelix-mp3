@@ -54,6 +54,7 @@
 
 
 static MP3DecodeCoreProfile gDecodeCoreProfile;
+static int gDecodeCoreProfileEnabled;
 
 void MP3ResetDecodeCoreProfile(void)
 {
@@ -66,10 +67,20 @@ void MP3GetDecodeCoreProfile(MP3DecodeCoreProfile *profile)
 		memcpy(profile, &gDecodeCoreProfile, sizeof(*profile));
 }
 
+void MP3SetDecodeCoreProfileEnabled(int enabled)
+{
+#ifdef AMIGA_PROFILE_DECODE
+	gDecodeCoreProfileEnabled = enabled ? 1 : 0;
+#else
+	(void)enabled;
+	gDecodeCoreProfileEnabled = 0;
+#endif
+}
+
 int MP3DecodeCoreProfileIsEnabled(void)
 {
 #ifdef AMIGA_PROFILE_DECODE
-	return 1;
+	return gDecodeCoreProfileEnabled;
 #else
 	return 0;
 #endif
