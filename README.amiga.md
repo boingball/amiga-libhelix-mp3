@@ -84,6 +84,14 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   half-buffers and prints the reduced byte count instead of failing immediately.
   Playback reports both the total underrun count and per-buffer underrun
   counters at exit.
+- `--debug-play` prints startup diagnostics for Paula streaming, including the
+  actual output rate, PAL period, requested buffer depth, selected half-buffer
+  samples/bytes, chip submission buffer addresses/sizes, optional stereo work
+  buffer addresses/sizes, first fill count, and first `CMD_WRITE` submit/complete
+  milestones. The streaming startup path allocates the playback buffers before
+  filling buffer A, submits that first non-empty buffer immediately, fills buffer
+  B while A is active, and never waits on an audio I/O request that has not been
+  submitted.
 - `--decode-then-play` is a `--play` debug mode that decodes the whole MP3 to
   RAM as signed 8-bit PCM first (mono by default, or stereo with `--stereo`), then plays the resulting buffer via
   `audio.device`, which helps separate decoder/streaming issues from playback
