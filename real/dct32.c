@@ -143,7 +143,7 @@ static const int dcttab[48] = {
 // about 1ms faster in RAM
 void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
 {
-    int i, s, tmp, es;
+    int i, s, tmp, es, oddBase, evenBase, delayOff, clipBits;
     const int *cptr = dcttab;
     int a0, a1, a2, a3, a4, a5, a6, a7;
     int b0, b1, b2, b3, b4, b5, b6, b7;
@@ -199,12 +199,16 @@ void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
 	}
 	buf -= 32;	/* reset */
 
+	oddBase = oddBlock ? VBUF_LENGTH : 0;
+	evenBase = oddBlock ? 0 : VBUF_LENGTH;
+	delayOff = (offset - oddBlock) & 7;
+
 	/* sample 0 - always delayed one block */
-	d = dest + 64*16 + ((offset - oddBlock) & 7) + (oddBlock ? 0 : VBUF_LENGTH);
+	d = dest + 64*16 + delayOff + evenBase;
 	s = buf[ 0];				d[0] = d[8] = s;
     
 	/* samples 16 to 31 */
-	d = dest + offset + (oddBlock ? VBUF_LENGTH  : 0);
+	d = dest + offset + oddBase;
 
 	s = buf[ 1];				d[0] = d[8] = s;	d += 64;
 
@@ -232,7 +236,7 @@ void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
 	s = tmp;					d[0] = d[8] = s;
 
 	/* samples 16 to 1 (sample 16 used again) */
-	d = dest + 16 + ((offset - oddBlock) & 7) + (oddBlock ? 0 : VBUF_LENGTH);
+	d = dest + 16 + delayOff + evenBase;
 
 	s = buf[ 1];				d[0] = d[8] = s;	d += 64;
 
@@ -264,17 +268,18 @@ void FDCT32(int *buf, int *dest, int offset, int oddBlock, int gb)
 	 * here we just load, clip, shift, and store on the rare instances that es != 0
 	 */
 	if (es) {
-		d = dest + 64*16 + ((offset - oddBlock) & 7) + (oddBlock ? 0 : VBUF_LENGTH);
-		s = d[0];	CLIP_2N(s, 31 - es);	d[0] = d[8] = (s << es);
+		clipBits = 31 - es;
+		d = dest + 64*16 + delayOff + evenBase;
+		s = d[0];	CLIP_2N(s, clipBits);	d[0] = d[8] = (s << es);
 	
-		d = dest + offset + (oddBlock ? VBUF_LENGTH  : 0);
+		d = dest + offset + oddBase;
 		for (i = 16; i <= 31; i++) {
-			s = d[0];	CLIP_2N(s, 31 - es);	d[0] = d[8] = (s << es);	d += 64;
+			s = d[0];	CLIP_2N(s, clipBits);	d[0] = d[8] = (s << es);	d += 64;
 		}
 
-		d = dest + 16 + ((offset - oddBlock) & 7) + (oddBlock ? 0 : VBUF_LENGTH);
+		d = dest + 16 + delayOff + evenBase;
 		for (i = 15; i >= 0; i--) {
-			s = d[0];	CLIP_2N(s, 31 - es);	d[0] = d[8] = (s << es);	d += 64;
+			s = d[0];	CLIP_2N(s, clipBits);	d[0] = d[8] = (s << es);	d += 64;
 		}
 	}
 }

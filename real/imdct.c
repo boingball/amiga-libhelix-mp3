@@ -212,22 +212,23 @@ static __inline void FreqInvertOdd(int *y)
 
 static int FreqInvertRescale(int *y, int *xPrev, int blockIdx, int es)
 {
-	int i, d, mOut;
+	int i, d, mOut, clipBits, shifted;
 
 	/* undo pre-IMDCT scaling, clipping if necessary */
 	mOut = 0;
+	clipBits = 31 - es;
 	if (blockIdx & 0x01) {
 		/* frequency invert */
-		for (i = 0; i < 18; i+=2) {
-			d = *y;		CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
-			d = -*y;	CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
-			d = *xPrev;	CLIP_2N(d, 31 - es);	*xPrev++ = d << es;
+		for (i = 9; i > 0; i--) {
+			d = *y;		CLIP_2N(d, clipBits);	shifted = d << es;	*y = shifted;	mOut |= FASTABS(shifted);	y += NBANDS;
+			d = -*y;	CLIP_2N(d, clipBits);	shifted = d << es;	*y = shifted;	mOut |= FASTABS(shifted);	y += NBANDS;
+			d = *xPrev;	CLIP_2N(d, clipBits);	*xPrev++ = d << es;
 		}
 	} else {
-		for (i = 0; i < 18; i+=2) {
-			d = *y;		CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
-			d = *y;		CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
-			d = *xPrev;	CLIP_2N(d, 31 - es);	*xPrev++ = d << es;
+		for (i = 9; i > 0; i--) {
+			d = *y;		CLIP_2N(d, clipBits);	shifted = d << es;	*y = shifted;	mOut |= FASTABS(shifted);	y += NBANDS;
+			d = *y;		CLIP_2N(d, clipBits);	shifted = d << es;	*y = shifted;	mOut |= FASTABS(shifted);	y += NBANDS;
+			d = *xPrev;	CLIP_2N(d, clipBits);	*xPrev++ = d << es;
 		}
 	}
 	return mOut;
@@ -370,8 +371,8 @@ static int IMDCT36(int *xCurr, int *xPrev, int *y, int btCurr, int btPrev, int b
 {
 	int i, es, xBuf[18], xPrevWin[18];
 	int acc1, acc2, s, d, t, mOut;
-	int xo, xe, c, *xp, yLo, yHi;
-	const int *cp, *wp;
+	int xo, xe, c, *xp, *xpwLo, *xpwHi, *ypLo, *ypHi, yLo, yHi;
+	const int *cp, *wp, *wpLo, *wpHi;
 
 	acc1 = acc2 = 0;
 	xCurr += 17;
@@ -413,8 +414,9 @@ static int IMDCT36(int *xCurr, int *xPrev, int *y, int btCurr, int btPrev, int b
 	if (btPrev == 0 && btCurr == 0) {
 		/* fast path - use symmetry of sin window to reduce windowing multiplies to 18 (N/2) */
 		wp = fastWin36;
-		for (i = 0; i < 9; i++) {
-			/* do ARM-style pointer arithmetic (i still needed for y[] indexing - compiler spills if 2 y pointers) */
+		ypLo = y;
+		ypHi = y + 17*NBANDS;
+		for (i = 9; i > 0; i--) {
 			c = *cp--;	xo = *(xp + 9);		xe = *xp--;
 			/* gain 2 int bits here */
 			xo = MULSHIFT32(c, xo);			/* 2*c18*xOdd (mul by 2 implicit in scaling)  */
@@ -427,8 +429,8 @@ static int IMDCT36(int *xCurr, int *xPrev, int *y, int btCurr, int btPrev, int b
 
 			yLo = (d + (MULSHIFT32(t, *wp++) << 2));
 			yHi = (s + (MULSHIFT32(t, *wp++) << 2));
-			y[(i)*NBANDS]    = 	yLo;
-			y[(17-i)*NBANDS] =  yHi;
+			*ypLo = yLo;		ypLo += NBANDS;
+			*ypHi = yHi;		ypHi -= NBANDS;
 			mOut |= FASTABS(yLo);
 			mOut |= FASTABS(yHi);
 		}
@@ -438,8 +440,13 @@ static int IMDCT36(int *xCurr, int *xPrev, int *y, int btCurr, int btPrev, int b
 		 */
 		WinPrevious(xPrev, xPrevWin, btPrev);
 
-		wp = imdctWin[btCurr];
-		for (i = 0; i < 9; i++) {
+		wpLo = imdctWin[btCurr];
+		wpHi = wpLo + 17;
+		xpwLo = xPrevWin;
+		xpwHi = xPrevWin + 17;
+		ypLo = y;
+		ypHi = y + 17*NBANDS;
+		for (i = 9; i > 0; i--) {
 			c = *cp--;	xo = *(xp + 9);		xe = *xp--;
 			/* gain 2 int bits here */
 			xo = MULSHIFT32(c, xo);			/* 2*c18*xOdd (mul by 2 implicit in scaling)  */
@@ -448,10 +455,10 @@ static int IMDCT36(int *xCurr, int *xPrev, int *y, int btCurr, int btPrev, int b
 			d = xe - xo;
 			(*xPrev++) = xe + xo;	/* symmetry - xPrev[i] = xPrev[17-i] for long blocks */
 			
-			yLo = (xPrevWin[i]    + MULSHIFT32(d, wp[i])) << 2;
-			yHi = (xPrevWin[17-i] + MULSHIFT32(d, wp[17-i])) << 2;
-			y[(i)*NBANDS]    = yLo;
-			y[(17-i)*NBANDS] = yHi;
+			yLo = (*xpwLo++ + MULSHIFT32(d, *wpLo++)) << 2;
+			yHi = (*xpwHi-- + MULSHIFT32(d, *wpHi--)) << 2;
+			*ypLo = yLo;		ypLo += NBANDS;
+			*ypHi = yHi;		ypHi -= NBANDS;
 			mOut |= FASTABS(yLo);
 			mOut |= FASTABS(yHi);
 		}
