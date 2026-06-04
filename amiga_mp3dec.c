@@ -1617,6 +1617,22 @@ static void AmigaFreeAudioBuffer(signed char *buf, unsigned long bytes)
 	if (buf)
 		FreeMem(buf, bytes);
 }
+
+static signed char *AmigaAllocPlaybackWorkBuffer(int stereo, unsigned long bytes)
+{
+	if (stereo)
+		return (signed char *)malloc(bytes);
+	return AmigaAllocAudioBuffer(bytes);
+}
+
+static void AmigaFreePlaybackWorkBuffer(int stereo, signed char *buf,
+	unsigned long bytes)
+{
+	if (stereo)
+		free(buf);
+	else
+		AmigaFreeAudioBuffer(buf, bytes);
+}
 #else
 typedef struct AmigaAudioPlayer { int stereo; } AmigaAudioPlayer;
 static void AmigaAudioClose(AmigaAudioPlayer *player) { (void)player; }
@@ -1637,11 +1653,85 @@ static int AmigaAudioDone(AmigaAudioPlayer *player, int index)
 { (void)player; (void)index; return 1; }
 static void AmigaAudioWait(AmigaAudioPlayer *player, int index)
 { (void)player; (void)index; }
-static signed char *AmigaAllocAudioBuffer(unsigned long bytes)
-{ return (signed char *)malloc(bytes); }
-static void AmigaFreeAudioBuffer(signed char *buf, unsigned long bytes)
-{ (void)bytes; free(buf); }
+static signed char *AmigaAllocPlaybackWorkBuffer(int stereo, unsigned long bytes)
+{ (void)stereo; return (signed char *)malloc(bytes); }
+static void AmigaFreePlaybackWorkBuffer(int stereo, signed char *buf,
+	unsigned long bytes)
+{ (void)stereo; (void)bytes; free(buf); }
 #endif
+
+#define PLAYBACK_PREFILL_BYTES 4096UL
+
+static unsigned long AlignPlaybackChunkBytes(unsigned long bytes, int stereo)
+{
+	if (stereo && (bytes & 1UL))
+		bytes--;
+	if (bytes == 0)
+		bytes = stereo ? 2UL : 1UL;
+	return bytes;
+}
+
+static unsigned long PlaybackRequestedChunkBytes(const DecodeOptions *opt,
+	int playbackRate)
+{
+	unsigned long bytes;
+
+	bytes = (unsigned long)playbackRate *
+		(unsigned long)opt->bufferSeconds * (opt->stereo ? 2UL : 1UL);
+	return AlignPlaybackChunkBytes(bytes, opt->stereo);
+}
+
+static int AmigaSetupPlaybackBuffers(AmigaAudioPlayer *player,
+	const DecodeOptions *opt, unsigned int period, unsigned long requestedBytes,
+	unsigned long minBytes, signed char *buf[2], unsigned long *chunkBytes)
+{
+	unsigned long tryBytes;
+
+	buf[0] = NULL;
+	buf[1] = NULL;
+	tryBytes = AlignPlaybackChunkBytes(requestedBytes, opt->stereo);
+	minBytes = AlignPlaybackChunkBytes(minBytes, opt->stereo);
+	if (minBytes == 0)
+		minBytes = opt->stereo ? 2UL : 1UL;
+	if (tryBytes < minBytes)
+		tryBytes = minBytes;
+
+	while (tryBytes >= minBytes) {
+		if (AmigaAudioOpen(player, period, opt->stereo, tryBytes) == 0) {
+			buf[0] = AmigaAllocPlaybackWorkBuffer(opt->stereo, tryBytes);
+			buf[1] = AmigaAllocPlaybackWorkBuffer(opt->stereo, tryBytes);
+			if (buf[0] && buf[1]) {
+				*chunkBytes = tryBytes;
+				if (tryBytes != requestedBytes)
+					printf("play buffer reduced to %lu bytes per half-buffer\n",
+						tryBytes);
+				return 0;
+			}
+			AmigaFreePlaybackWorkBuffer(opt->stereo, buf[0], tryBytes);
+			AmigaFreePlaybackWorkBuffer(opt->stereo, buf[1], tryBytes);
+			buf[0] = NULL;
+			buf[1] = NULL;
+			AmigaAudioClose(player);
+		}
+
+		if (tryBytes <= minBytes)
+			break;
+		tryBytes = AlignPlaybackChunkBytes(tryBytes / 2UL, opt->stereo);
+		if (tryBytes < minBytes)
+			tryBytes = minBytes;
+	}
+
+	fprintf(stderr, "cannot allocate audio buffers (requested %lu bytes per half-buffer)\n",
+		requestedBytes);
+	return -1;
+}
+
+static void AmigaFreePlaybackBuffers(const DecodeOptions *opt, signed char *buf[2],
+	unsigned long chunkBytes)
+{
+	AmigaFreePlaybackWorkBuffer(opt->stereo, buf[0], chunkBytes);
+	AmigaFreePlaybackWorkBuffer(opt->stereo, buf[1], chunkBytes);
+}
 
 static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes,
 	const DecodeOptions *opt, DecodeStats *stats)
@@ -1663,19 +1753,10 @@ static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes
 		printf("play output rate: %d Hz\n", playbackRate);
 	}
 	printf("PAL audio period: %u\n", period);
-	chunkBytes = (unsigned long)PlaybackOutputSampleRate(opt, stats) *
-		(unsigned long)opt->bufferSeconds * (opt->stereo ? 2UL : 1UL);
-	if (AmigaAudioOpen(&player, period, opt->stereo, chunkBytes) != 0)
+	chunkBytes = PlaybackRequestedChunkBytes(opt, PlaybackOutputSampleRate(opt, stats));
+	if (AmigaSetupPlaybackBuffers(&player, opt, period, chunkBytes, 1UL,
+		buf, &chunkBytes) != 0)
 		return -1;
-	buf[0] = AmigaAllocAudioBuffer(chunkBytes);
-	buf[1] = AmigaAllocAudioBuffer(chunkBytes);
-	if (!buf[0] || !buf[1]) {
-		fprintf(stderr, "cannot allocate audio buffers\n");
-		AmigaFreeAudioBuffer(buf[0], chunkBytes);
-		AmigaFreeAudioBuffer(buf[1], chunkBytes);
-		AmigaAudioClose(&player);
-		return -1;
-	}
 	pos = 0;
 	for (cur = 0; cur < 2; cur++) {
 		len[cur] = totalBytes - pos;
@@ -1706,8 +1787,7 @@ static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes
 	}
 	if (pending)
 		AmigaAudioWait(&player, 1 - cur);
-	AmigaFreeAudioBuffer(buf[0], chunkBytes);
-	AmigaFreeAudioBuffer(buf[1], chunkBytes);
+	AmigaFreePlaybackBuffers(opt, buf, chunkBytes);
 	AmigaAudioClose(&player);
 	(void)stats;
 	return 0;
@@ -1758,7 +1838,10 @@ static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
 	AmigaAudioPlayer player;
 	unsigned int period;
 	unsigned long bufBytes;
+	unsigned long requestedBytes;
 	signed char *buf[2];
+	signed char prefill[PLAYBACK_PREFILL_BYTES];
+	unsigned long prefillLen;
 	unsigned long len[2];
 	int cur;
 	int first;
@@ -1766,31 +1849,29 @@ static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
 	int pending;
 	int err;
 
-	bufBytes = (unsigned long)opt->outputRate * (unsigned long)opt->bufferSeconds *
-		(opt->stereo ? 2UL : 1UL);
-	buf[0] = AmigaAllocAudioBuffer(bufBytes);
-	buf[1] = AmigaAllocAudioBuffer(bufBytes);
-	if (!buf[0] || !buf[1]) {
-		fprintf(stderr, "cannot allocate audio buffers\n");
-		AmigaFreeAudioBuffer(buf[0], bufBytes);
-		AmigaFreeAudioBuffer(buf[1], bufBytes);
-		return -1;
-	}
 	DecodeStreamInit(&stream, infile, decoder, stats, timing);
-	len[0] = (unsigned long)DecodeStreamFillS8(&stream, opt, buf[0], (int)bufBytes);
-	len[1] = (unsigned long)DecodeStreamFillS8(&stream, opt, buf[1], (int)bufBytes);
+	prefillLen = (unsigned long)DecodeStreamFillS8(&stream, opt, prefill,
+		(int)sizeof(prefill));
+	if (prefillLen == 0)
+		return 0;
 	{
 		int playbackRate = PlaybackOutputSampleRate(opt, stats);
 		period = AmigaPalAudioPeriod(playbackRate);
 		PrintFastLowrateOutputRateDifference(opt, playbackRate);
 		printf("play output rate: %d Hz\n", playbackRate);
+		requestedBytes = PlaybackRequestedChunkBytes(opt, playbackRate);
 	}
 	printf("PAL audio period: %u\n", period);
-	if (AmigaAudioOpen(&player, period, opt->stereo, bufBytes) != 0) {
-		AmigaFreeAudioBuffer(buf[0], bufBytes);
-		AmigaFreeAudioBuffer(buf[1], bufBytes);
+	if (AmigaSetupPlaybackBuffers(&player, opt, period, requestedBytes,
+		prefillLen, buf, &bufBytes) != 0)
 		return -1;
-	}
+	memcpy(buf[0], prefill, prefillLen);
+	len[0] = prefillLen;
+	if (len[0] < bufBytes)
+		len[0] += (unsigned long)DecodeStreamFillS8(&stream, opt,
+			buf[0] + len[0], (int)(bufBytes - len[0]));
+	len[1] = (unsigned long)DecodeStreamFillS8(&stream, opt, buf[1],
+		(int)bufBytes);
 	cur = 0;
 	first = 1;
 	pending = 0;
@@ -1817,8 +1898,7 @@ static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
 	if (pending)
 		AmigaAudioWait(&player, 1 - cur);
 	AmigaAudioClose(&player);
-	AmigaFreeAudioBuffer(buf[0], bufBytes);
-	AmigaFreeAudioBuffer(buf[1], bufBytes);
+	AmigaFreePlaybackBuffers(opt, buf, bufBytes);
 	return err;
 }
 

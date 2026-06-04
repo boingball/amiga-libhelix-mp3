@@ -74,12 +74,16 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   prints `Stereo playback needs significantly more CPU and may underrun on 030.`
 - `--play-fast-path` is accepted as an explicit alias for `--play`; the normal
   `--play` mode already uses this reduced-overhead streaming path.
-- `--buffer-seconds N` chooses the per-buffer playback depth for `--play`; the
-  default is 2 seconds, so the player allocates two mono buffers of
-  `output_rate * N` bytes, or two stereo/interleaved buffers of
-  `output_rate * N * 2` bytes, and tries to prefill both before starting
-  playback. Playback reports both the total underrun count and per-buffer
-  underrun counters at exit.
+- `--buffer-seconds N` chooses the requested per-buffer playback depth for
+  `--play`; the default is 2 seconds. Mono playback submits its double buffers
+  directly to `audio.device`, so those buffers must be chip memory. Stereo
+  playback keeps the interleaved decode work buffers in normal RAM where
+  possible and uses chip memory only for the deinterleaved Paula left/right
+  submission buffers. If the requested 22050 Hz or stereo buffer set is too
+  large for available memory, playback automatically retries with smaller
+  half-buffers and prints the reduced byte count instead of failing immediately.
+  Playback reports both the total underrun count and per-buffer underrun
+  counters at exit.
 - `--decode-then-play` is a `--play` debug mode that decodes the whole MP3 to
   RAM as signed 8-bit PCM first (mono by default, or stereo with `--stereo`), then plays the resulting buffer via
   `audio.device`, which helps separate decoder/streaming issues from playback
