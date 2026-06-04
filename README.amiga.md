@@ -53,7 +53,12 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   030 safety; `--rate 11025` is also accepted. Playback rates imply
   `--fast-lowrate`, print the requested and actual output rates when fixed
   stride output differs, and calculate the PAL audio period as
-  `3546895 / actual_output_rate`.
+  `3546895 / actual_output_rate`. Playback automatically uses the reduced-
+  overhead fast path: checksums run only with `--checksum`, timing buckets and
+  decode-core profiling run only with `--bench`, and export/8SVX/Fibonacci state
+  is not touched while streaming to `audio.device`.
+- `--play-fast-path` is accepted as an explicit alias for `--play`; the normal
+  `--play` mode already uses this reduced-overhead streaming path.
 - `--buffer-seconds N` chooses the per-buffer playback depth for `--play`; the
   default is 2 seconds, so the player allocates two buffers of
   `output_rate * N` bytes and tries to prefill both before starting playback.

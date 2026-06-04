@@ -4,9 +4,10 @@
 #include "mp3dec.h"
 
 #ifdef AMIGA_PROFILE_DECODE
-#define AMIGA_PROFILE_START(t) ((t) = clock())
+#define AMIGA_PROFILE_START(t) \
+	do { if (MP3DecodeCoreProfileIsEnabled()) (t) = clock(); else (t) = 0; } while (0)
 #define AMIGA_PROFILE_STOP(bucket, t) \
-	do { MP3AddDecodeCoreProfile((bucket), clock() - (t)); } while (0)
+	do { if (MP3DecodeCoreProfileIsEnabled()) MP3AddDecodeCoreProfile((bucket), clock() - (t)); } while (0)
 #else
 #define AMIGA_PROFILE_START(t) ((void)(t))
 #define AMIGA_PROFILE_STOP(bucket, t) \
