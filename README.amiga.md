@@ -104,7 +104,11 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   fixed stride of 5 for Amiga-rate experiments, so 44100 Hz input emits at
   8820 Hz and reports/plays/writes metadata at that actual emitted rate instead
   of labeling it as the requested 8287 Hz. Huffman/dequant, IMDCT, and FDCT32
-  still run at full MP3 rate; `--bench` reports those unchanged buckets.
+  still run at full MP3 rate for mono input; stereo input with `--mono` is
+  collapsed in the decoder after required MPEG stereo reconstruction, so the
+  right-channel IMDCT/FDCT32/polyphase work and full stereo PCM copy are skipped.
+  `--bench` reports the huffman, dequant, stereo/post, imdct, subband/dct32,
+  and polyphase buckets used to profile that path.
 - `--debug-fastlowrate` prints one line per decoded frame/granule with the
   full-rate sample count, low-rate samples emitted, cumulative low-rate samples,
   and destination offset range used for contiguous placement.

@@ -99,6 +99,7 @@ typedef struct _MP3DecInfo {
 	int fastLowratePhase;
 	int fastLowrateOutputSamps;
 	int fastLowrateDebugCount;
+	int outputMono;
 	MP3FastLowrateGranuleDebug fastLowrateDebug[MAX_NGRAN];
 
 } MP3DecInfo;

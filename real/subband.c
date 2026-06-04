@@ -68,6 +68,7 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 	int vindex;
 	int stride;
 	int *vbuf;
+	int outputMono;
 
 	/* validate pointers */
 	if (!mp3DecInfo || !mp3DecInfo->HuffmanInfoPS || !mp3DecInfo->IMDCTInfoPS || !mp3DecInfo->SubbandInfoPS)
@@ -81,7 +82,8 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 	vindex = sbi->vindex;
 	vbuf = sbi->vbuf;
 	stride = mp3DecInfo->fastLowrateStride;
-	if (mp3DecInfo->nChans == 2) {
+	outputMono = (mp3DecInfo->outputMono && mp3DecInfo->nChans == 2);
+	if (mp3DecInfo->nChans == 2 && !outputMono) {
 		/* stereo */
 		if (stride > 1) {
 			int phase;
