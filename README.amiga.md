@@ -74,24 +74,27 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   prints `Stereo playback needs significantly more CPU and may underrun on 030.`
 - `--play-fast-path` is accepted as an explicit alias for `--play`; the normal
   `--play` mode already uses this reduced-overhead streaming path.
-- `--buffer-seconds N` chooses the requested per-buffer playback depth for
-  `--play`; the default is 2 seconds. Mono playback submits its double buffers
+- `--buffer-seconds N` chooses the requested playback depth for each half of the
+  `--play` double buffer; the default is 4 seconds for safer 030 playback. Mono
+  playback submits its double buffers
   directly to `audio.device`, so those buffers must be chip memory. Stereo
   playback keeps the interleaved decode work buffers in normal RAM where
   possible and uses chip memory only for the deinterleaved Paula left/right
   submission buffers. If the requested 22050 Hz or stereo buffer set is too
   large for available memory, playback automatically retries with smaller
   half-buffers and prints the reduced byte count instead of failing immediately.
-  Playback reports both the total underrun count and per-buffer underrun
-  counters at exit.
+  Playback prints the selected half-buffer duration and byte size at startup, and
+  reports total underruns, per-buffer underruns, late-buffer count, and the
+  minimum measured spare time before a playing buffer ended at exit.
 - `--debug-play` prints startup diagnostics for Paula streaming, including the
   actual output rate, PAL period, requested buffer depth, selected half-buffer
   samples/bytes, chip submission buffer addresses/sizes, optional stereo work
-  buffer addresses/sizes, first fill count, and first `CMD_WRITE` submit/complete
-  milestones. The streaming startup path allocates the playback buffers before
-  pre-filling buffer A by decoded sample count (not amplitude), submits that
-  first non-empty buffer immediately, fills buffer B while A is active, and never
-  waits on an audio I/O request that has not been submitted. A silent first
+  buffer addresses/sizes, buffer A/B fill samples/bytes, every A/B `CMD_WRITE`
+  submit/complete milestone, and underrun detections. The streaming startup path
+  allocates the playback buffers before pre-filling both A and B by decoded
+  sample count (not amplitude), queues both non-empty buffers before rotation,
+  refills the completed half while the queued half is playing, and never waits on
+  an audio I/O request that has not been submitted. A silent first
   playback buffer is accepted so valid MP3 encoder delay, padding, or fade-ins
   can play normally; with `--debug-play`, an all-zero first buffer prints
   `first playback buffer is silent/near-silent`. Playback does not skip leading
