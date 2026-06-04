@@ -27,7 +27,7 @@ fallback.
 
 ```sh
 amiga_mp3dec [options] infile.mp3 outfile
-amiga_mp3dec --play [--rate 8287|11025|22050] [--buffer-seconds N] infile.mp3
+amiga_mp3dec --play [--stereo] [--rate 8287|8820|11025|22050] [--buffer-seconds N] infile.mp3
 ```
 
 Default output is raw signed 16-bit big-endian PCM. If `outfile` names an
@@ -51,10 +51,11 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
 - `--play` is an experimental AmigaOS Paula streaming mode for CD32/TF330-style
   68030 testing. It opens `audio.device`, decodes to mono signed 8-bit PCM, and
   streams with two chip-memory buffers. The default playback rate is 8287 Hz for
-  030 safety; `--rate 11025` is accepted, and `--rate 22050` is also accepted as
-  an experimental/high-CPU mono-first mode that may underrun on 030 systems.
-  Playback rates imply `--fast-lowrate`; 22050 Hz fast-lowrate playback prints
-  `22050 requires significantly more CPU and may underrun on 030 systems.`
+  030 safety; `--rate 8820` and `--rate 11025` are accepted, and `--rate 22050`
+  is also accepted as an experimental/high-CPU mono-first mode that may underrun
+  on 030 systems. Playback rates imply `--fast-lowrate`; 22050 Hz fast-lowrate
+  playback prints `22050 requires significantly more CPU and may underrun on
+  030 systems.`
   Playback prints the requested and actual output rates when fixed stride output
   differs, and calculates the PAL audio period from the actual output rate using
   rounded `3546895 / actual_output_rate` ticks, so 22050 Hz uses period 161.
@@ -62,13 +63,25 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   overhead fast path: checksums run only with `--checksum`, timing buckets and
   decode-core profiling run only with `--bench`, and export/8SVX/Fibonacci state
   is not touched while streaming to `audio.device`.
+- `--stereo` is opt-in only and applies only with `--play`. It keeps the default
+  mono path unchanged, writes signed 8-bit samples per channel, preserves decoded
+  left/right channels for stereo MP3 input where possible, and duplicates mono
+  MP3 input to both output channels. Stereo playback opens separate
+  `audio.device` allocations for one left Paula channel and one right Paula
+  channel, deinterleaving the playback buffers before submission. Stereo supports
+  `--rate 8820` and `--rate 11025` first; `--rate 22050` is allowed only as an
+  experimental/high-CPU stereo mode. `--rate 8287` is mono-only. Enabling stereo
+  prints `Stereo playback needs significantly more CPU and may underrun on 030.`
 - `--play-fast-path` is accepted as an explicit alias for `--play`; the normal
   `--play` mode already uses this reduced-overhead streaming path.
 - `--buffer-seconds N` chooses the per-buffer playback depth for `--play`; the
-  default is 2 seconds, so the player allocates two buffers of
-  `output_rate * N` bytes and tries to prefill both before starting playback.
+  default is 2 seconds, so the player allocates two mono buffers of
+  `output_rate * N` bytes, or two stereo/interleaved buffers of
+  `output_rate * N * 2` bytes, and tries to prefill both before starting
+  playback. Playback reports both the total underrun count and per-buffer
+  underrun counters at exit.
 - `--decode-then-play` is a `--play` debug mode that decodes the whole MP3 to
-  RAM as mono signed 8-bit PCM first, then plays the resulting buffer via
+  RAM as signed 8-bit PCM first (mono by default, or stereo with `--stereo`), then plays the resulting buffer via
   `audio.device`, which helps separate decoder/streaming issues from playback
   issues.
 - `--decode-only` decodes MP3 frames and skips PCM conversion plus all output.
@@ -76,14 +89,14 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
 - `--no-output` runs PCM conversion/downsampling and 8SVX/Fibonacci compression
   paths but discards bytes instead of touching an output file.  The output path
   argument is optional in this mode.
-- `--rate 22050`, `--rate 11025`, or `--rate 8287` post-decode downsamples the
+- `--rate 22050`, `--rate 11025`, `--rate 8820`, or `--rate 8287` post-decode downsamples the
   output with a lightweight nearest-sample decimator when the MP3 sample rate is
   higher than the requested output rate.
 - `--fast-lowrate` is an experimental, lower-quality Amiga conversion mode for
   speed experiments, not hi-fi playback. It requires one of the `--rate` values
   above. In `AMIGA_M68K` + `AMIGA_FAST_POLYPHASE` builds it writes only every
   second polyphase output sample for 22050 Hz, every fourth for 11025 Hz, and
-  roughly every fifth for 8287 Hz. This skips discarded polyphase sample work,
+  every fifth for 8820/8287 Hz. This skips discarded polyphase sample work,
   appends emitted samples through one cumulative low-rate output counter, and
   keeps the low-rate phase/stride state alive across granules and MP3 frames.
   For exact integer strides such as 44100 -> 11025, fast-lowrate selects the
