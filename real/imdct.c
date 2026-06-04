@@ -183,56 +183,54 @@ static void WinPrevious(int *xPrev, int *xPrevWin, int btPrev)
  *
  * Return:      updated mOut (from new outputs y)
  **************************************************************************************/
+static __inline void FreqInvertOdd(int *y)
+{
+	int y0, y1, y2, y3, y4, y5, y6, y7, y8;
+
+	y += NBANDS;
+	y0 = *y;	y += 2*NBANDS;
+	y1 = *y;	y += 2*NBANDS;
+	y2 = *y;	y += 2*NBANDS;
+	y3 = *y;	y += 2*NBANDS;
+	y4 = *y;	y += 2*NBANDS;
+	y5 = *y;	y += 2*NBANDS;
+	y6 = *y;	y += 2*NBANDS;
+	y7 = *y;	y += 2*NBANDS;
+	y8 = *y;	y += 2*NBANDS;
+
+	y -= 18*NBANDS;
+	*y = -y0;	y += 2*NBANDS;
+	*y = -y1;	y += 2*NBANDS;
+	*y = -y2;	y += 2*NBANDS;
+	*y = -y3;	y += 2*NBANDS;
+	*y = -y4;	y += 2*NBANDS;
+	*y = -y5;	y += 2*NBANDS;
+	*y = -y6;	y += 2*NBANDS;
+	*y = -y7;	y += 2*NBANDS;
+	*y = -y8;
+}
+
 static int FreqInvertRescale(int *y, int *xPrev, int blockIdx, int es)
 {
 	int i, d, mOut;
-	int y0, y1, y2, y3, y4, y5, y6, y7, y8;
 
-	if (es == 0) {
-		/* fast case - frequency invert only (no rescaling) - can fuse into overlap-add for speed, if desired */
-		if (blockIdx & 0x01) {
-			y += NBANDS;
-			y0 = *y;	y += 2*NBANDS;
-			y1 = *y;	y += 2*NBANDS;
-			y2 = *y;	y += 2*NBANDS;
-			y3 = *y;	y += 2*NBANDS;
-			y4 = *y;	y += 2*NBANDS;
-			y5 = *y;	y += 2*NBANDS;
-			y6 = *y;	y += 2*NBANDS;
-			y7 = *y;	y += 2*NBANDS;
-			y8 = *y;	y += 2*NBANDS;
-
-			y -= 18*NBANDS;
-			*y = -y0;	y += 2*NBANDS;
-			*y = -y1;	y += 2*NBANDS;
-			*y = -y2;	y += 2*NBANDS;
-			*y = -y3;	y += 2*NBANDS;
-			*y = -y4;	y += 2*NBANDS;
-			*y = -y5;	y += 2*NBANDS;
-			*y = -y6;	y += 2*NBANDS;
-			*y = -y7;	y += 2*NBANDS;
-			*y = -y8;	y += 2*NBANDS;
+	/* undo pre-IMDCT scaling, clipping if necessary */
+	mOut = 0;
+	if (blockIdx & 0x01) {
+		/* frequency invert */
+		for (i = 0; i < 18; i+=2) {
+			d = *y;		CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
+			d = -*y;	CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
+			d = *xPrev;	CLIP_2N(d, 31 - es);	*xPrev++ = d << es;
 		}
-		return 0;
 	} else {
-		/* undo pre-IMDCT scaling, clipping if necessary */
-		mOut = 0;
-		if (blockIdx & 0x01) {
-			/* frequency invert */
-			for (i = 0; i < 18; i+=2) {
-				d = *y;		CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
-				d = -*y;	CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
-				d = *xPrev;	CLIP_2N(d, 31 - es);	*xPrev++ = d << es;
-			}
-		} else {
-			for (i = 0; i < 18; i+=2) {
-				d = *y;		CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
-				d = *y;		CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
-				d = *xPrev;	CLIP_2N(d, 31 - es);	*xPrev++ = d << es;
-			}
+		for (i = 0; i < 18; i+=2) {
+			d = *y;		CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
+			d = *y;		CLIP_2N(d, 31 - es);	*y = d << es;	mOut |= FASTABS(*y);	y += NBANDS;
+			d = *xPrev;	CLIP_2N(d, 31 - es);	*xPrev++ = d << es;
 		}
-		return mOut;
 	}
+	return mOut;
 }
 
 /* format = Q31
@@ -460,7 +458,10 @@ static int IMDCT36(int *xCurr, int *xPrev, int *y, int btCurr, int btPrev, int b
 	}
 
 	xPrev -= 9;
-	mOut |= FreqInvertRescale(y, xPrev, blockIdx, es);
+	if (es)
+		mOut |= FreqInvertRescale(y, xPrev, blockIdx, es);
+	else if (blockIdx & 0x01)
+		FreqInvertOdd(y);
 
 	return mOut;
 }
@@ -590,7 +591,10 @@ static int IMDCT12x3(int *xCurr, int *xPrev, int *y, int btPrev, int blockIdx, i
 		*xPrev++ = xBuf[i] >> 2;
 
 	xPrev -= 9;
-	mOut |= FreqInvertRescale(y, xPrev, blockIdx, es);
+	if (es)
+		mOut |= FreqInvertRescale(y, xPrev, blockIdx, es);
+	else if (blockIdx & 0x01)
+		FreqInvertOdd(y);
 
 	return mOut;
 }
@@ -624,36 +628,53 @@ static int HybridTransform(int *xCurr, int *xPrev, int y[BLOCK_SIZE][NBANDS], Si
 	int xPrevWin[18], currWinIdx, prevWinIdx;
 	int i, j, nBlocksOut, nonZero, mOut;
 	int fiBit, xp;
+	int blockType, mixedBlock, prevType, prevWinSwitch, currWinSwitch;
 
 	ASSERT(bc->nBlocksLong  <= NBANDS);
 	ASSERT(bc->nBlocksTotal <= NBANDS);
 	ASSERT(bc->nBlocksPrev  <= NBANDS);
 
 	mOut = 0;
+	blockType = sis->blockType;
+	mixedBlock = sis->mixedBlock;
+	prevType = bc->prevType;
+	prevWinSwitch = bc->prevWinSwitch;
+	currWinSwitch = bc->currWinSwitch;
 
 	/* do long blocks, if any */
-	for(i = 0; i < bc->nBlocksLong; i++) {
-		/* currWinIdx picks the right window for long blocks (if mixed, long blocks use window type 0) */
-		currWinIdx = sis->blockType;
-		if (sis->mixedBlock && i < bc->currWinSwitch) 
-			currWinIdx = 0;
+	if (!mixedBlock && prevWinSwitch == 0) {
+		currWinIdx = blockType;
+		prevWinIdx = prevType;
+		for(i = 0; i < bc->nBlocksLong; i++) {
+			/* do 36-point IMDCT, including windowing and overlap-add */
+			mOut |= IMDCT36(xCurr, xPrev, &(y[0][i]), currWinIdx, prevWinIdx, i, bc->gbIn);
+			xCurr += 18;
+			xPrev += 9;
+		}
+	} else {
+		for(i = 0; i < bc->nBlocksLong; i++) {
+			/* currWinIdx picks the right window for long blocks (if mixed, long blocks use window type 0) */
+			currWinIdx = blockType;
+			if (mixedBlock && i < currWinSwitch)
+				currWinIdx = 0;
 
-		prevWinIdx = bc->prevType;
-		if (i < bc->prevWinSwitch)
-			 prevWinIdx = 0;
+			prevWinIdx = prevType;
+			if (i < prevWinSwitch)
+				 prevWinIdx = 0;
 
-		/* do 36-point IMDCT, including windowing and overlap-add */
-		mOut |= IMDCT36(xCurr, xPrev, &(y[0][i]), currWinIdx, prevWinIdx, i, bc->gbIn);
-		xCurr += 18;
-		xPrev += 9;
+			/* do 36-point IMDCT, including windowing and overlap-add */
+			mOut |= IMDCT36(xCurr, xPrev, &(y[0][i]), currWinIdx, prevWinIdx, i, bc->gbIn);
+			xCurr += 18;
+			xPrev += 9;
+		}
 	}
 
 	/* do short blocks (if any) */
 	for (   ; i < bc->nBlocksTotal; i++) {
-		ASSERT(sis->blockType == 2);
+		ASSERT(blockType == 2);
 
-		prevWinIdx = bc->prevType;
-		if (i < bc->prevWinSwitch)
+		prevWinIdx = prevType;
+		if (i < prevWinSwitch)
 			 prevWinIdx = 0;
 		
 		mOut |= IMDCT12x3(xCurr, xPrev, &(y[0][i]), prevWinIdx, i, bc->gbIn);
@@ -664,8 +685,8 @@ static int HybridTransform(int *xCurr, int *xPrev, int y[BLOCK_SIZE][NBANDS], Si
 	
 	/* window and overlap prev if prev longer that current */
 	for (   ; i < bc->nBlocksPrev; i++) {
-		prevWinIdx = bc->prevType;
-		if (i < bc->prevWinSwitch)
+		prevWinIdx = prevType;
+		if (i < prevWinSwitch)
 			 prevWinIdx = 0;
 		WinPrevious(xPrev, xPrevWin, prevWinIdx);
 
@@ -693,8 +714,13 @@ static int HybridTransform(int *xCurr, int *xPrev, int y[BLOCK_SIZE][NBANDS], Si
 	
 	/* clear rest of blocks */
 	for (   ; i < 32; i++) {
-		for (j = 0; j < 18; j++) 
-			y[j][i] = 0;
+		int *yp;
+
+		yp = &(y[0][i]);
+		for (j = 18; j > 0; j--) {
+			*yp = 0;
+			yp += NBANDS;
+		}
 	}
 
 	bc->gbOut = CLZ(mOut) - 1;
