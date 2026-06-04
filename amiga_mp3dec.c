@@ -25,6 +25,14 @@
 
 #include "mp3dec.h"
 #include "assembly.h"
+#include "statname.h"
+
+void STATNAME(FDCT32)(int *x, int *d, int offset, int oddBlock, int gb);
+void STATNAME(FDCT32_C_REFERENCE)(int *x, int *d, int offset, int oddBlock, int gb);
+int STATNAME(FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
+#define AMIGA_FDCT32 STATNAME(FDCT32)
+#define AMIGA_FDCT32_C_REFERENCE STATNAME(FDCT32_C_REFERENCE)
+#define AMIGA_FDCT32_HAS_ASM STATNAME(FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME)
 
 #define READBUF_SIZE (1024 * 16)
 #define OUTBUF_SAMPS (MAX_NCHAN * MAX_NGRAN * MAX_NSAMP)
@@ -46,6 +54,7 @@ typedef struct DecodeOptions {
 	int decodeOnly;
 	int noOutput;
 	int selftestMulshift;
+	int selftestFdct32;
 	int selftestFastLowrate;
 	int selftestMonoFastLowrateStereo;
 	int checksum;
@@ -364,6 +373,7 @@ static void PrintUsage(const char *prog)
 	printf("  --fast-lowrate experimental lower-quality Amiga conversion; requires --rate\n");
 	printf("                 22050, 11025, 8820, or 8287 and can skip discarded synthesis samples\n");
 	printf("  --selftest-mulshift compare C and optional asm MULSHIFT32 helpers\n");
+	printf("  --selftest-fdct32 compare C reference and optional m68k asm FDCT32 path\n");
 	printf("  --selftest-fastlowrate compare synthetic stride decimation paths\n");
 	printf("  --selftest-mono-fastlowrate-stereo verify stereo-to-mono low-rate accounting\n");
 	printf("  --checksum  print a 32-bit checksum of decoded PCM samples\n");
@@ -427,6 +437,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->noOutput = 1;
 		} else if (!strcmp(argv[i], "--selftest-mulshift")) {
 			opt->selftestMulshift = 1;
+		} else if (!strcmp(argv[i], "--selftest-fdct32")) {
+			opt->selftestFdct32 = 1;
 		} else if (!strcmp(argv[i], "--selftest-fastlowrate")) {
 			opt->selftestFastLowrate = 1;
 		} else if (!strcmp(argv[i], "--selftest-mono-fastlowrate-stereo")) {
@@ -465,8 +477,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	if (opt->help)
 		return 0;
 
-	if (opt->selftestMulshift || opt->selftestFastLowrate ||
-		opt->selftestMonoFastLowrateStereo)
+	if (opt->selftestMulshift || opt->selftestFdct32 ||
+		opt->selftestFastLowrate || opt->selftestMonoFastLowrateStereo)
 		return 0;
 
 	if (opt->stereo && !opt->play) {
@@ -1127,6 +1139,74 @@ static int SelftestFastLowrate(void)
 	return failures ? 1 : 0;
 }
 
+
+
+static int TestFdct32Case(unsigned long index, unsigned long seed, int offset,
+	int oddBlock, int gb)
+{
+	static int cbuf[32];
+	static int abuf[32];
+	static int cdest[4096];
+	static int adest[4096];
+	int i;
+
+	for (i = 0; i < 32; i++) {
+		seed = seed * 1664525UL + 1013904223UL;
+		cbuf[i] = ((int)seed) >> 8;
+		abuf[i] = cbuf[i];
+	}
+	for (i = 0; i < 4096; i++) {
+		cdest[i] = (int)(0x55aa0000UL ^ (unsigned long)i);
+		adest[i] = cdest[i];
+	}
+
+	AMIGA_FDCT32_C_REFERENCE(cbuf, cdest, offset, oddBlock, gb);
+	AMIGA_FDCT32(abuf, adest, offset, oddBlock, gb);
+
+	for (i = 0; i < 32; i++) {
+		if (abuf[i] != cbuf[i]) {
+			printf("FDCT32 buffer mismatch %lu[%d]: C=%ld asm=%ld offset=%d odd=%d gb=%d\n",
+				index, i, (long)cbuf[i], (long)abuf[i], offset, oddBlock, gb);
+			return -1;
+		}
+	}
+	for (i = 0; i < 4096; i++) {
+		if (adest[i] != cdest[i]) {
+			printf("FDCT32 dest mismatch %lu[%d]: C=%ld asm=%ld offset=%d odd=%d gb=%d\n",
+				index, i, (long)cdest[i], (long)adest[i], offset, oddBlock, gb);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static int SelftestFdct32(void)
+{
+	unsigned long i;
+	unsigned long failures;
+	unsigned long seed;
+
+	failures = 0;
+	seed = 0x31415926UL;
+	for (i = 0; i < 4096UL; i++) {
+		seed = seed * 1664525UL + 1013904223UL;
+		if (TestFdct32Case(i, seed, (int)(seed & 7), (int)((seed >> 3) & 1),
+			(int)((seed >> 4) % 8)) != 0)
+			failures++;
+	}
+
+	printf("FDCT32 asm requested: %s\n",
+#ifdef AMIGA_M68K_ASM_FDCT32
+		"yes"
+#else
+		"no"
+#endif
+	);
+	printf("FDCT32 asm active: %s\n", AMIGA_FDCT32_HAS_ASM() ? "yes" : "no");
+	printf("FDCT32 selftest cases: %lu\n", i);
+	printf("FDCT32 selftest failures: %lu\n", failures);
+	return failures ? 1 : 0;
+}
 
 static int SelftestMonoFastLowrateStereo(void)
 {
@@ -1885,6 +1965,11 @@ int main(int argc, char **argv)
 	}
 	if (opt.selftestMulshift) {
 		int selftestErr = SelftestMulshift();
+		AmigaFreeNormalizedArgs(&normalized);
+		return selftestErr;
+	}
+	if (opt.selftestFdct32) {
+		int selftestErr = SelftestFdct32();
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}

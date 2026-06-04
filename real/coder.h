@@ -100,6 +100,8 @@
 #define PolyphaseMono		STATNAME(PolyphaseMono)
 #define PolyphaseStereo		STATNAME(PolyphaseStereo)
 #define FDCT32				STATNAME(FDCT32)
+#define FDCT32_C_REFERENCE	STATNAME(FDCT32_C_REFERENCE)
+#define FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME STATNAME(FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME)
 
 #define	ISFMpeg1			STATNAME(ISFMpeg1)
 #define	ISFMpeg2			STATNAME(ISFMpeg2)
@@ -271,7 +273,9 @@ void IntensityProcMPEG2(int x[MAX_NCHAN][MAX_NSAMP], int nSamps, FrameHeader *fh
 
 /* dct32.c */
 // about 1 ms faster in RAM, but very large
-void FDCT32(int *x, int *d, int offset, int oddBlock, int gb);// __attribute__ ((section (".data")));
+void FDCT32(int *x, int *d, int offset, int oddBlock, int gb);
+void FDCT32_C_REFERENCE(int *x, int *d, int offset, int oddBlock, int gb);
+int FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 
 /* hufftabs.c */
 extern const HuffTabLookup huffTabLookup[HUFF_PAIRTABS];
