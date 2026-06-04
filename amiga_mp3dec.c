@@ -841,16 +841,57 @@ static void UpdateFirstFrameStats(DecodeStats *stats, const MP3FrameInfo *info)
 		stats->bitrate = info->bitrate;
 }
 
+static int FastLowrateStrideForOutputRate(int outputRate)
+{
+	if (outputRate == 22050)
+		return 2;
+	if (outputRate == 11025)
+		return 4;
+	return 5;
+}
+
+static int FastLowrateActualOutputRate(const DecodeOptions *opt, int inputSampleRate)
+{
+	int stride;
+
+	if (inputSampleRate <= 0)
+		return opt->outputRate;
+
+	stride = FastLowrateStrideForOutputRate(opt->outputRate);
+	return inputSampleRate / stride;
+}
+
 static int EffectiveOutputSampleRate(const DecodeOptions *opt, int inputSampleRate)
 {
 	if (inputSampleRate <= 0)
 		return opt->outputRate;
 	if (opt->fastLowrate)
-		return opt->outputRate;
+		return FastLowrateActualOutputRate(opt, inputSampleRate);
 	if (!opt->decodeOnly && opt->outputRate && inputSampleRate > opt->outputRate)
 		return opt->outputRate;
 
 	return inputSampleRate;
+}
+
+static int PlaybackOutputSampleRate(const DecodeOptions *opt, const DecodeStats *stats)
+{
+	if (stats->outputSampleRate > 0)
+		return stats->outputSampleRate;
+	if (opt->fastLowrate && stats->sampleRate > 0)
+		return FastLowrateActualOutputRate(opt, stats->sampleRate);
+	if (opt->outputRate > 0)
+		return opt->outputRate;
+	return stats->sampleRate;
+}
+
+static void PrintFastLowrateOutputRateDifference(const DecodeOptions *opt,
+	int actualOutputRate)
+{
+	if (opt->fastLowrate && opt->outputRate > 0 && actualOutputRate > 0 &&
+		actualOutputRate != opt->outputRate) {
+		printf("requested output rate: %d Hz\n", opt->outputRate);
+		printf("actual fast-lowrate output rate: %d Hz\n", actualOutputRate);
+	}
 }
 
 static double DecodedAudioSeconds(const DecodeOptions *opt,
@@ -863,8 +904,7 @@ static double DecodedAudioSeconds(const DecodeOptions *opt,
 		return 0.0;
 
 	if (opt->fastLowrate) {
-		sampleRate = stats->outputSampleRate ?
-			stats->outputSampleRate : opt->outputRate;
+		sampleRate = PlaybackOutputSampleRate(opt, stats);
 		return sampleRate > 0 ?
 			(double)stats->outputSamples / (double)sampleRate : 0.0;
 	}
@@ -1363,13 +1403,18 @@ static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes
 	int pending;
 	int first;
 
-	period = AmigaPalAudioPeriod(opt->outputRate);
-	printf("play output rate: %d Hz\n", opt->outputRate);
+	{
+		int playbackRate = PlaybackOutputSampleRate(opt, stats);
+		period = AmigaPalAudioPeriod(playbackRate);
+		PrintFastLowrateOutputRateDifference(opt, playbackRate);
+		printf("play output rate: %d Hz\n", playbackRate);
+	}
 	printf("PAL audio period: %u\n", period);
 	if (AmigaAudioOpen(&player, period) != 0)
 		return -1;
 
-	chunkBytes = (unsigned long)opt->outputRate * (unsigned long)opt->bufferSeconds;
+	chunkBytes = (unsigned long)PlaybackOutputSampleRate(opt, stats) *
+		(unsigned long)opt->bufferSeconds;
 	buf[0] = AmigaAllocAudioBuffer(chunkBytes);
 	buf[1] = AmigaAllocAudioBuffer(chunkBytes);
 	if (!buf[0] || !buf[1]) {
@@ -1469,9 +1514,6 @@ static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
 	int pending;
 	int err;
 
-	period = AmigaPalAudioPeriod(opt->outputRate);
-	printf("play output rate: %d Hz\n", opt->outputRate);
-	printf("PAL audio period: %u\n", period);
 	bufBytes = (unsigned long)opt->outputRate * (unsigned long)opt->bufferSeconds;
 	buf[0] = AmigaAllocAudioBuffer(bufBytes);
 	buf[1] = AmigaAllocAudioBuffer(bufBytes);
@@ -1484,6 +1526,13 @@ static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
 	DecodeStreamInit(&stream, infile, decoder, stats, timing);
 	len[0] = (unsigned long)DecodeStreamFillS8(&stream, opt, buf[0], (int)bufBytes);
 	len[1] = (unsigned long)DecodeStreamFillS8(&stream, opt, buf[1], (int)bufBytes);
+	{
+		int playbackRate = PlaybackOutputSampleRate(opt, stats);
+		period = AmigaPalAudioPeriod(playbackRate);
+		PrintFastLowrateOutputRateDifference(opt, playbackRate);
+		printf("play output rate: %d Hz\n", playbackRate);
+	}
+	printf("PAL audio period: %u\n", period);
 	if (AmigaAudioOpen(&player, period) != 0) {
 		AmigaFreeAudioBuffer(buf[0], bufBytes);
 		AmigaFreeAudioBuffer(buf[1], bufBytes);
@@ -1639,8 +1688,7 @@ int main(int argc, char **argv)
 	}
 
 	if (opt.fastLowrate) {
-		int stride = (opt.outputRate == 22050) ? 2 :
-			(opt.outputRate == 11025 ? 4 : 5);
+		int stride = FastLowrateStrideForOutputRate(opt.outputRate);
 		MP3SetFastLowrate(decoder, stride);
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE)
 		fprintf(stderr, "warning: --fast-lowrate is experimental, lower quality, "
@@ -1662,8 +1710,9 @@ int main(int argc, char **argv)
 			playErr = AmigaPlayStreaming(infile, decoder, &opt, &stats, &timing);
 		endClock = clock();
 		if (!stats.outputSampleRate)
-			stats.outputSampleRate = opt.outputRate;
+			stats.outputSampleRate = PlaybackOutputSampleRate(&opt, &stats);
 		printf("input sample rate: %d Hz\n", stats.sampleRate);
+		PrintFastLowrateOutputRateDifference(&opt, stats.outputSampleRate);
 		printf("output sample rate: %d Hz\n", stats.outputSampleRate);
 		printf("channels: %d (mono output)\n", stats.channels);
 		printf("bitrate: %d bps\n", stats.bitrate);
@@ -1863,6 +1912,7 @@ int main(int argc, char **argv)
 	if (!stats.outputSampleRate)
 		stats.outputSampleRate = effectiveRate ? effectiveRate : stats.sampleRate;
 	printf("input sample rate: %d Hz\n", stats.sampleRate);
+	PrintFastLowrateOutputRateDifference(&opt, stats.outputSampleRate);
 	if (stats.outputSampleRate && stats.outputSampleRate != stats.sampleRate)
 		printf("output sample rate: %d Hz\n", stats.outputSampleRate);
 	printf("channels: %d%s\n", stats.channels, opt.mono ? " (mono output)" : "");

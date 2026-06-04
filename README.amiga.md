@@ -51,8 +51,9 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   68030 testing. It opens `audio.device`, decodes to mono signed 8-bit PCM, and
   streams with two chip-memory buffers. The default playback rate is 8287 Hz for
   030 safety; `--rate 11025` is also accepted. Playback rates imply
-  `--fast-lowrate`, print the selected output rate, and calculate the PAL audio
-  period as `3546895 / output_rate`.
+  `--fast-lowrate`, print the requested and actual output rates when fixed
+  stride output differs, and calculate the PAL audio period as
+  `3546895 / actual_output_rate`.
 - `--buffer-seconds N` chooses the per-buffer playback depth for `--play`; the
   default is 2 seconds, so the player allocates two buffers of
   `output_rate * N` bytes and tries to prefill both before starting playback.
@@ -77,9 +78,10 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   keeps the low-rate phase/stride state alive across granules and MP3 frames.
   For exact integer strides such as 44100 -> 11025, fast-lowrate selects the
   same source positions as normal `--rate` decimation. The 8287 Hz mode uses a
-  fixed stride of 5 for Amiga-rate experiments, so it intentionally differs
-  from rational 44100 -> 8287 `--rate` positions. Huffman/dequant, IMDCT, and
-  FDCT32 still run at full MP3 rate; `--bench` reports those unchanged buckets.
+  fixed stride of 5 for Amiga-rate experiments, so 44100 Hz input emits at
+  8820 Hz and reports/plays/writes metadata at that actual emitted rate instead
+  of labeling it as the requested 8287 Hz. Huffman/dequant, IMDCT, and FDCT32
+  still run at full MP3 rate; `--bench` reports those unchanged buckets.
 - `--debug-fastlowrate` prints one line per decoded frame/granule with the
   full-rate sample count, low-rate samples emitted, cumulative low-rate samples,
   and destination offset range used for contiguous placement.
