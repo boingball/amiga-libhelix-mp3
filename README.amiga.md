@@ -27,7 +27,7 @@ fallback.
 
 ```sh
 amiga_mp3dec [options] infile.mp3 outfile
-amiga_mp3dec --play [--rate 8287|11025] [--buffer-seconds N] infile.mp3
+amiga_mp3dec --play [--rate 8287|11025|22050] [--buffer-seconds N] infile.mp3
 ```
 
 Default output is raw signed 16-bit big-endian PCM. If `outfile` names an
@@ -46,14 +46,19 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
 - `--bench` prints elapsed time, realtime decode speed, and timing buckets for
   frame decode, PCM conversion/downsampling, 8SVX writing, Fibonacci
   compression, and low-level file writes. In `--play` mode it also prints the
-  audio-device underrun count.
+  audio-device underrun count. Playback mode always prints underruns at exit so
+  target runs can show whether streaming kept up.
 - `--play` is an experimental AmigaOS Paula streaming mode for CD32/TF330-style
   68030 testing. It opens `audio.device`, decodes to mono signed 8-bit PCM, and
   streams with two chip-memory buffers. The default playback rate is 8287 Hz for
-  030 safety; `--rate 11025` is also accepted. Playback rates imply
-  `--fast-lowrate`, print the requested and actual output rates when fixed
-  stride output differs, and calculate the PAL audio period as
-  `3546895 / actual_output_rate`. Playback automatically uses the reduced-
+  030 safety; `--rate 11025` is accepted, and `--rate 22050` is also accepted as
+  an experimental/high-CPU mono-first mode that may underrun on 030 systems.
+  Playback rates imply `--fast-lowrate`; 22050 Hz fast-lowrate playback prints
+  `22050 requires significantly more CPU and may underrun on 030 systems.`
+  Playback prints the requested and actual output rates when fixed stride output
+  differs, and calculates the PAL audio period from the actual output rate using
+  rounded `3546895 / actual_output_rate` ticks, so 22050 Hz uses period 161.
+  Playback automatically uses the reduced-
   overhead fast path: checksums run only with `--checksum`, timing buckets and
   decode-core profiling run only with `--bench`, and export/8SVX/Fibonacci state
   is not touched while streaming to `audio.device`.

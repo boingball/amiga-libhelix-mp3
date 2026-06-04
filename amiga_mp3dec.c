@@ -347,12 +347,14 @@ static void PrintUsage(const char *prog)
 	printf("  --fibdelta   use 8SVX Fibonacci Delta compression (implies --8svx)\n");
 	printf("  --bench      print elapsed decode/write time and realtime ratio\n");
 	printf("  --play       AmigaOS experimental audio.device Paula playback (mono s8)\n");
+	printf("               rates: 8287 default, 11025, or experimental high-CPU 22050 Hz\n");
 	printf("  --play-fast-path accepted alias; --play already uses reduced-overhead playback\n");
 	printf("  --decode-then-play decode whole MP3 to RAM, then play (debug for --play)\n");
 	printf("  --buffer-seconds N playback buffer seconds per double buffer (default 2)\n");
 	printf("  --decode-only decode frames only; skip PCM conversion and output\n");
 	printf("  --no-output  run conversion/compression paths but discard output bytes\n");
-	printf("  --rate HZ     output/downsample rate: 22050, 11025, or 8287 Hz\n");
+	printf("  --rate HZ    output/downsample rate: 22050, 11025, or 8287 Hz\n");
+	printf("               22050 playback is experimental/high CPU and may underrun\n");
 	printf("  --fast-lowrate experimental lower-quality Amiga conversion; requires --rate\n");
 	printf("                 22050, 11025, or 8287 and can skip discarded synthesis samples\n");
 	printf("  --selftest-mulshift compare C and optional asm MULSHIFT32 helpers\n");
@@ -458,8 +460,9 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	if (opt->play && !opt->outputRate)
 		opt->outputRate = 8287;
 
-	if (opt->play && opt->outputRate != 8287 && opt->outputRate != 11025) {
-		fprintf(stderr, "--play supports --rate 8287 or --rate 11025 only\n");
+	if (opt->play && opt->outputRate != 8287 && opt->outputRate != 11025 &&
+		opt->outputRate != 22050) {
+		fprintf(stderr, "--play supports --rate 8287, 11025, or 22050 only\n");
 		return -1;
 	}
 	if (opt->play) {
@@ -1282,7 +1285,10 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 
 static unsigned int AmigaPalAudioPeriod(int outputRate)
 {
-	return (unsigned int)(3546895UL / (unsigned long)outputRate);
+	if (outputRate <= 0)
+		return 0;
+	return (unsigned int)((3546895UL + ((unsigned long)outputRate / 2UL)) /
+		(unsigned long)outputRate);
 }
 
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
@@ -1704,6 +1710,9 @@ int main(int argc, char **argv)
 	if (opt.fastLowrate) {
 		int stride = FastLowrateStrideForOutputRate(opt.outputRate);
 		MP3SetFastLowrate(decoder, stride);
+		if (opt.outputRate == 22050)
+			fprintf(stderr,
+				"22050 requires significantly more CPU and may underrun on 030 systems.\n");
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE)
 		fprintf(stderr, "warning: --fast-lowrate is experimental, lower quality, "
 			"and only skips polyphase output samples; IMDCT/DCT32 still run full-rate\n");
@@ -1740,6 +1749,7 @@ int main(int argc, char **argv)
 		printf("output samples: %lu\n", stats.outputSamples);
 		if (opt.checksum)
 			printf("playback PCM checksum: %08lx\n", stats.pcmChecksum);
+		printf("playback underruns: %lu\n", stats.underruns);
 		printf("fast-lowrate stride: %d (experimental; IMDCT/DCT32 still full-rate)\n",
 			MP3GetFastLowrateStride(decoder));
 		if (opt.bench) {
