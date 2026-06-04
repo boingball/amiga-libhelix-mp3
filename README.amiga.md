@@ -89,9 +89,13 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   samples/bytes, chip submission buffer addresses/sizes, optional stereo work
   buffer addresses/sizes, first fill count, and first `CMD_WRITE` submit/complete
   milestones. The streaming startup path allocates the playback buffers before
-  filling buffer A, submits that first non-empty buffer immediately, fills buffer
-  B while A is active, and never waits on an audio I/O request that has not been
-  submitted.
+  pre-filling buffer A by decoded sample count (not amplitude), submits that
+  first non-empty buffer immediately, fills buffer B while A is active, and never
+  waits on an audio I/O request that has not been submitted. A silent first
+  playback buffer is accepted so valid MP3 encoder delay, padding, or fade-ins
+  can play normally; with `--debug-play`, an all-zero first buffer prints
+  `first playback buffer is silent/near-silent`. Playback does not skip leading
+  silence by default.
 - `--decode-then-play` is a `--play` debug mode that decodes the whole MP3 to
   RAM as signed 8-bit PCM first (mono by default, or stereo with `--stereo`), then plays the resulting buffer via
   `audio.device`, which helps separate decoder/streaming issues from playback
