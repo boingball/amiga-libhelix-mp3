@@ -54,6 +54,7 @@ typedef struct DecodeOptions {
 	int debugArgv;
 	int debugFastLowrate;
 	int play;
+	int stereo;
 	int decodeThenPlay;
 	int bufferSeconds;
 } DecodeOptions;
@@ -67,6 +68,7 @@ typedef struct DecodeStats {
 	int channels;
 	int bitrate;
 	unsigned long underruns;
+	unsigned long underrunBuffers[2];
 } DecodeStats;
 
 typedef struct TimingStats {
@@ -347,16 +349,18 @@ static void PrintUsage(const char *prog)
 	printf("  --fibdelta   use 8SVX Fibonacci Delta compression (implies --8svx)\n");
 	printf("  --bench      print elapsed decode/write time and realtime ratio\n");
 	printf("  --play       AmigaOS experimental audio.device Paula playback (mono s8)\n");
-	printf("               rates: 8287 default, 11025, or experimental high-CPU 22050 Hz\n");
+	printf("  --stereo     opt-in experimental --play stereo output (s8 per channel)\n");
+	printf("               stereo rates: 8820, 11025, or experimental high-CPU 22050 Hz\n");
+	printf("               mono rates: 8287 default, 8820, 11025, or experimental 22050 Hz\n");
 	printf("  --play-fast-path accepted alias; --play already uses reduced-overhead playback\n");
 	printf("  --decode-then-play decode whole MP3 to RAM, then play (debug for --play)\n");
 	printf("  --buffer-seconds N playback buffer seconds per double buffer (default 2)\n");
 	printf("  --decode-only decode frames only; skip PCM conversion and output\n");
 	printf("  --no-output  run conversion/compression paths but discard output bytes\n");
-	printf("  --rate HZ    output/downsample rate: 22050, 11025, or 8287 Hz\n");
+	printf("  --rate HZ    output/downsample rate: 22050, 11025, 8820, or 8287 Hz\n");
 	printf("               22050 playback is experimental/high CPU and may underrun\n");
 	printf("  --fast-lowrate experimental lower-quality Amiga conversion; requires --rate\n");
-	printf("                 22050, 11025, or 8287 and can skip discarded synthesis samples\n");
+	printf("                 22050, 11025, 8820, or 8287 and can skip discarded synthesis samples\n");
 	printf("  --selftest-mulshift compare C and optional asm MULSHIFT32 helpers\n");
 	printf("  --selftest-fastlowrate compare synthetic stride decimation paths\n");
 	printf("  --checksum  print a 32-bit checksum of decoded PCM samples\n");
@@ -396,6 +400,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->play = 1;
 			opt->outFormat = OUT_S8;
 			opt->mono = 1;
+		} else if (!strcmp(argv[i], "--stereo")) {
+			opt->stereo = 1;
 		} else if (!strcmp(argv[i], "--play-fast-path")) {
 			opt->play = 1;
 			opt->outFormat = OUT_S8;
@@ -429,7 +435,7 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 				return -1;
 			opt->outputRate = atoi(argv[i]);
 			if (opt->outputRate != 22050 && opt->outputRate != 11025 &&
-				opt->outputRate != 8287)
+				opt->outputRate != 8820 && opt->outputRate != 8287)
 				return -1;
 		} else if (!strcmp(argv[i], "--debug-fastlowrate")) {
 			opt->debugFastLowrate = 1;
@@ -457,24 +463,34 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	if (opt->selftestMulshift || opt->selftestFastLowrate)
 		return 0;
 
-	if (opt->play && !opt->outputRate)
-		opt->outputRate = 8287;
+	if (opt->stereo && !opt->play) {
+		fprintf(stderr, "--stereo is only supported with --play\n");
+		return -1;
+	}
 
-	if (opt->play && opt->outputRate != 8287 && opt->outputRate != 11025 &&
-		opt->outputRate != 22050) {
-		fprintf(stderr, "--play supports --rate 8287, 11025, or 22050 only\n");
+	if (opt->play && !opt->outputRate)
+		opt->outputRate = opt->stereo ? 8820 : 8287;
+
+	if (opt->play && opt->outputRate != 8287 && opt->outputRate != 8820 &&
+		opt->outputRate != 11025 && opt->outputRate != 22050) {
+		fprintf(stderr, "--play supports --rate 8287, 8820, 11025, or 22050 only\n");
+		return -1;
+	}
+	if (opt->stereo && opt->outputRate == 8287) {
+		fprintf(stderr, "--stereo supports --rate 8820, 11025, or experimental 22050 only\n");
 		return -1;
 	}
 	if (opt->play) {
-		opt->mono = 1;
+		opt->mono = opt->stereo ? 0 : 1;
 		opt->outFormat = OUT_S8;
 		opt->fastLowrate = 1;
 		opt->noOutput = 1;
 	}
 
 	if (opt->fastLowrate && (opt->outputRate != 22050 &&
-		opt->outputRate != 11025 && opt->outputRate != 8287)) {
-		fprintf(stderr, "--fast-lowrate requires --rate 22050, 11025, or 8287\n");
+		opt->outputRate != 11025 && opt->outputRate != 8820 &&
+		opt->outputRate != 8287)) {
+		fprintf(stderr, "--fast-lowrate requires --rate 22050, 11025, 8820, or 8287\n");
 		return -1;
 	}
 
@@ -919,8 +935,10 @@ static double DecodedAudioSeconds(const DecodeOptions *opt,
 
 	if (opt->fastLowrate) {
 		sampleRate = PlaybackOutputSampleRate(opt, stats);
+		outputChannels = opt->stereo ? 2 : 1;
 		return sampleRate > 0 ?
-			(double)stats->outputSamples / (double)sampleRate : 0.0;
+			(double)stats->outputSamples /
+			((double)sampleRate * (double)outputChannels) : 0.0;
 	}
 
 	sampleRate = stats->outputSampleRate ?
@@ -1058,7 +1076,7 @@ static int SelftestFastLowrate(void)
 		printf("fast-lowrate selftest passed: stride 4 selects the same positions "
 			"as 44100->11025 normal decimation across chunk boundaries (%d samples)\n",
 			normalCount);
-		printf("note: --rate 8287 uses fixed stride 5, so it intentionally differs "
+		printf("note: --rate 8820/8287 uses fixed stride 5; 8287 intentionally differs "
 			"from rational 44100->8287 normal --rate positions.\n");
 	}
 	return failures ? 1 : 0;
@@ -1253,9 +1271,24 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 
 			if (stream->timing)
 				t0 = clock();
-			outSamps = MixFrame(stream->decodeBuf, stream->writeBuf,
-				info.outputSamps, info.nChans, 1);
-			outChannels = 1;
+			if (opt->stereo) {
+				if (info.nChans == 1) {
+					int frames = info.outputSamps;
+					for (i = 0; i < frames; i++) {
+						stream->writeBuf[2 * i] = stream->decodeBuf[i];
+						stream->writeBuf[2 * i + 1] = stream->decodeBuf[i];
+					}
+					outSamps = frames * 2;
+				} else {
+					outSamps = MixFrame(stream->decodeBuf, stream->writeBuf,
+						info.outputSamps, info.nChans, 0);
+				}
+				outChannels = 2;
+			} else {
+				outSamps = MixFrame(stream->decodeBuf, stream->writeBuf,
+					info.outputSamps, info.nChans, 1);
+				outChannels = 1;
+			}
 			if (!opt->fastLowrate && opt->outputRate &&
 				info.samprate > opt->outputRate) {
 				outSamps = DownsampleFrame(&stream->rateState,
@@ -1294,68 +1327,113 @@ static unsigned int AmigaPalAudioPeriod(int outputRate)
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
 typedef struct AmigaAudioPlayer {
 	struct MsgPort *port;
-	struct IOAudio *req[2];
-	int deviceOpen;
+	struct IOAudio *req[2][2];
+	int deviceOpen[2];
+	int stereo;
 	unsigned int period;
+	signed char *splitBuf[2][2];
+	unsigned long splitBytes;
 } AmigaAudioPlayer;
 
 static void AmigaAudioClose(AmigaAudioPlayer *player)
 {
 	int i;
+	int ch;
 
 	for (i = 0; i < 2; i++) {
-		if (player->req[i]) {
-			if (!CheckIO((struct IORequest *)player->req[i])) {
-				AbortIO((struct IORequest *)player->req[i]);
-				WaitIO((struct IORequest *)player->req[i]);
+		for (ch = 0; ch < 2; ch++) {
+			if (player->req[i][ch]) {
+				if (!CheckIO((struct IORequest *)player->req[i][ch])) {
+					AbortIO((struct IORequest *)player->req[i][ch]);
+					WaitIO((struct IORequest *)player->req[i][ch]);
+				}
 			}
 		}
 	}
-	if (player->deviceOpen && player->req[0])
-		CloseDevice((struct IORequest *)player->req[0]);
+	for (ch = 0; ch < 2; ch++) {
+		if (player->deviceOpen[ch] && player->req[0][ch])
+			CloseDevice((struct IORequest *)player->req[0][ch]);
+	}
 	for (i = 0; i < 2; i++) {
-		if (player->req[i])
-			DeleteIORequest((struct IORequest *)player->req[i]);
+		for (ch = 0; ch < 2; ch++) {
+			if (player->req[i][ch])
+				DeleteIORequest((struct IORequest *)player->req[i][ch]);
+			if (player->splitBuf[i][ch])
+				FreeMem(player->splitBuf[i][ch], player->splitBytes);
+		}
 	}
 	if (player->port)
 		DeleteMsgPort(player->port);
 	memset(player, 0, sizeof(*player));
 }
 
-static int AmigaAudioOpen(AmigaAudioPlayer *player, unsigned int period)
+static int AmigaAudioOpenOne(AmigaAudioPlayer *player, int ch,
+	const UBYTE *channels, unsigned long channelCount)
 {
-	UBYTE channels[] = { 1, 2, 4, 8 };
-
-	memset(player, 0, sizeof(*player));
-	player->period = period;
-	player->port = CreateMsgPort();
-	if (!player->port)
-		return -1;
-	player->req[0] = (struct IOAudio *)CreateIORequest(player->port,
+	player->req[0][ch] = (struct IOAudio *)CreateIORequest(player->port,
 		sizeof(struct IOAudio));
-	player->req[1] = (struct IOAudio *)CreateIORequest(player->port,
+	player->req[1][ch] = (struct IOAudio *)CreateIORequest(player->port,
 		sizeof(struct IOAudio));
-	if (!player->req[0] || !player->req[1]) {
-		AmigaAudioClose(player);
+	if (!player->req[0][ch] || !player->req[1][ch])
 		return -1;
-	}
-	player->req[0]->ioa_Request.io_Message.mn_Node.ln_Pri = ADALLOC_MINPREC;
-	player->req[0]->ioa_Data = channels;
-	player->req[0]->ioa_Length = sizeof(channels);
-	if (OpenDevice(AUDIONAME, 0, (struct IORequest *)player->req[0], 0) != 0) {
-		AmigaAudioClose(player);
+	player->req[0][ch]->ioa_Request.io_Message.mn_Node.ln_Pri = ADALLOC_MINPREC;
+	player->req[0][ch]->ioa_Data = (UBYTE *)channels;
+	player->req[0][ch]->ioa_Length = channelCount;
+	if (OpenDevice(AUDIONAME, 0, (struct IORequest *)player->req[0][ch], 0) != 0)
 		return -1;
-	}
-	player->deviceOpen = 1;
-	memcpy(player->req[1], player->req[0], sizeof(struct IOAudio));
-	player->req[1]->ioa_Request.io_Message.mn_ReplyPort = player->port;
+	player->deviceOpen[ch] = 1;
+	memcpy(player->req[1][ch], player->req[0][ch], sizeof(struct IOAudio));
+	player->req[1][ch]->ioa_Request.io_Message.mn_ReplyPort = player->port;
 	return 0;
 }
 
-static void AmigaAudioSubmit(AmigaAudioPlayer *player, int index,
-	signed char *buf, unsigned long len)
+static int AmigaAudioOpen(AmigaAudioPlayer *player, unsigned int period,
+	int stereo, unsigned long maxBytes)
 {
-	struct IOAudio *req = player->req[index];
+	UBYTE monoChannels[] = { 1, 2, 4, 8 };
+	UBYTE leftChannels[] = { 1, 8 };
+	UBYTE rightChannels[] = { 2, 4 };
+	int i;
+	int ch;
+
+	memset(player, 0, sizeof(*player));
+	player->period = period;
+	player->stereo = stereo;
+	player->port = CreateMsgPort();
+	if (!player->port)
+		return -1;
+	if (stereo) {
+		player->splitBytes = maxBytes / 2UL;
+		if (player->splitBytes == 0)
+			player->splitBytes = 1;
+		for (i = 0; i < 2; i++) {
+			for (ch = 0; ch < 2; ch++) {
+				player->splitBuf[i][ch] = (signed char *)AllocMem(player->splitBytes,
+					MEMF_CHIP | MEMF_CLEAR);
+				if (!player->splitBuf[i][ch]) {
+					AmigaAudioClose(player);
+					return -1;
+				}
+			}
+		}
+		if (AmigaAudioOpenOne(player, 0, leftChannels, sizeof(leftChannels)) != 0 ||
+			AmigaAudioOpenOne(player, 1, rightChannels, sizeof(rightChannels)) != 0) {
+			AmigaAudioClose(player);
+			return -1;
+		}
+	} else {
+		if (AmigaAudioOpenOne(player, 0, monoChannels, sizeof(monoChannels)) != 0) {
+			AmigaAudioClose(player);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static void AmigaAudioSubmitOne(AmigaAudioPlayer *player, int index,
+	int ch, signed char *buf, unsigned long len)
+{
+	struct IOAudio *req = player->req[index][ch];
 
 	req->ioa_Request.io_Command = CMD_WRITE;
 	req->ioa_Request.io_Flags = ADIOF_PERVOL;
@@ -1367,14 +1445,37 @@ static void AmigaAudioSubmit(AmigaAudioPlayer *player, int index,
 	BeginIO((struct IORequest *)req);
 }
 
+static void AmigaAudioSubmit(AmigaAudioPlayer *player, int index,
+	signed char *buf, unsigned long len)
+{
+	if (player->stereo) {
+		unsigned long frames = len / 2UL;
+		unsigned long i;
+		for (i = 0; i < frames; i++) {
+			player->splitBuf[index][0][i] = buf[2UL * i];
+			player->splitBuf[index][1][i] = buf[2UL * i + 1UL];
+		}
+		AmigaAudioSubmitOne(player, index, 1, player->splitBuf[index][1], frames);
+		AmigaAudioSubmitOne(player, index, 0, player->splitBuf[index][0], frames);
+	} else {
+		AmigaAudioSubmitOne(player, index, 0, buf, len);
+	}
+}
+
 static int AmigaAudioDone(AmigaAudioPlayer *player, int index)
 {
-	return CheckIO((struct IORequest *)player->req[index]) != 0;
+	if (player->stereo) {
+		return CheckIO((struct IORequest *)player->req[index][0]) != 0 &&
+			CheckIO((struct IORequest *)player->req[index][1]) != 0;
+	}
+	return CheckIO((struct IORequest *)player->req[index][0]) != 0;
 }
 
 static void AmigaAudioWait(AmigaAudioPlayer *player, int index)
 {
-	WaitIO((struct IORequest *)player->req[index]);
+	WaitIO((struct IORequest *)player->req[index][0]);
+	if (player->stereo)
+		WaitIO((struct IORequest *)player->req[index][1]);
 }
 
 static signed char *AmigaAllocAudioBuffer(unsigned long bytes)
@@ -1388,12 +1489,15 @@ static void AmigaFreeAudioBuffer(signed char *buf, unsigned long bytes)
 		FreeMem(buf, bytes);
 }
 #else
-typedef struct AmigaAudioPlayer { int dummy; } AmigaAudioPlayer;
+typedef struct AmigaAudioPlayer { int stereo; } AmigaAudioPlayer;
 static void AmigaAudioClose(AmigaAudioPlayer *player) { (void)player; }
-static int AmigaAudioOpen(AmigaAudioPlayer *player, unsigned int period)
+static int AmigaAudioOpen(AmigaAudioPlayer *player, unsigned int period,
+	int stereo, unsigned long maxBytes)
 {
 	(void)player;
 	(void)period;
+	(void)stereo;
+	(void)maxBytes;
 	fprintf(stderr, "--play requires an AmigaOS audio.device build\n");
 	return -1;
 }
@@ -1430,11 +1534,10 @@ static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes
 		printf("play output rate: %d Hz\n", playbackRate);
 	}
 	printf("PAL audio period: %u\n", period);
-	if (AmigaAudioOpen(&player, period) != 0)
-		return -1;
-
 	chunkBytes = (unsigned long)PlaybackOutputSampleRate(opt, stats) *
-		(unsigned long)opt->bufferSeconds;
+		(unsigned long)opt->bufferSeconds * (opt->stereo ? 2UL : 1UL);
+	if (AmigaAudioOpen(&player, period, opt->stereo, chunkBytes) != 0)
+		return -1;
 	buf[0] = AmigaAllocAudioBuffer(chunkBytes);
 	buf[1] = AmigaAllocAudioBuffer(chunkBytes);
 	if (!buf[0] || !buf[1]) {
@@ -1534,7 +1637,8 @@ static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
 	int pending;
 	int err;
 
-	bufBytes = (unsigned long)opt->outputRate * (unsigned long)opt->bufferSeconds;
+	bufBytes = (unsigned long)opt->outputRate * (unsigned long)opt->bufferSeconds *
+		(opt->stereo ? 2UL : 1UL);
 	buf[0] = AmigaAllocAudioBuffer(bufBytes);
 	buf[1] = AmigaAllocAudioBuffer(bufBytes);
 	if (!buf[0] || !buf[1]) {
@@ -1553,7 +1657,7 @@ static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
 		printf("play output rate: %d Hz\n", playbackRate);
 	}
 	printf("PAL audio period: %u\n", period);
-	if (AmigaAudioOpen(&player, period) != 0) {
+	if (AmigaAudioOpen(&player, period, opt->stereo, bufBytes) != 0) {
 		AmigaFreeAudioBuffer(buf[0], bufBytes);
 		AmigaFreeAudioBuffer(buf[1], bufBytes);
 		return -1;
@@ -1567,8 +1671,10 @@ static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
 		pending = 1;
 		prev = 1 - cur;
 		if (!first) {
-			if (AmigaAudioDone(&player, prev))
+			if (AmigaAudioDone(&player, prev)) {
 				stats->underruns++;
+				stats->underrunBuffers[prev]++;
+			}
 			AmigaAudioWait(&player, prev);
 		}
 		if (first) {
@@ -1707,6 +1813,9 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	if (opt.stereo)
+		fprintf(stderr, "Stereo playback needs significantly more CPU and may underrun on 030.\n");
+
 	if (opt.fastLowrate) {
 		int stride = FastLowrateStrideForOutputRate(opt.outputRate);
 		MP3SetFastLowrate(decoder, stride);
@@ -1743,13 +1852,16 @@ int main(int argc, char **argv)
 		printf("input sample rate: %d Hz\n", stats.sampleRate);
 		PrintFastLowrateOutputRateDifference(&opt, stats.outputSampleRate);
 		printf("output sample rate: %d Hz\n", stats.outputSampleRate);
-		printf("channels: %d (mono output)\n", stats.channels);
+		printf("channels: %d (%s output)\n", stats.channels,
+			opt.stereo ? "stereo" : "mono");
 		printf("bitrate: %d bps\n", stats.bitrate);
 		printf("decoded frames: %lu\n", stats.decodedFrames);
 		printf("output samples: %lu\n", stats.outputSamples);
 		if (opt.checksum)
 			printf("playback PCM checksum: %08lx\n", stats.pcmChecksum);
 		printf("playback underruns: %lu\n", stats.underruns);
+		printf("playback underruns buffer 0: %lu\n", stats.underrunBuffers[0]);
+		printf("playback underruns buffer 1: %lu\n", stats.underrunBuffers[1]);
 		printf("fast-lowrate stride: %d (experimental; IMDCT/DCT32 still full-rate)\n",
 			MP3GetFastLowrateStride(decoder));
 		if (opt.bench) {
@@ -1762,6 +1874,8 @@ int main(int argc, char **argv)
 			if (elapsed > 0.0 && audioSeconds > 0.0)
 				printf("decode speed: %.2fx realtime\n", audioSeconds / elapsed);
 			printf("playback underruns: %lu\n", stats.underruns);
+			printf("playback underruns buffer 0: %lu\n", stats.underrunBuffers[0]);
+			printf("playback underruns buffer 1: %lu\n", stats.underrunBuffers[1]);
 			printf("timing frame decode: %.3f s\n", ClocksToSeconds(timing.frameDecode));
 			printf("timing PCM conversion: %.3f s\n", ClocksToSeconds(timing.pcmConvert));
 		}
