@@ -27,6 +27,7 @@ fallback.
 
 ```sh
 amiga_mp3dec [options] infile.mp3 outfile
+amiga_mp3dec --info infile.mp3
 amiga_mp3dec --play [--stereo] [--rate 8287|8820|11025|22050] [--buffer-seconds N] [--fast-mem] infile.mp3
 amiga_mp3dec --play-lifecycle-test [--debug-play] [--buffer-seconds N]
 ```
@@ -49,6 +50,11 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   compression, and low-level file writes. In `--play` mode it also prints the
   audio-device underrun count. Playback mode always prints underruns at exit so
   target runs can show whether streaming kept up.
+- `--info` prints the input file size, ID3v2 text metadata and embedded-artwork
+  size, first MPEG audio frame details, and ID3v1 metadata when present. Used as
+  `--info infile.mp3`, it exits after inspection without decoding. It can also
+  be combined with `--play` (or a normal decode command) to print the metadata
+  before playback or decoding begins.
 - `--play` is an experimental AmigaOS Paula streaming mode for CD32/TF330-style
   68030 testing. It opens `audio.device`, decodes to mono signed 8-bit PCM, and
   streams with two chip-memory buffers. The default playback rate is 8287 Hz for

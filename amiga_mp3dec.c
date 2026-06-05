@@ -82,6 +82,7 @@ typedef struct DecodeOptions {
 	int playLifecycleTest;
 	int bufferSeconds;
 	int fastMem;
+	int info;
 } DecodeOptions;
 
 typedef struct InputSource {
@@ -384,6 +385,7 @@ static void PrintUsage(const char *prog)
 	printf("  --8svx       write Amiga IFF-8SVX signed 8-bit output (implies mono)\n");
 	printf("  --fibdelta   use 8SVX Fibonacci Delta compression (implies --8svx)\n");
 	printf("  --bench      print elapsed decode/write time and realtime ratio\n");
+	printf("  --info       print MP3/ID3 metadata; alone, inspect without decoding\n");
 	printf("  --play       AmigaOS experimental audio.device Paula playback (mono s8)\n");
 	printf("  --stereo     opt-in experimental --play stereo output (s8 per channel)\n");
 	printf("               stereo rates: 8820, 11025, or experimental high-CPU 22050 Hz\n");
@@ -454,6 +456,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->compression = SVX_COMP_FIBDELTA;
 		} else if (!strcmp(argv[i], "--bench")) {
 			opt->bench = 1;
+		} else if (!strcmp(argv[i], "--info")) {
+			opt->info = 1;
 		} else if (!strcmp(argv[i], "--play")) {
 			opt->play = 1;
 			opt->outFormat = OUT_S8;
@@ -572,10 +576,274 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	if (opt->playLifecycleTest)
 		return 0;
 
-	if (!opt->inName || (!opt->outName && !opt->noOutput && !opt->play))
+	if (!opt->inName || (!opt->outName && !opt->noOutput && !opt->play && !opt->info))
 		return -1;
 
 	return 0;
+}
+
+static unsigned long SynchsafeSize(const unsigned char *p)
+{
+	return ((unsigned long)(p[0] & 0x7f) << 21) |
+		((unsigned long)(p[1] & 0x7f) << 14) |
+		((unsigned long)(p[2] & 0x7f) << 7) |
+		(unsigned long)(p[3] & 0x7f);
+}
+
+static unsigned long BigEndianSize(const unsigned char *p, int bytes)
+{
+	unsigned long value;
+	int i;
+
+	value = 0;
+	for (i = 0; i < bytes; i++)
+		value = (value << 8) | p[i];
+	return value;
+}
+
+static void PrintTagText(const char *label, const unsigned char *data,
+	unsigned long bytes)
+{
+	unsigned long i;
+	int encoding;
+	int bigEndian;
+	int printed;
+
+	if (!bytes)
+		return;
+	encoding = data[0];
+	data++;
+	bytes--;
+	printf("%s: ", label);
+	printed = 0;
+	if (encoding == 1 || encoding == 2) {
+		bigEndian = encoding == 2;
+		if (bytes >= 2 && data[0] == 0xfe && data[1] == 0xff) {
+			bigEndian = 1;
+			data += 2;
+			bytes -= 2;
+		} else if (bytes >= 2 && data[0] == 0xff && data[1] == 0xfe) {
+			bigEndian = 0;
+			data += 2;
+			bytes -= 2;
+		}
+		for (i = 0; i + 1 < bytes; i += 2) {
+			unsigned int ch;
+			ch = bigEndian ? ((unsigned int)data[i] << 8) | data[i + 1] :
+				((unsigned int)data[i + 1] << 8) | data[i];
+			if (!ch)
+				break;
+			putchar(ch >= 32 && ch <= 126 ? (int)ch : '?');
+			printed = 1;
+		}
+	} else {
+		for (i = 0; i < bytes && data[i]; i++) {
+			unsigned char ch;
+			ch = data[i];
+			putchar((ch >= 32 && ch != 127) ? ch : ' ');
+			printed = 1;
+		}
+	}
+	if (!printed)
+		printf("(empty)");
+	putchar('\n');
+}
+
+static const char *TagFrameLabel(const char *id)
+{
+	if (!strcmp(id, "TIT2") || !strcmp(id, "TT2")) return "title";
+	if (!strcmp(id, "TPE1") || !strcmp(id, "TP1")) return "artist";
+	if (!strcmp(id, "TALB") || !strcmp(id, "TAL")) return "album";
+	if (!strcmp(id, "TRCK") || !strcmp(id, "TRK")) return "track";
+	if (!strcmp(id, "TDRC") || !strcmp(id, "TYER") || !strcmp(id, "TYE")) return "year";
+	if (!strcmp(id, "TCON") || !strcmp(id, "TCO")) return "genre";
+	if (!strcmp(id, "TCOM") || !strcmp(id, "TCM")) return "composer";
+	if (!strcmp(id, "TPE2") || !strcmp(id, "TP2")) return "album artist";
+	if (!strcmp(id, "TPUB") || !strcmp(id, "TPB")) return "publisher";
+	if (!strcmp(id, "TCOP") || !strcmp(id, "TCR")) return "copyright";
+	return id;
+}
+
+static void PrintCommentTag(const unsigned char *data, unsigned long bytes)
+{
+	unsigned long pos;
+	unsigned long terminatorBytes;
+	unsigned char *text;
+
+	if (bytes < 5)
+		return;
+	terminatorBytes = (data[0] == 1 || data[0] == 2) ? 2UL : 1UL;
+	pos = 4;
+	while (pos + terminatorBytes <= bytes) {
+		if (data[pos] == 0 && (terminatorBytes == 1 || data[pos + 1] == 0)) {
+			pos += terminatorBytes;
+			break;
+		}
+		pos += terminatorBytes;
+	}
+	if (pos >= bytes)
+		return;
+	text = (unsigned char *)malloc((size_t)(bytes - pos + 1));
+	if (!text)
+		return;
+	text[0] = data[0];
+	memcpy(text + 1, data + pos, (size_t)(bytes - pos));
+	PrintTagText("comment", text, bytes - pos + 1);
+	free(text);
+}
+
+static unsigned long PrintId3v2(FILE *fp)
+{
+	unsigned char header[10];
+	unsigned long tagBytes;
+	unsigned long pos;
+	int major;
+
+	if (fseek(fp, 0, SEEK_SET) != 0 || fread(header, 1, sizeof(header), fp) != sizeof(header) ||
+		memcmp(header, "ID3", 3) != 0)
+		return 0;
+	major = header[3];
+	tagBytes = SynchsafeSize(header + 6);
+	printf("ID3v2: 2.%d.%d (%lu bytes)\n", major, header[4], tagBytes);
+	pos = 0;
+	if ((header[5] & 0x40) && major >= 3) {
+		unsigned char extSize[4];
+		unsigned long skipBytes;
+		if (fread(extSize, 1, sizeof(extSize), fp) != sizeof(extSize))
+			return 10UL + tagBytes;
+		skipBytes = major == 4 ? SynchsafeSize(extSize) : BigEndianSize(extSize, 4) + 4UL;
+		if (skipBytes < 4 || skipBytes > tagBytes ||
+			fseek(fp, (long)(skipBytes - 4UL), SEEK_CUR) != 0)
+			return 10UL + tagBytes;
+		pos = skipBytes;
+	}
+	while (pos + (major == 2 ? 6UL : 10UL) <= tagBytes) {
+		unsigned char frameHeader[10];
+		unsigned char *frame;
+		unsigned long frameBytes;
+		int headerBytes;
+		char id[5];
+
+		headerBytes = major == 2 ? 6 : 10;
+		if (fread(frameHeader, 1, (size_t)headerBytes, fp) != (size_t)headerBytes)
+			break;
+		pos += (unsigned long)headerBytes;
+		if (!frameHeader[0])
+			break;
+		memset(id, 0, sizeof(id));
+		memcpy(id, frameHeader, major == 2 ? 3 : 4);
+		if (major == 2)
+			frameBytes = BigEndianSize(frameHeader + 3, 3);
+		else if (major == 4)
+			frameBytes = SynchsafeSize(frameHeader + 4);
+		else
+			frameBytes = BigEndianSize(frameHeader + 4, 4);
+		if (!frameBytes || frameBytes > tagBytes - pos)
+			break;
+		if ((id[0] == 'T' || !strcmp(id, "COMM") || !strcmp(id, "COM")) &&
+			frameBytes <= 1024UL * 1024UL) {
+			frame = (unsigned char *)malloc((size_t)frameBytes);
+			if (!frame || fread(frame, 1, (size_t)frameBytes, fp) != (size_t)frameBytes) {
+				free(frame);
+				break;
+			}
+			if (!strcmp(id, "COMM") || !strcmp(id, "COM"))
+				PrintCommentTag(frame, frameBytes);
+			else
+				PrintTagText(TagFrameLabel(id), frame, frameBytes);
+			free(frame);
+		} else {
+			if (!strcmp(id, "APIC") || !strcmp(id, "PIC"))
+				printf("embedded artwork: %lu bytes\n", frameBytes);
+			if (fseek(fp, (long)frameBytes, SEEK_CUR) != 0)
+				break;
+		}
+		pos += frameBytes;
+	}
+	return 10UL + tagBytes + ((header[5] & 0x10) ? 10UL : 0UL);
+}
+
+static void PrintFixedId3v1Text(const char *label, const unsigned char *data, int bytes)
+{
+	int end;
+	int i;
+
+	end = bytes;
+	while (end > 0 && (data[end - 1] == 0 || data[end - 1] == ' '))
+		end--;
+	if (!end)
+		return;
+	printf("ID3v1 %s: ", label);
+	for (i = 0; i < end; i++)
+		putchar(data[i] >= 32 && data[i] != 127 ? data[i] : ' ');
+	putchar('\n');
+}
+
+static void PrintId3v1(FILE *fp, long fileSize)
+{
+	unsigned char tag[128];
+
+	if (fileSize < 128 || fseek(fp, fileSize - 128, SEEK_SET) != 0 ||
+		fread(tag, 1, sizeof(tag), fp) != sizeof(tag) || memcmp(tag, "TAG", 3) != 0)
+		return;
+	printf("ID3v1: present\n");
+	PrintFixedId3v1Text("title", tag + 3, 30);
+	PrintFixedId3v1Text("artist", tag + 33, 30);
+	PrintFixedId3v1Text("album", tag + 63, 30);
+	PrintFixedId3v1Text("year", tag + 93, 4);
+	if (tag[125] == 0 && tag[126] != 0)
+		printf("ID3v1 track: %u\n", (unsigned int)tag[126]);
+	printf("ID3v1 genre index: %u\n", (unsigned int)tag[127]);
+}
+
+static int PrintFirstFrameInfo(FILE *fp, unsigned long audioOffset)
+{
+	unsigned char probe[READBUF_SIZE];
+	HMP3Decoder decoder;
+	MP3FrameInfo info;
+	size_t nRead;
+	int offset;
+	int err;
+	const char *version;
+
+	if (fseek(fp, (long)audioOffset, SEEK_SET) != 0)
+		return 0;
+	nRead = fread(probe, 1, sizeof(probe), fp);
+	offset = MP3FindSyncWord(probe, (int)nRead);
+	if (offset < 0)
+		return 0;
+	decoder = MP3InitDecoder();
+	if (!decoder)
+		return 0;
+	err = MP3GetNextFrameInfo(decoder, &info, probe + offset);
+	MP3FreeDecoder(decoder);
+	if (err != ERR_MP3_NONE)
+		return 0;
+	version = info.version == MPEG1 ? "1" : (info.version == MPEG2 ? "2" : "2.5");
+	printf("MPEG audio: version %s, layer %d\n", version, info.layer);
+	printf("sample rate: %d Hz\n", info.samprate);
+	printf("channels: %d\n", info.nChans);
+	printf("bitrate: %d bps\n", info.bitrate);
+	return 1;
+}
+
+static void PrintMp3Info(FILE *fp, const char *name)
+{
+	long fileSize;
+	unsigned long audioOffset;
+
+	fileSize = -1;
+	if (fseek(fp, 0, SEEK_END) == 0)
+		fileSize = ftell(fp);
+	printf("file: %s\n", name);
+	if (fileSize >= 0)
+		printf("file size: %lu bytes\n", (unsigned long)fileSize);
+	audioOffset = PrintId3v2(fp);
+	if (!PrintFirstFrameInfo(fp, audioOffset))
+		printf("MPEG audio: no frame found in first %d bytes after tags\n", READBUF_SIZE);
+	if (fileSize >= 0)
+		PrintId3v1(fp, fileSize);
+	fseek(fp, 0, SEEK_SET);
 }
 
 
@@ -2914,6 +3182,15 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	InputSourceInit(&input, infile);
+	if (opt.info) {
+		PrintMp3Info(infile, opt.inName);
+		if (!opt.play && !opt.outName) {
+			fclose(infile);
+			free(resolvedOutName);
+			AmigaFreeNormalizedArgs(&normalized);
+			return 0;
+		}
+	}
 	if (opt.fastMem && InputSourcePreloadFastMemory(&input) != 0) {
 		fprintf(stderr, "cannot preload input into Fast RAM: %s\n", opt.inName);
 		fclose(infile);
