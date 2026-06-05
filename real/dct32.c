@@ -108,6 +108,7 @@ static const int dcttab[48] = {
 	(defined(__mc68020__) || defined(__mc68030__) || defined(__mc68040__) || \
 	 defined(__mc68060__) || defined(mc68020))
 #define FDCT32_HAS_AMIGA_M68K_ASM 1
+static const int dct4 = COS4_0;
 static __inline int FDCT32_AMIGA_M68K_MULSHIFT32(int x, int y)
 {
 	int hi;
@@ -175,6 +176,131 @@ static __inline const int *FDCT32_AMIGA_M68K_FIRST_PASS(int *buf, const int *cpt
 	return cptr;
 }
 #undef FDCT32_M68K_FIRST_BUTTERFLY
+
+/*
+ * Keep the four radix-8 groups in one small loop.  Each half-butterfly uses
+ * d0-d6 with the same roles, writes its four intermediates back to buf, then
+ * the final stage reuses those slots.  This avoids compiler spills without
+ * cloning the kernel four times into the 68030 instruction cache.
+ */
+static __inline void FDCT32_AMIGA_M68K_SECOND_PASS(int *buf, const int *cptr)
+{
+	__asm__ volatile (
+		"\tmoveq #3,%%d7\n"
+		"1:\n"
+		/* even half: a0/a3/a4/a7 */
+		"\tmove.l (%0),%%d0\n\tmove.l 28(%0),%%d1\n"
+		"\tmove.l %%d0,%%d2\n\tadd.l %%d1,%%d0\n\tsub.l %%d1,%%d2\n"
+		"\tmuls.l (%1)+,%%d3:%%d2\n\tlsl.l #1,%%d3\n"
+		"\tmove.l 12(%0),%%d1\n\tmove.l 16(%0),%%d2\n"
+		"\tmove.l %%d1,%%d4\n\tadd.l %%d2,%%d1\n\tsub.l %%d2,%%d4\n"
+		"\tmuls.l (%1)+,%%d2:%%d4\n\tlsl.l #3,%%d2\n"
+		"\tmove.l %%d0,%%d4\n\tsub.l %%d1,%%d4\n"
+		"\tmuls.l (%1),%%d5:%%d4\n\tlsl.l #1,%%d5\n\tadd.l %%d1,%%d0\n"
+		"\tmove.l %%d3,%%d4\n\tsub.l %%d2,%%d4\n"
+		"\tmuls.l (%1)+,%%d6:%%d4\n\tlsl.l #1,%%d6\n\tadd.l %%d3,%%d2\n"
+		"\tmove.l %%d0,(%0)\n\tmove.l %%d5,12(%0)\n"
+		"\tmove.l %%d2,16(%0)\n\tmove.l %%d6,28(%0)\n"
+		/* odd half: a1/a2/a5/a6 */
+		"\tmove.l 4(%0),%%d0\n\tmove.l 24(%0),%%d1\n"
+		"\tmove.l %%d0,%%d2\n\tadd.l %%d1,%%d0\n\tsub.l %%d1,%%d2\n"
+		"\tmuls.l (%1)+,%%d3:%%d2\n\tlsl.l #1,%%d3\n"
+		"\tmove.l 8(%0),%%d1\n\tmove.l 20(%0),%%d2\n"
+		"\tmove.l %%d1,%%d4\n\tadd.l %%d2,%%d1\n\tsub.l %%d2,%%d4\n"
+		"\tmuls.l (%1)+,%%d2:%%d4\n\tlsl.l #1,%%d2\n"
+		"\tmove.l %%d0,%%d4\n\tsub.l %%d1,%%d4\n"
+		"\tmuls.l (%1),%%d5:%%d4\n\tlsl.l #2,%%d5\n\tadd.l %%d1,%%d0\n"
+		"\tmove.l %%d3,%%d4\n\tsub.l %%d2,%%d4\n"
+		"\tmuls.l (%1)+,%%d6:%%d4\n\tlsl.l #2,%%d6\n\tadd.l %%d3,%%d2\n"
+		"\tmove.l %%d0,4(%0)\n\tmove.l %%d5,8(%0)\n"
+		"\tmove.l %%d2,20(%0)\n\tmove.l %%d6,24(%0)\n"
+		/* final radix-2 stage */
+		"\tmove.l (%0),%%d0\n\tmove.l 4(%0),%%d1\n"
+		"\tmove.l %%d0,%%d2\n\tsub.l %%d1,%%d2\n\tadd.l %%d1,%%d0\n"
+		"\tmuls.l (%2),%%d3:%%d2\n\tlsl.l #1,%%d3\n"
+		"\tmove.l %%d0,(%0)\n\tmove.l %%d3,4(%0)\n"
+		"\tmove.l 8(%0),%%d0\n\tmove.l 12(%0),%%d1\n"
+		"\tmove.l %%d1,%%d2\n\tsub.l %%d0,%%d2\n\tadd.l %%d1,%%d0\n"
+		"\tmuls.l (%2),%%d3:%%d2\n\tlsl.l #1,%%d3\n\tadd.l %%d3,%%d0\n"
+		"\tmove.l %%d0,8(%0)\n\tmove.l %%d3,12(%0)\n"
+		"\tmove.l 16(%0),%%d0\n\tmove.l 20(%0),%%d1\n"
+		"\tmove.l %%d0,%%d2\n\tsub.l %%d1,%%d2\n\tadd.l %%d1,%%d0\n"
+		"\tmuls.l (%2),%%d3:%%d2\n\tlsl.l #1,%%d3\n"
+		"\tmove.l %%d0,16(%0)\n\tmove.l %%d3,%%d4\n"
+		"\tmove.l 24(%0),%%d0\n\tmove.l 28(%0),%%d1\n"
+		"\tmove.l %%d1,%%d2\n\tsub.l %%d0,%%d2\n\tadd.l %%d1,%%d0\n"
+		"\tmuls.l (%2),%%d3:%%d2\n\tlsl.l #1,%%d3\n\tadd.l %%d3,%%d0\n"
+		"\tmove.l 16(%0),%%d1\n\tadd.l %%d0,%%d1\n\tmove.l %%d1,16(%0)\n"
+		"\tmove.l %%d4,%%d1\n\tadd.l %%d3,%%d1\n\tmove.l %%d1,20(%0)\n"
+		"\tmove.l %%d4,%%d1\n\tadd.l %%d0,%%d1\n\tmove.l %%d1,24(%0)\n"
+		"\tmove.l %%d3,28(%0)\n"
+		"\tlea 32(%0),%0\n\tdbra %%d7,1b\n"
+		: "+a" (buf), "+a" (cptr)
+		: "a" (&dct4)
+		: "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "cc", "memory");
+}
+
+#define FDCT32_M68K_PAIR_STORE \
+	"\tmove.l %%d0,(%1)\n\tmove.l %%d0,32(%1)\n\tlea 256(%1),%1\n"
+
+/* Two bounded shuffle regions keep d0 as the sample and d1 as the reused sum. */
+static __inline void FDCT32_AMIGA_M68K_OUTPUT_HIGH(const int *buf, int *d)
+{
+	__asm__ volatile (
+		"\tmove.l 4(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 100(%0),%%d1\n\tadd.l 116(%0),%%d1\n"
+		"\tmove.l 68(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 36(%0),%%d0\n\tadd.l 52(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 84(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 20(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 116(%0),%%d1\n\tadd.l 108(%0),%%d1\n"
+		"\tmove.l 84(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 52(%0),%%d0\n\tadd.l 44(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 76(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 12(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 108(%0),%%d1\n\tadd.l 124(%0),%%d1\n"
+		"\tmove.l 76(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 44(%0),%%d0\n\tadd.l 60(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 92(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 28(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 124(%0),%%d1\n"
+		"\tmove.l 92(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 60(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l %%d1,%%d0\n\tmove.l %%d0,(%1)\n\tmove.l %%d0,32(%1)\n"
+		: "+a" (buf), "+a" (d)
+		:
+		: "d0", "d1", "cc", "memory");
+}
+
+static __inline void FDCT32_AMIGA_M68K_OUTPUT_LOW(const int *buf, int *d)
+{
+	__asm__ volatile (
+		"\tmove.l 4(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 120(%0),%%d1\n\tadd.l 100(%0),%%d1\n"
+		"\tmove.l 68(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 56(%0),%%d0\n\tadd.l 36(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 88(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 24(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 104(%0),%%d1\n\tadd.l 120(%0),%%d1\n"
+		"\tmove.l 88(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 40(%0),%%d0\n\tadd.l 56(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 72(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 8(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 112(%0),%%d1\n\tadd.l 104(%0),%%d1\n"
+		"\tmove.l 72(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 48(%0),%%d0\n\tadd.l 40(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 80(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 16(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 96(%0),%%d1\n\tadd.l 112(%0),%%d1\n"
+		"\tmove.l 80(%0),%%d0\n\tadd.l %%d1,%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 32(%0),%%d0\n\tadd.l 48(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 64(%0),%%d0\n\tadd.l %%d1,%%d0\n"
+		"\tmove.l %%d0,(%1)\n\tmove.l %%d0,32(%1)\n"
+		: "+a" (buf), "+a" (d)
+		:
+		: "d0", "d1", "cc", "memory");
+}
+#undef FDCT32_M68K_PAIR_STORE
 #else
 #define FDCT32_HAS_AMIGA_M68K_ASM 0
 #endif
@@ -372,10 +498,8 @@ void FDCT32_C_REFERENCE(int *buf, int *dest, int offset, int oddBlock, int gb)
 
 static void FDCT32_AMIGA_M68K_ASM(int *buf, int *dest, int offset, int oddBlock, int gb)
 {
-    int i, s, tmp, es, oddBase, evenBase, delayOff, clipBits;
+    int i, s, es, oddBase, evenBase, delayOff, clipBits;
     const int *cptr = dcttab;
-    int a0, a1, a2, a3, a4, a5, a6, a7;
-    int b0, b1, b2, b3, b4, b5, b6, b7;
 	int *d;
 
 	/* scaling - ensure at least 6 guard bits for DCT
@@ -392,34 +516,8 @@ static void FDCT32_AMIGA_M68K_ASM(int *buf, int *dest, int offset, int oddBlock,
 	/* first pass: register-scheduled 68030 assembly kernel */
 	cptr = FDCT32_AMIGA_M68K_FIRST_PASS(buf, cptr);
 
-	/* second pass */
-	for (i = 4; i > 0; i--) {
-		a0 = buf[0]; 	    a7 = buf[7];		a3 = buf[3];	    a4 = buf[4];
-		b0 = a0 + a7;	    b7 = FDCT32_MULSHIFT32(*cptr++, a0 - a7) << 1;
-		b3 = a3 + a4;	    b4 = FDCT32_MULSHIFT32(*cptr++, a3 - a4) << 3;
-		a0 = b0 + b3;	    a3 = FDCT32_MULSHIFT32(*cptr,   b0 - b3) << 1;
-		a4 = b4 + b7;		a7 = FDCT32_MULSHIFT32(*cptr++, b7 - b4) << 1;
-
-		a1 = buf[1];	    a6 = buf[6];	    a2 = buf[2];	    a5 = buf[5];
-		b1 = a1 + a6;	    b6 = FDCT32_MULSHIFT32(*cptr++, a1 - a6) << 1;
-		b2 = a2 + a5;	    b5 = FDCT32_MULSHIFT32(*cptr++, a2 - a5) << 1;
-		a1 = b1 + b2;		a2 = FDCT32_MULSHIFT32(*cptr,   b1 - b2) << 2;
-		a5 = b5 + b6;	    a6 = FDCT32_MULSHIFT32(*cptr++, b6 - b5) << 2;
-
-		b0 = a0 + a1;	    b1 = FDCT32_MULSHIFT32(COS4_0, a0 - a1) << 1;
-		b2 = a2 + a3;	    b3 = FDCT32_MULSHIFT32(COS4_0, a3 - a2) << 1;
-		buf[0] = b0;	    buf[1] = b1;
-		buf[2] = b2 + b3;	buf[3] = b3;
-
-		b4 = a4 + a5;	    b5 = FDCT32_MULSHIFT32(COS4_0, a4 - a5) << 1;
-		b6 = a6 + a7;	    b7 = FDCT32_MULSHIFT32(COS4_0, a7 - a6) << 1;
-		b6 += b7;
-		buf[4] = b4 + b6;	buf[5] = b5 + b7;
-		buf[6] = b5 + b6;	buf[7] = b7;
-
-		buf += 8;
-	}
-	buf -= 32;	/* reset */
+	/* second pass: compact register-scheduled loop, including final radix-2 */
+	FDCT32_AMIGA_M68K_SECOND_PASS(buf, cptr);
 
 	oddBase = oddBlock ? VBUF_LENGTH : 0;
 	evenBase = oddBlock ? 0 : VBUF_LENGTH;
@@ -432,58 +530,12 @@ static void FDCT32_AMIGA_M68K_ASM(int *buf, int *dest, int offset, int oddBlock,
 	/* samples 16 to 31 */
 	d = dest + offset + oddBase;
 
-	s = buf[ 1];				d[0] = d[8] = s;	d += 64;
-
-	tmp = buf[25] + buf[29];
-	s = buf[17] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[ 9] + buf[13];		d[0] = d[8] = s;	d += 64;
-	s = buf[21] + tmp;			d[0] = d[8] = s;	d += 64;
-
-	tmp = buf[29] + buf[27];
-	s = buf[ 5];				d[0] = d[8] = s;	d += 64;
-	s = buf[21] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[13] + buf[11];		d[0] = d[8] = s;	d += 64;
-	s = buf[19] + tmp;			d[0] = d[8] = s;	d += 64;
-
-	tmp = buf[27] + buf[31];
-	s = buf[ 3];				d[0] = d[8] = s;	d += 64;
-	s = buf[19] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[11] + buf[15];		d[0] = d[8] = s;	d += 64;
-	s = buf[23] + tmp;			d[0] = d[8] = s;	d += 64;
-
-	tmp = buf[31];
-	s = buf[ 7];				d[0] = d[8] = s;	d += 64;
-	s = buf[23] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[15];				d[0] = d[8] = s;	d += 64;
-	s = tmp;					d[0] = d[8] = s;
+	FDCT32_AMIGA_M68K_OUTPUT_HIGH(buf, d);
 
 	/* samples 16 to 1 (sample 16 used again) */
 	d = dest + 16 + delayOff + evenBase;
 
-	s = buf[ 1];				d[0] = d[8] = s;	d += 64;
-
-	tmp = buf[30] + buf[25];
-	s = buf[17] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[14] + buf[ 9];		d[0] = d[8] = s;	d += 64;
-	s = buf[22] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[ 6];				d[0] = d[8] = s;	d += 64;
-
-	tmp = buf[26] + buf[30];
-	s = buf[22] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[10] + buf[14];		d[0] = d[8] = s;	d += 64;
-	s = buf[18] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[ 2];				d[0] = d[8] = s;	d += 64;
-
-	tmp = buf[28] + buf[26];
-	s = buf[18] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[12] + buf[10];		d[0] = d[8] = s;	d += 64;
-	s = buf[20] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[ 4];				d[0] = d[8] = s;	d += 64;
-
-	tmp = buf[24] + buf[28];
-	s = buf[20] + tmp;			d[0] = d[8] = s;	d += 64;
-	s = buf[ 8] + buf[12];		d[0] = d[8] = s;	d += 64;
-	s = buf[16] + tmp;			d[0] = d[8] = s;
+	FDCT32_AMIGA_M68K_OUTPUT_LOW(buf, d);
 
 	/* this is so rarely invoked that it's not worth making two versions of the output
 	 *   shuffle code (one for no shift, one for clip + variable shift) like in IMDCT

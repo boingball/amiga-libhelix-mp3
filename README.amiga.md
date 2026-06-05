@@ -189,8 +189,11 @@ decoded frame count and output sample count.
    pass is one register-scheduled machine-code region: butterfly values remain
    in data registers, coefficients stream through an address register, and
    `muls.l` high words feed the next operation without C compiler spill/reload
-   boundaries.  The second pass continues to use exact inline `muls.l`, and
-   the original shuffle/scaling logic remains unchanged.  This flag is
+   boundaries.  The second pass is a compact four-iteration assembly kernel
+   with stable data-register roles rather than four unrolled copies, and the
+   two output-shuffle halves use bounded assembly regions that retain each
+   reused sum while issuing the paired stores directly.  The rare guard-bit
+   clipping/scaling pass remains in C.  This flag is
    deliberately disabled by default; leave it disabled if any checksum or
    `--selftest-fdct32` comparison differs from the C reference.
 

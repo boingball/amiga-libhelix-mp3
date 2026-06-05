@@ -12,6 +12,39 @@ samples that emit only one side of an existing polyphase pair. Coefficient
 tables, clipping, emitted sample order, and the multiply/accumulator order for
 each emitted sample are unchanged.
 
+## FDCT32 second-pass and output-shuffle profile
+
+This pass uses the already-confirmed first-pass `AMIGA_M68K_ASM_FDCT32` build
+as its before baseline.  The transform's second pass is kept as one compact
+four-iteration kernel instead of being unrolled four times, while the two
+16-sample shuffle/store halves are separate bounded kernels.  This limits hot
+code growth for the 68030 instruction cache and keeps the rare clipping pass
+outside the assembly fast path.
+
+Use the same calibrated WinUAE configuration, fixture, and build flags for both
+rows.  The workspace does not contain the required MP3 fixtures or a working
+Amiga execution environment, so the after value must be recorded on that target;
+do not treat a host timing as an FDCT32 result.
+
+| Build | `timing core subband/dct32` | Overall speed | Required checksum |
+| --- | ---: | ---: | --- |
+| Before: first-pass ASM baseline | ~5.64 s | ~1.05x realtime | confirmed baseline |
+| After: compact second pass + shuffle/store | _record on calibrated WinUAE_ | _record on calibrated WinUAE_ | must match before |
+
+Profile and checksum both required fast-lowrate modes before accepting the
+change:
+
+```sh
+amiga_mp3dec.fdct32.before --bench --no-output --checksum --fast-lowrate --rate 11025 --mono mono-56k-44100.mp3
+amiga_mp3dec.fdct32.after  --bench --no-output --checksum --fast-lowrate --rate 11025 --mono mono-56k-44100.mp3
+amiga_mp3dec.fdct32.before --bench --no-output --checksum --fast-lowrate --rate 11025 --mono stereo-44100.mp3
+amiga_mp3dec.fdct32.after  --bench --no-output --checksum --fast-lowrate --rate 11025 --mono stereo-44100.mp3
+```
+
+For each pair, compare `timing core subband/dct32`, `decode speed`, PCM
+checksum, and emitted sample count.  Reject the optimized build if either
+checksum differs, even when `--selftest-fdct32` passes.
+
 ## Dedicated mono fixed-stride emitter pass
 
 The mono `AMIGA_FAST_POLYPHASE` hot path now dispatches 11025 Hz stride-4 and
