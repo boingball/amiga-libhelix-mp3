@@ -153,6 +153,8 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   still run at full MP3 rate for mono input; stereo input with `--mono` is
   collapsed in the decoder after required MPEG stereo reconstruction, so the
   right-channel IMDCT/FDCT32/polyphase work and full stereo PCM copy are skipped.
+  Pure mid/side joint-stereo mono output also advances over the unused coded
+  side-channel Huffman payload, removing a bitrate-sensitive decode cost.
   `--bench` reports the huffman, dequant, stereo/post, imdct, subband/dct32,
   and polyphase buckets used to profile that path.
 - `--debug-fastlowrate` prints one line per decoded frame/granule with the

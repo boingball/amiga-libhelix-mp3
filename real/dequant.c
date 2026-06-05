@@ -118,9 +118,9 @@ int Dequantize(MP3DecInfo *mp3DecInfo, int gr)
 
 	/* Pure mid/side joint stereo is special for mono output: after MPEG
 	 * reconstruction, (L + R) / 2 is exactly the coded mid channel with the
-	 * same 1/sqrt(2) scale already applied by DequantChannel().  Huffman still
-	 * decodes both channels to keep the bitstream position exact, but the side
-	 * channel does not affect mono PCM and can skip dequant/IMDCT/synthesis. */
+	 * same 1/sqrt(2) scale already applied by DequantChannel().  The decoder can
+	 * advance over the known-length side-channel Huffman payload, and the side
+	 * channel does not affect mono PCM or dequant/IMDCT/synthesis. */
 	ch = (mp3DecInfo->outputMono && mp3DecInfo->nChans == 2 &&
 		fh->modeExt == 0x02) ? 1 : mp3DecInfo->nChans;
 
