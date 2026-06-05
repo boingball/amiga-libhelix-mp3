@@ -400,6 +400,18 @@ int DecodeHuffman(MP3DecInfo *mp3DecInfo, unsigned char *buf, int *bitOffset, in
 	if (huffBlockBits < 0)
 		return -1;
 
+	/* Pure mid/side joint stereo represents mono output entirely in channel 0.
+	 * Side info already supplies the exact channel payload length, so advance
+	 * over channel 1 rather than decoding coefficients Dequantize() discards.
+	 * This removes a major bitrate-sensitive cost from mono playback. */
+	if (mp3DecInfo->outputMono && mp3DecInfo->nChans == 2 && ch == 1 &&
+		fh->modeExt == 0x02) {
+		hi->nonZeroBound[ch] = 0;
+		buf += (huffBlockBits + *bitOffset) >> 3;
+		*bitOffset = (huffBlockBits + *bitOffset) & 0x07;
+		return (buf - startBuf);
+	}
+
 	/* figure out region boundaries (the first 2*bigVals coefficients divided into 3 regions) */
 	if (sis->winSwitchFlag && sis->blockType == 2) {
 		if (sis->mixedBlock == 0) {

@@ -565,7 +565,7 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 			mainPtr += offset;
 			mainBits -= sfBlockBits;
 
-			if (offset < 0 || mainBits < huffBlockBits) {
+			if (offset < 0 || huffBlockBits < 0 || mainBits < huffBlockBits) {
 				MP3ClearBadFrame(mp3DecInfo, outbuf);
 				return ERR_MP3_INVALID_SCALEFACT;
 			}
