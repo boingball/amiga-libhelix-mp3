@@ -73,23 +73,24 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
 - `--stereo` is opt-in only and applies only with `--play`. It keeps the default
   mono path unchanged, writes signed 8-bit samples per channel, preserves decoded
   left/right channels for stereo MP3 input where possible, and duplicates mono
-  MP3 input to both output channels. Stereo playback opens separate
+  MP3 input to both output channels. Streaming stereo playback opens separate
   `audio.device` allocations for one left Paula channel and one right Paula
-  channel, deinterleaving the playback buffers before submission. Stereo supports
-  `--rate 8820` and `--rate 11025` first; `--rate 22050` is allowed only as an
-  experimental/high-CPU stereo mode. `--rate 8287` is mono-only. Enabling stereo
+  channel, converts decoded interleaved signed 16-bit PCM directly into those
+  planar signed 8-bit chip-memory buffers, and submits them without an
+  interleaved playback work buffer or submission-time deinterleave pass. Stereo
+  supports `--rate 8820` and `--rate 11025` first; `--rate 22050` is allowed
+  only as an experimental/high-CPU stereo mode. `--rate 8287` is mono-only. Enabling stereo
   prints `Stereo playback needs significantly more CPU and may underrun on 030.`
 - `--play-fast-path` is accepted as an explicit alias for `--play`; the normal
   `--play` mode already uses this reduced-overhead streaming path.
 - `--buffer-seconds N` chooses the requested playback depth for each half of the
   `--play` double buffer; the default is 4 seconds for safer 030 playback. Values
   must be positive integers; values above 10 seconds are clamped to 10 seconds.
-  Mono playback submits its double buffers
-  directly to `audio.device`, so those buffers must be chip memory. Stereo
-  playback keeps the interleaved decode work buffers in normal RAM where
-  possible and uses chip memory only for the deinterleaved Paula left/right
-  submission buffers. If the requested 22050 Hz or stereo buffer set is too
-  large for available memory, playback automatically retries with smaller
+  Mono playback submits its double buffers directly to `audio.device`, so those
+  buffers must be chip memory. Streaming stereo playback fills the planar Paula
+  left/right chip-memory submission buffers directly. If the requested 22050 Hz
+  or stereo buffer set is too large for available memory, playback automatically
+  retries with smaller
   half-buffers and prints the reduced byte count instead of failing immediately.
   Playback prints the selected half-buffer duration and byte size at startup, and
   reports total underruns, per-buffer underruns, late-buffer count, and the

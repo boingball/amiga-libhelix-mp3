@@ -2029,9 +2029,14 @@ typedef struct DecodeStream {
 	short decodeBuf[OUTBUF_SAMPS];
 	short writeBuf[OUTBUF_SAMPS];
 	short rateBuf[OUTBUF_SAMPS];
-	signed char spillBuf[OUTBUF_SAMPS];
+	union {
+		signed char interleaved[OUTBUF_SAMPS];
+		signed char planar[2][OUTBUF_SAMPS / 2];
+	} spill;
 	int spillPos;
 	int spillCount;
+	int planarSpillPos;
+	int planarSpillCount;
 	int bytesLeft;
 	int eofReached;
 	int outOfData;
@@ -2066,7 +2071,7 @@ static int DecodeStreamCopySpill(DecodeStream *stream, signed char *dest,
 	n = stream->spillCount - stream->spillPos;
 	if (n > maxBytes)
 		n = maxBytes;
-	memcpy(dest + *outBytes, stream->spillBuf + stream->spillPos, n);
+	memcpy(dest + *outBytes, stream->spill.interleaved + stream->spillPos, n);
 	stream->spillPos += n;
 	*outBytes += n;
 	if (stream->spillPos >= stream->spillCount) {
@@ -2201,7 +2206,7 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 				stream->timing->pcmConvert += clock() - t0;
 
 			for (i = 0; i < outSamps; i++)
-				stream->spillBuf[i] = Sample16ToS8(stream->writeBuf[i]);
+				stream->spill.interleaved[i] = Sample16ToS8(stream->writeBuf[i]);
 			stream->spillPos = 0;
 			stream->spillCount = outSamps;
 			stream->stats->outputSamples += (unsigned long)outSamps;
@@ -2210,6 +2215,182 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 		}
 	}
 
+	return produced;
+}
+
+static int DecodeStreamCopyPlanarSpill(DecodeStream *stream, signed char *left,
+	signed char *right, int maxFrames, int *outFrames)
+{
+	int n;
+
+	if (stream->planarSpillPos >= stream->planarSpillCount) {
+		stream->planarSpillPos = 0;
+		stream->planarSpillCount = 0;
+		return 0;
+	}
+	n = stream->planarSpillCount - stream->planarSpillPos;
+	if (n > maxFrames)
+		n = maxFrames;
+	memcpy(left + *outFrames, stream->spill.planar[0] + stream->planarSpillPos, n);
+	memcpy(right + *outFrames, stream->spill.planar[1] + stream->planarSpillPos, n);
+	stream->planarSpillPos += n;
+	*outFrames += n;
+	if (stream->planarSpillPos >= stream->planarSpillCount) {
+		stream->planarSpillPos = 0;
+		stream->planarSpillCount = 0;
+	}
+	return n;
+}
+
+/* Stereo streaming writes converted samples straight into Paula's planar buffers. */
+static int DecodeStreamFillPlanarS8(DecodeStream *stream, const DecodeOptions *opt,
+	signed char *left, signed char *right, int maxFrames)
+{
+	MP3FrameInfo info;
+	int produced;
+
+	produced = 0;
+	DecodeStreamCopyPlanarSpill(stream, left, right, maxFrames, &produced);
+	while (produced < maxFrames && !stream->outOfData) {
+		const short *pcm;
+		int frames;
+		int channels;
+		int nRead;
+		int offset;
+		int err;
+		int i;
+		int direct;
+		unsigned char *frameStart;
+		int frameBytes;
+		clock_t t0;
+
+		if (stream->bytesLeft < 2 * MAINBUF_SIZE && !stream->eofReached) {
+			nRead = FillReadBuffer(stream->readBuf, stream->readPtr,
+				READBUF_SIZE, stream->bytesLeft, stream->input);
+			stream->bytesLeft += nRead;
+			stream->readPtr = stream->readBuf;
+			if (nRead == 0)
+				stream->eofReached = 1;
+		}
+
+		offset = FindValidatedMpegSync(stream->readPtr, stream->bytesLeft);
+		if (offset < 0) {
+			if (stream->eofReached)
+				break;
+			if (stream->bytesLeft > 3) {
+				stream->readPtr += stream->bytesLeft - 3;
+				stream->bytesLeft = 3;
+			}
+			continue;
+		}
+		stream->readPtr += offset;
+		stream->bytesLeft -= offset;
+		frameStart = stream->readPtr;
+		frameBytes = stream->bytesLeft;
+
+		if (stream->timing) {
+			t0 = clock();
+			err = MP3Decode(stream->decoder, &stream->readPtr,
+				&stream->bytesLeft, stream->decodeBuf, 0);
+			stream->timing->frameDecode += clock() - t0;
+		} else {
+			err = MP3Decode(stream->decoder, &stream->readPtr,
+				&stream->bytesLeft, stream->decodeBuf, 0);
+		}
+		if (err) {
+			if (err == ERR_MP3_INDATA_UNDERFLOW &&
+				stream->stats->decodedFrames == 0 && frameBytes > 1) {
+				stream->readPtr = frameStart + 1;
+				stream->bytesLeft = frameBytes - 1;
+			} else if (err == ERR_MP3_INDATA_UNDERFLOW) {
+				stream->outOfData = 1;
+			} else if (err == ERR_MP3_MAINDATA_UNDERFLOW) {
+				/* Need more main data from later frames; keep decoding. */
+			} else if (stream->stats->decodedFrames == 0 && frameBytes > 1) {
+				stream->readPtr = frameStart + 1;
+				stream->bytesLeft = frameBytes - 1;
+			} else {
+				fprintf(stderr, "decode error %d after %lu frames\n",
+					err, stream->stats->decodedFrames);
+				stream->decodeError = 1;
+				stream->outOfData = 1;
+			}
+			continue;
+		}
+
+		MP3GetLastFrameInfo(stream->decoder, &info);
+		UpdateFirstFrameStats(stream->stats, &info);
+		if (!stream->effectiveRate) {
+			stream->effectiveRate = EffectiveOutputSampleRate(opt, info.samprate);
+			stream->stats->outputSampleRate = stream->effectiveRate;
+		}
+		if (stream->timing)
+			t0 = clock();
+
+		channels = info.nChans > 1 ? 2 : 1;
+		pcm = stream->decodeBuf;
+		frames = info.outputSamps / channels;
+		if (!opt->fastLowrate && opt->outputRate && info.samprate > opt->outputRate) {
+			if (channels == 1) {
+				for (i = frames - 1; i >= 0; i--) {
+					stream->writeBuf[2 * i] = stream->decodeBuf[i];
+					stream->writeBuf[2 * i + 1] = stream->decodeBuf[i];
+				}
+				pcm = stream->writeBuf;
+			} else {
+				pcm = stream->decodeBuf;
+			}
+			frames = DownsampleFrame(&stream->rateState, pcm, stream->rateBuf,
+				frames * 2, info.samprate, opt->outputRate, 2) / 2;
+			pcm = stream->rateBuf;
+			channels = 2;
+		}
+
+		if (stream->stats && opt->checksum) {
+			if (channels == 2) {
+				stream->stats->pcmChecksum = UpdatePcmChecksum(
+					stream->stats->pcmChecksum, pcm, frames * 2);
+			} else {
+				for (i = 0; i < frames; i++) {
+					short pair[2];
+					pair[0] = pcm[i];
+					pair[1] = pcm[i];
+					stream->stats->pcmChecksum = UpdatePcmChecksum(
+						stream->stats->pcmChecksum, pair, 2);
+				}
+			}
+		}
+
+		direct = frames;
+		if (direct > maxFrames - produced)
+			direct = maxFrames - produced;
+		for (i = 0; i < direct; i++) {
+			if (channels == 2) {
+				left[produced + i] = Sample16ToS8(pcm[2 * i]);
+				right[produced + i] = Sample16ToS8(pcm[2 * i + 1]);
+			} else {
+				left[produced + i] = Sample16ToS8(pcm[i]);
+				right[produced + i] = left[produced + i];
+			}
+		}
+		stream->planarSpillPos = 0;
+		stream->planarSpillCount = frames - direct;
+		for (i = direct; i < frames; i++) {
+			int spill = i - direct;
+			if (channels == 2) {
+				stream->spill.planar[0][spill] = Sample16ToS8(pcm[2 * i]);
+				stream->spill.planar[1][spill] = Sample16ToS8(pcm[2 * i + 1]);
+			} else {
+				stream->spill.planar[0][spill] = Sample16ToS8(pcm[i]);
+				stream->spill.planar[1][spill] = stream->spill.planar[0][spill];
+			}
+		}
+		produced += direct;
+		stream->stats->outputSamples += (unsigned long)frames * 2UL;
+		stream->stats->decodedFrames++;
+		if (stream->timing)
+			stream->timing->pcmConvert += clock() - t0;
+	}
 	return produced;
 }
 
@@ -2430,6 +2611,16 @@ static int AmigaAudioSubmit(AmigaAudioPlayer *player, int index,
 	return 0;
 }
 
+static int AmigaAudioSubmitPlanar(AmigaAudioPlayer *player, int index,
+	unsigned long frames)
+{
+	if (!player->stereo || frames == 0 || frames > player->splitBytes)
+		return -1;
+	AmigaAudioSubmitOne(player, index, 1, player->splitBuf[index][1], frames);
+	AmigaAudioSubmitOne(player, index, 0, player->splitBuf[index][0], frames);
+	return 0;
+}
+
 static int AmigaAudioDone(AmigaAudioPlayer *player, int index)
 {
 	if (player->stereo) {
@@ -2519,6 +2710,15 @@ static int AmigaAudioSubmit(AmigaAudioPlayer *player, int index,
 	if (len == 0)
 		return -1;
 	player->sent[index][0] = 1;
+	return 0;
+}
+static int AmigaAudioSubmitPlanar(AmigaAudioPlayer *player, int index,
+	unsigned long frames)
+{
+	if (frames == 0)
+		return -1;
+	player->sent[index][0] = 1;
+	player->sent[index][1] = 1;
 	return 0;
 }
 static int AmigaAudioDone(AmigaAudioPlayer *player, int index)
@@ -2618,6 +2818,43 @@ static int PlaybackBufferPeakS8(const signed char *buf, unsigned long len)
 	return peak;
 }
 
+static unsigned long DecodeStreamFillPlaybackBuffer(DecodeStream *stream,
+	const DecodeOptions *opt, AmigaAudioPlayer *player, int index,
+	signed char *buf, unsigned long maxBytes)
+{
+	if (opt->stereo) {
+		int frames = DecodeStreamFillPlanarS8(stream, opt,
+			player->splitBuf[index][0], player->splitBuf[index][1],
+			(int)(maxBytes / 2UL));
+		return (unsigned long)frames * 2UL;
+	}
+	return (unsigned long)DecodeStreamFillS8(stream, opt, buf, (int)maxBytes);
+}
+
+static int AmigaAudioSubmitPlayback(AmigaAudioPlayer *player, int index,
+	signed char *buf, unsigned long len)
+{
+	if (player->stereo) {
+		if (len & 1UL)
+			return -1;
+		return AmigaAudioSubmitPlanar(player, index, len / 2UL);
+	}
+	return AmigaAudioSubmit(player, index, buf, len);
+}
+
+static int PlaybackBufferPeak(const DecodeOptions *opt,
+	const AmigaAudioPlayer *player, int index, const signed char *buf,
+	unsigned long len)
+{
+	if (opt->stereo) {
+		unsigned long frames = len / 2UL;
+		int leftPeak = PlaybackBufferPeakS8(player->splitBuf[index][0], frames);
+		int rightPeak = PlaybackBufferPeakS8(player->splitBuf[index][1], frames);
+		return leftPeak > rightPeak ? leftPeak : rightPeak;
+	}
+	return PlaybackBufferPeakS8(buf, len);
+}
+
 static unsigned long DecodeStreamFillPlaybackPrefill(DecodeStream *stream,
 	const DecodeOptions *opt, signed char *dest, unsigned long maxBytes,
 	unsigned long minSamples)
@@ -2705,8 +2942,11 @@ static void PrintPlaybackDebugStartup(const DecodeOptions *opt,
 		printf("debug-play: chip buffer B left/right: %p/%p size %lu\n",
 			(void *)player->splitBuf[1][0], (void *)player->splitBuf[1][1],
 			player->splitBytes);
-		printf("debug-play: work buffer A/B: %p/%p size %lu\n",
-			(void *)buf[0], (void *)buf[1], chunkBytes);
+		if (buf[0] || buf[1])
+			printf("debug-play: work buffer A/B: %p/%p size %lu\n",
+				(void *)buf[0], (void *)buf[1], chunkBytes);
+		else
+			printf("debug-play: work buffer: none (stereo fills planar chip buffers directly)\n");
 	} else {
 		printf("debug-play: chip buffer A: %p size %lu\n",
 			(void *)buf[0], chunkBytes);
@@ -2718,8 +2958,8 @@ static void PrintPlaybackDebugStartup(const DecodeOptions *opt,
 
 static int AmigaSetupPlaybackBuffers(AmigaAudioPlayer *player,
 	const DecodeOptions *opt, unsigned int period, unsigned long requestedBytes,
-	unsigned long minBytes, signed char *buf[2], unsigned long *chunkBytes,
-	PlaybackCleanupStatus *status)
+	unsigned long minBytes, int directPlanar, signed char *buf[2],
+	unsigned long *chunkBytes, PlaybackCleanupStatus *status)
 {
 	unsigned long tryBytes;
 
@@ -2734,9 +2974,11 @@ static int AmigaSetupPlaybackBuffers(AmigaAudioPlayer *player,
 
 	while (tryBytes >= minBytes) {
 		if (AmigaAudioOpen(player, period, opt->stereo, tryBytes) == 0) {
-			buf[0] = AmigaAllocPlaybackWorkBuffer(opt->stereo, tryBytes);
-			buf[1] = AmigaAllocPlaybackWorkBuffer(opt->stereo, tryBytes);
-			if (buf[0] && buf[1]) {
+			if (!directPlanar) {
+				buf[0] = AmigaAllocPlaybackWorkBuffer(opt->stereo, tryBytes);
+				buf[1] = AmigaAllocPlaybackWorkBuffer(opt->stereo, tryBytes);
+			}
+			if (directPlanar || (buf[0] && buf[1])) {
 				*chunkBytes = tryBytes;
 				if (tryBytes != requestedBytes)
 					printf("play buffer reduced to %lu bytes per half-buffer\n",
@@ -2814,7 +3056,7 @@ static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes
 	}
 	printf("PAL audio period: %u\n", period);
 	chunkBytes = PlaybackRequestedChunkBytes(opt, PlaybackOutputSampleRate(opt, stats));
-	if (AmigaSetupPlaybackBuffers(&player, opt, period, chunkBytes, 1UL,
+	if (AmigaSetupPlaybackBuffers(&player, opt, period, chunkBytes, 1UL, 0,
 		buf, &chunkBytes, &cleanupStatus) != 0) {
 		PrintPlaybackCleanupStatus(opt, &cleanupStatus);
 		return -1;
@@ -2971,15 +3213,19 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 	printf("play output rate: %d Hz\n", playbackRate);
 	requestedBytes = PlaybackRequestedChunkBytes(opt, playbackRate);
 	printf("PAL audio period: %u\n", period);
-	/* Decode before opening audio.device so invalid inputs never start playback. */
-	startupLen = DecodeStreamFillPlaybackPrefill(&stream, opt, startupBuf,
-		OUTBUF_SAMPS, 1UL);
-	if (stream.decodeError || startupLen == 0) {
-		fprintf(stderr, "no decoded samples; audio.device playback not started\n");
-		return -1;
+	/* Mono validates a decoded frame before allocating its chip work buffers. */
+	startupLen = 0;
+	if (!opt->stereo) {
+		startupLen = DecodeStreamFillPlaybackPrefill(&stream, opt, startupBuf,
+			OUTBUF_SAMPS, 1UL);
+		if (stream.decodeError || startupLen == 0) {
+			fprintf(stderr, "no decoded samples; audio.device playback not started\n");
+			return -1;
+		}
 	}
 	if (AmigaSetupPlaybackBuffers(&player, opt, period, requestedBytes,
-		startupLen, buf, &bufBytes, &cleanupStatus) != 0) {
+		opt->stereo ? 2UL : startupLen, opt->stereo, buf, &bufBytes,
+		&cleanupStatus) != 0) {
 		PrintPlaybackCleanupStatus(opt, &cleanupStatus);
 		return -1;
 	}
@@ -2992,11 +3238,16 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 
 	/* Fill both halves before the first CMD_WRITE starts playback. */
 	playbackChannels = opt->stereo ? 2UL : 1UL;
-	memcpy(buf[0], startupBuf, (size_t)startupLen);
-	len[0] = startupLen;
-	if (len[0] < bufBytes)
-		len[0] += (unsigned long)DecodeStreamFillS8(&stream, opt,
-			buf[0] + len[0], (int)(bufBytes - len[0]));
+	if (opt->stereo) {
+		len[0] = DecodeStreamFillPlaybackBuffer(&stream, opt, &player, 0,
+			buf[0], bufBytes);
+	} else {
+		memcpy(buf[0], startupBuf, (size_t)startupLen);
+		len[0] = startupLen;
+		if (len[0] < bufBytes)
+			len[0] += (unsigned long)DecodeStreamFillS8(&stream, opt,
+				buf[0] + len[0], (int)(bufBytes - len[0]));
+	}
 	PrintPlaybackFillDebug(opt, 0, len[0]);
 	if (stream.decodeError) {
 		AmigaAudioClose(&player, &cleanupStatus);
@@ -3004,7 +3255,8 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		PrintPlaybackCleanupStatus(opt, &cleanupStatus);
 		return -1;
 	}
-	if (len[0] > 0 && opt->debugPlay && PlaybackBufferPeakS8(buf[0], len[0]) == 0)
+	if (len[0] > 0 && opt->debugPlay &&
+		PlaybackBufferPeak(opt, &player, 0, buf[0], len[0]) == 0)
 		printf("first playback buffer is silent/near-silent\n");
 	if (len[0] == 0 || len[0] / playbackChannels == 0) {
 		fprintf(stderr, "first playback buffer fill produced zero CMD_WRITE bytes\n");
@@ -3013,8 +3265,8 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		PrintPlaybackCleanupStatus(opt, &cleanupStatus);
 		return -1;
 	}
-	len[1] = (unsigned long)DecodeStreamFillS8(&stream, opt, buf[1],
-		(int)bufBytes);
+	len[1] = DecodeStreamFillPlaybackBuffer(&stream, opt, &player, 1,
+		buf[1], bufBytes);
 	PrintPlaybackFillDebug(opt, 1, len[1]);
 	if (stream.decodeError) {
 		AmigaAudioClose(&player, &cleanupStatus);
@@ -3024,7 +3276,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 	}
 
 	/* Submit both prefilled requests so audio.device can switch without a gap. */
-	if (AmigaAudioSubmit(&player, 0, buf[0], len[0]) != 0) {
+	if (AmigaAudioSubmitPlayback(&player, 0, buf[0], len[0]) != 0) {
 		fprintf(stderr, "playback buffer A CMD_WRITE byte length is invalid\n");
 		err = -1;
 	} else {
@@ -3033,7 +3285,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 			printf("debug-play: CMD_WRITE submitted A: %lu bytes\n", len[0]);
 	}
 	if (err == 0 && len[1] > 0) {
-		if (AmigaAudioSubmit(&player, 1, buf[1], len[1]) != 0) {
+		if (AmigaAudioSubmitPlayback(&player, 1, buf[1], len[1]) != 0) {
 			fprintf(stderr, "playback buffer B CMD_WRITE byte length is invalid\n");
 			err = -1;
 		} else if (opt->debugPlay) {
@@ -3064,8 +3316,8 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		activeStarted = clock();
 		refill = active;
 		active = 1 - active;
-		len[refill] = (unsigned long)DecodeStreamFillS8(&stream, opt,
-			buf[refill], (int)bufBytes);
+		len[refill] = DecodeStreamFillPlaybackBuffer(&stream, opt, &player, refill,
+			buf[refill], bufBytes);
 		PrintPlaybackFillDebug(opt, refill, len[refill]);
 		if (stream.decodeError) {
 			err = -1;
@@ -3080,7 +3332,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 			if (opt->debugPlay)
 				printf("debug-play: underrun detected before buffer %s submit (no queued buffer)\n",
 					PlaybackBufferName(refill));
-			if (AmigaAudioSubmit(&player, refill, buf[refill], len[refill]) != 0) {
+			if (AmigaAudioSubmitPlayback(&player, refill, buf[refill], len[refill]) != 0) {
 				fprintf(stderr, "playback buffer %s CMD_WRITE byte length is invalid\n",
 					PlaybackBufferName(refill));
 				err = -1;
@@ -3113,7 +3365,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 				printf("debug-play: underrun detected before buffer %s refill submit\n",
 					PlaybackBufferName(refill));
 		}
-		if (AmigaAudioSubmit(&player, refill, buf[refill], len[refill]) != 0) {
+		if (AmigaAudioSubmitPlayback(&player, refill, buf[refill], len[refill]) != 0) {
 			fprintf(stderr, "playback buffer %s CMD_WRITE byte length is invalid\n",
 				PlaybackBufferName(refill));
 			err = -1;
@@ -3158,7 +3410,7 @@ static int AmigaPlayLifecycleTest(const DecodeOptions *opt)
 		buf[1] = NULL;
 		printf("play lifecycle test pass %d/3\n", pass + 1);
 		if (AmigaSetupPlaybackBuffers(&player, opt, period, requestedBytes,
-			opt->stereo ? 2UL : 1UL, buf, &chunkBytes, &cleanupStatus) != 0) {
+			opt->stereo ? 2UL : 1UL, 0, buf, &chunkBytes, &cleanupStatus) != 0) {
 			PrintPlaybackCleanupStatus(opt, &cleanupStatus);
 			err = -1;
 			break;
