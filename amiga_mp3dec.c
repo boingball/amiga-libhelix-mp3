@@ -81,7 +81,15 @@ typedef struct DecodeOptions {
 	int decodeThenPlay;
 	int playLifecycleTest;
 	int bufferSeconds;
+	int fastMem;
 } DecodeOptions;
+
+typedef struct InputSource {
+	FILE *file;
+	unsigned char *memory;
+	unsigned long memorySize;
+	unsigned long memoryPos;
+} InputSource;
 
 typedef struct DecodeStats {
 	unsigned long decodedFrames;
@@ -384,6 +392,7 @@ static void PrintUsage(const char *prog)
 	printf("  --decode-then-play decode whole MP3 to RAM, then play (debug for --play)\n");
 	printf("  --play-lifecycle-test open/submit/cleanup audio.device three times\n");
 	printf("  --buffer-seconds N playback seconds per half-buffer (default 4, clamped 1-10)\n");
+	printf("  --fast-mem   preload the compressed MP3 into Fast RAM before decoding/playback\n");
 	printf("  --decode-only decode frames only; skip PCM conversion and output\n");
 	printf("  --no-output  run conversion/compression paths but discard output bytes\n");
 	printf("  --rate HZ    output/downsample rate: 22050, 11025, 8820, or 8287 Hz\n");
@@ -472,6 +481,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 				fprintf(stderr, "--buffer-seconds requires a positive integer (1-10 seconds)\n");
 				return -1;
 			}
+		} else if (!strcmp(argv[i], "--fast-mem")) {
+			opt->fastMem = 1;
 		} else if (!strcmp(argv[i], "--decode-only")) {
 			opt->decodeOnly = 1;
 			opt->noOutput = 1;
@@ -630,13 +641,115 @@ static char *BuildDirectoryOutputName(const char *dir, const char *input,
 	return name;
 }
 
+static void *AllocFastInputMemory(unsigned long bytes)
+{
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	return AllocMem(bytes, MEMF_FAST);
+#else
+	return malloc((size_t)bytes);
+#endif
+}
+
+static void FreeFastInputMemory(void *memory, unsigned long bytes)
+{
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	if (memory)
+		FreeMem(memory, bytes);
+#else
+	(void)bytes;
+	free(memory);
+#endif
+}
+
+static void InputSourceInit(InputSource *input, FILE *file)
+{
+	memset(input, 0, sizeof(*input));
+	input->file = file;
+}
+
+static void InputSourceClose(InputSource *input)
+{
+	FreeFastInputMemory(input->memory, input->memorySize);
+	input->memory = NULL;
+	input->memorySize = 0;
+	input->memoryPos = 0;
+}
+
+static size_t InputSourceRead(InputSource *input, void *dest, size_t bytes)
+{
+	if (input->memory) {
+		unsigned long available;
+
+		available = input->memorySize - input->memoryPos;
+		if (bytes > (size_t)available)
+			bytes = (size_t)available;
+		if (bytes > 0) {
+			memcpy(dest, input->memory + input->memoryPos, bytes);
+			input->memoryPos += (unsigned long)bytes;
+		}
+		return bytes;
+	}
+	return fread(dest, 1, bytes, input->file);
+}
+
+static unsigned long InputSourceTell(const InputSource *input)
+{
+	if (input->memory)
+		return input->memoryPos;
+	{
+		long pos = ftell(input->file);
+		return pos < 0 ? 0UL : (unsigned long)pos;
+	}
+}
+
+static void InputSourceSeek(InputSource *input, unsigned long pos)
+{
+	if (input->memory) {
+		input->memoryPos = pos <= input->memorySize ? pos : input->memorySize;
+	} else {
+		fseek(input->file, (long)pos, SEEK_SET);
+	}
+}
+
+static int InputSourcePreloadFastMemory(InputSource *input)
+{
+	long fileSize;
+	unsigned char *memory;
+	size_t nRead;
+
+	if (fseek(input->file, 0, SEEK_END) != 0)
+		return -1;
+	fileSize = ftell(input->file);
+	if (fileSize <= 0 || (unsigned long)fileSize > (unsigned long)(size_t)-1) {
+		fseek(input->file, 0, SEEK_SET);
+		return -1;
+	}
+	if (fseek(input->file, 0, SEEK_SET) != 0)
+		return -1;
+	memory = (unsigned char *)AllocFastInputMemory((unsigned long)fileSize);
+	if (!memory)
+		return -1;
+	nRead = fread(memory, 1, (size_t)fileSize, input->file);
+	if (nRead != (size_t)fileSize) {
+		FreeFastInputMemory(memory, (unsigned long)fileSize);
+		fseek(input->file, 0, SEEK_SET);
+		return -1;
+	}
+	input->memory = memory;
+	input->memorySize = (unsigned long)fileSize;
+	input->memoryPos = 0;
+	printf("fast-mem input preload: %lu bytes\n", input->memorySize);
+	return 0;
+}
+
 static int FillReadBuffer(unsigned char *readBuf, unsigned char *readPtr, int bufSize,
-	int bytesLeft, FILE *infile)
+	int bytesLeft, InputSource *input)
 {
 	int nRead;
 
 	memmove(readBuf, readPtr, bytesLeft);
-	nRead = (int)fread(readBuf + bytesLeft, 1, bufSize - bytesLeft, infile);
+	nRead = (int)InputSourceRead(input, readBuf + bytesLeft,
+		(size_t)(bufSize - bytesLeft));
 	if (nRead < bufSize - bytesLeft) {
 		memset(readBuf + bytesLeft + nRead, 0,
 			bufSize - bytesLeft - nRead);
@@ -1536,7 +1649,7 @@ static int SelftestMulshift(void)
 
 
 typedef struct DecodeStream {
-	FILE *infile;
+	InputSource *input;
 	HMP3Decoder decoder;
 	unsigned char readBuf[READBUF_SIZE];
 	unsigned char *readPtr;
@@ -1556,11 +1669,11 @@ typedef struct DecodeStream {
 	RateState rateState;
 } DecodeStream;
 
-static void DecodeStreamInit(DecodeStream *stream, FILE *infile,
+static void DecodeStreamInit(DecodeStream *stream, InputSource *input,
 	HMP3Decoder decoder, DecodeStats *stats, TimingStats *timing)
 {
 	memset(stream, 0, sizeof(*stream));
-	stream->infile = infile;
+	stream->input = input;
 	stream->decoder = decoder;
 	stream->readPtr = stream->readBuf;
 	stream->stats = stats;
@@ -1605,7 +1718,7 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 
 		if (stream->bytesLeft < 2 * MAINBUF_SIZE && !stream->eofReached) {
 			nRead = FillReadBuffer(stream->readBuf, stream->readPtr,
-				READBUF_SIZE, stream->bytesLeft, stream->infile);
+				READBUF_SIZE, stream->bytesLeft, stream->input);
 			stream->bytesLeft += nRead;
 			stream->readPtr = stream->readBuf;
 			if (nRead == 0)
@@ -2158,24 +2271,21 @@ static unsigned long DecodeStreamFillPlaybackPrefill(DecodeStream *stream,
 	return produced;
 }
 
-static int ProbeInputSampleRate(FILE *infile, HMP3Decoder decoder,
+static int ProbeInputSampleRate(InputSource *input, HMP3Decoder decoder,
 	DecodeStats *stats)
 {
 	unsigned char probe[READBUF_SIZE];
 	HMP3Decoder probeDecoder;
-	long pos;
+	unsigned long pos;
 	size_t nRead;
 	int offset;
 	int err;
 	MP3FrameInfo info;
 
 	(void)decoder;
-	pos = ftell(infile);
-	nRead = fread(probe, 1, sizeof(probe), infile);
-	if (pos >= 0)
-		fseek(infile, pos, SEEK_SET);
-	else
-		fseek(infile, 0, SEEK_SET);
+	pos = InputSourceTell(input);
+	nRead = InputSourceRead(input, probe, sizeof(probe));
+	InputSourceSeek(input, pos);
 	if (nRead == 0)
 		return 0;
 	offset = MP3FindSyncWord(probe, (int)nRead);
@@ -2390,7 +2500,7 @@ static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes
 	return 0;
 }
 
-static int AmigaPlayDecodeThenPlay(FILE *infile, HMP3Decoder decoder,
+static int AmigaPlayDecodeThenPlay(InputSource *input, HMP3Decoder decoder,
 	const DecodeOptions *opt, DecodeStats *stats, TimingStats *timing)
 {
 	DecodeStream stream;
@@ -2400,7 +2510,7 @@ static int AmigaPlayDecodeThenPlay(FILE *infile, HMP3Decoder decoder,
 	unsigned long cap;
 	int n;
 
-	DecodeStreamInit(&stream, infile, decoder, stats, timing);
+	DecodeStreamInit(&stream, input, decoder, stats, timing);
 	all = NULL;
 	used = 0;
 	cap = 0;
@@ -2442,7 +2552,7 @@ static int AmigaPlayDecodeThenPlay(FILE *infile, HMP3Decoder decoder,
 	return n;
 }
 
-static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
+static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 	const DecodeOptions *opt, DecodeStats *stats, TimingStats *timing)
 {
 	DecodeStream stream;
@@ -2462,12 +2572,12 @@ static int AmigaPlayStreaming(FILE *infile, HMP3Decoder decoder,
 	int err;
 
 	PlaybackCleanupStatusInit(&cleanupStatus);
-	inputSampleRate = ProbeInputSampleRate(infile, decoder, stats);
+	inputSampleRate = ProbeInputSampleRate(input, decoder, stats);
 	playbackRate = EffectiveOutputSampleRate(opt, inputSampleRate);
 	if (playbackRate <= 0)
 		playbackRate = opt->outputRate > 0 ? opt->outputRate : 8287;
 	stats->outputSampleRate = playbackRate;
-	DecodeStreamInit(&stream, infile, decoder, stats, timing);
+	DecodeStreamInit(&stream, input, decoder, stats, timing);
 	period = AmigaPalAudioPeriod(playbackRate);
 	PrintFastLowrateOutputRateDifference(opt, playbackRate);
 	printf("play output rate: %d Hz\n", playbackRate);
@@ -2688,6 +2798,7 @@ int main(int argc, char **argv)
 	short writeBuf[OUTBUF_SAMPS];
 	short rateBuf[OUTBUF_SAMPS];
 	FILE *infile;
+	InputSource input;
 	FILE *outfile;
 	HMP3Decoder decoder;
 	MP3FrameInfo info;
@@ -2802,12 +2913,21 @@ int main(int argc, char **argv)
 		AmigaFreeNormalizedArgs(&normalized);
 		return 1;
 	}
+	InputSourceInit(&input, infile);
+	if (opt.fastMem && InputSourcePreloadFastMemory(&input) != 0) {
+		fprintf(stderr, "cannot preload input into Fast RAM: %s\n", opt.inName);
+		fclose(infile);
+		free(resolvedOutName);
+		AmigaFreeNormalizedArgs(&normalized);
+		return 1;
+	}
 
 	outfile = NULL;
 	if (!opt.noOutput) {
 		outfile = fopen(opt.outName, opt.outFormat == OUT_8SVX ? "wb+" : "wb");
 		if (!outfile) {
 			fprintf(stderr, "cannot open output: %s\n", opt.outName);
+			InputSourceClose(&input);
 			fclose(infile);
 			free(resolvedOutName);
 			AmigaFreeNormalizedArgs(&normalized);
@@ -2818,6 +2938,7 @@ int main(int argc, char **argv)
 	decoder = MP3InitDecoder();
 	if (!decoder) {
 		fprintf(stderr, "MP3InitDecoder failed\n");
+		InputSourceClose(&input);
 		fclose(infile);
 		if (outfile)
 			fclose(outfile);
@@ -2861,9 +2982,9 @@ int main(int argc, char **argv)
 			startClock = clock();
 		}
 		if (opt.decodeThenPlay)
-			playErr = AmigaPlayDecodeThenPlay(infile, decoder, &opt, &stats, playTiming);
+			playErr = AmigaPlayDecodeThenPlay(&input, decoder, &opt, &stats, playTiming);
 		else
-			playErr = AmigaPlayStreaming(infile, decoder, &opt, &stats, playTiming);
+			playErr = AmigaPlayStreaming(&input, decoder, &opt, &stats, playTiming);
 		if (opt.bench)
 			endClock = clock();
 		if (!stats.outputSampleRate)
@@ -2915,6 +3036,7 @@ int main(int argc, char **argv)
 		signal(SIGINT, SIG_DFL);
 #endif
 		MP3FreeDecoder(decoder);
+		InputSourceClose(&input);
 		fclose(infile);
 		gTiming = NULL;
 		MP3SetDecodeCoreProfileEnabled(0);
@@ -2944,7 +3066,7 @@ int main(int argc, char **argv)
 
 		if (bytesLeft < 2 * MAINBUF_SIZE && !eofReached) {
 			nRead = FillReadBuffer(readBuf, readPtr, READBUF_SIZE,
-				bytesLeft, infile);
+				bytesLeft, &input);
 			bytesLeft += nRead;
 			readPtr = readBuf;
 			if (nRead == 0)
@@ -3190,6 +3312,7 @@ int main(int argc, char **argv)
 	}
 
 	MP3FreeDecoder(decoder);
+	InputSourceClose(&input);
 	fclose(infile);
 	if (outfile)
 		fclose(outfile);

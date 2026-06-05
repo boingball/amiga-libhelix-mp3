@@ -27,7 +27,7 @@ fallback.
 
 ```sh
 amiga_mp3dec [options] infile.mp3 outfile
-amiga_mp3dec --play [--stereo] [--rate 8287|8820|11025|22050] [--buffer-seconds N] infile.mp3
+amiga_mp3dec --play [--stereo] [--rate 8287|8820|11025|22050] [--buffer-seconds N] [--fast-mem] infile.mp3
 amiga_mp3dec --play-lifecycle-test [--debug-play] [--buffer-seconds N]
 ```
 
@@ -88,6 +88,18 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   Playback prints the selected half-buffer duration and byte size at startup, and
   reports total underruns, per-buffer underruns, late-buffer count, and the
   minimum measured spare time before a playing buffer ended at exit.
+- `--fast-mem` preloads the complete compressed MP3 into Fast RAM before decoding
+  or playback starts. On AmigaOS builds it requests `MEMF_FAST`, so the input
+  does not consume chip RAM needed by Paula buffers. This removes filesystem and
+  slow-HDD reads from the realtime decode/refill loop and prints the allocated
+  byte count at startup. The option fails before playback if the complete input
+  cannot be sized, read, or allocated; it never silently falls back to disk.
+  Unlike `--decode-then-play`, it stores only the compressed MP3 and continues to
+  decode into the normal double-buffered playback path, so it normally needs far
+  less RAM. It intentionally preloads synchronously: background HDD I/O on a
+  CPU-limited 68030 could still steal decode time at unpredictable points.
+  For slow disks, start with `--play --fast-mem`; if decode-time spikes can still
+  exhaust the queued audio, also increase `--buffer-seconds` toward 10.
 - `--debug-play` prints startup diagnostics for Paula streaming, including the
   actual output rate, PAL period, requested buffer depth, selected half-buffer
   samples/bytes, chip submission buffer addresses/sizes, optional stereo work
