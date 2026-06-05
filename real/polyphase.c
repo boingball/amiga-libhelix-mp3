@@ -633,14 +633,21 @@ static __inline void PolyphaseStereoFastSample(short *pcm, int sample, int *vbuf
 		pair = sample < 16 ? sample : 32 - sample;
 		coef = coefBase + 16 * pair;
 		vb1 = vbuf + 64 * pair;
-		sum1L = 0;
-		sum2L = 0;
-		sum1R = 0;
-		sum2R = 0;
-		FAST_MC2(sum1L, sum2L, vb1, coef);
-		FAST_MC2(sum1R, sum2R, vb1 + 32, coef);
-		pcm[0] = ClipIntToShort(sample < 16 ? sum1L : sum2L);
-		pcm[1] = ClipIntToShort(sample < 16 ? sum1R : sum2R);
+		if (sample < 16) {
+			sum1L = 0;
+			sum1R = 0;
+			FAST_MC2_LO(sum1L, vb1, coef);
+			FAST_MC2_LO(sum1R, vb1 + 32, coef);
+			pcm[0] = ClipIntToShort(sum1L);
+			pcm[1] = ClipIntToShort(sum1R);
+		} else {
+			sum2L = 0;
+			sum2R = 0;
+			FAST_MC2_HI(sum2L, vb1, coef);
+			FAST_MC2_HI(sum2R, vb1 + 32, coef);
+			pcm[0] = ClipIntToShort(sum2L);
+			pcm[1] = ClipIntToShort(sum2R);
+		}
 	}
 }
 

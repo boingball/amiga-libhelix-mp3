@@ -138,9 +138,10 @@ Build/profile: `AMIGA_PROFILE_DECODE + AMIGA_FAST_POLYPHASE + --fast-lowrate --r
 - The one-sided helpers copy the emitted side's coefficient loads, vbuf loads,
   multiply calls, and accumulator expression order from `FAST_MC2`; they only
   omit the paired accumulator whose PCM value is not emitted.
-- Full-rate mono/stereo synthesis and normal `--rate` downsampling remain on the
-  existing paths. Stereo fast-lowrate still uses the paired helper until mono
-  target checksums have been verified on the Amiga benchmark machine.
+- Stereo fast-lowrate applies the same one-sided helpers independently to the
+  left and right channels. Samples 0 and 16 remain on their existing special
+  paths, and full-rate mono/stereo synthesis plus normal `--rate` downsampling
+  remain unchanged.
 
 ## Checksum/benchmark log
 
