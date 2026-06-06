@@ -30,6 +30,11 @@
 #include "assembly.h"
 #include "statname.h"
 
+#if defined(AMIGA_M68K)
+/* Tell AmigaOS to provide at least 250 KB of stack for this executable. */
+static const char amigaStackCookie[] __attribute__((used)) = "$STACK:250000";
+#endif
+
 void STATNAME(FDCT32)(int *x, int *d, int offset, int oddBlock, int gb);
 void STATNAME(FDCT32_C_REFERENCE)(int *x, int *d, int offset, int oddBlock, int gb);
 int STATNAME(FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
