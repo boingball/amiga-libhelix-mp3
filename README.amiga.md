@@ -52,10 +52,12 @@ instead of a preprocessor define.
 
 
 `--exp-poly` selects the additional experimental 68030 mono polyphase
-assembly path in `AMIGA_M68K_ASM_POLYPHASE` builds.  Without that runtime
-argument, the existing `AMIGA_FAST_POLYPHASE` C path remains in use, so the
-older experimental polyphase can coexist with the hand-written unrolled
-`muls.l` routine while target profiling compares both variants.
+assembly path in `AMIGA_M68K_ASM_POLYPHASE` builds when
+`real/amiga_m68k_polyphase.S` is linked.  If the macro is set but the optional
+assembly source is omitted, the weak asm reference resolves as unavailable and
+the decoder falls back to the existing `AMIGA_FAST_POLYPHASE` C path instead of
+failing at link time.  Without the runtime argument, the older experimental
+polyphase remains in use so target profiling can compare both variants.
 
 The command-line decoder embeds an AmigaOS `$STACK:250000` cookie, requesting a
 minimum 250,000-byte stack without requiring users to run the `Stack` command

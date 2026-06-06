@@ -3907,7 +3907,9 @@ int main(int argc, char **argv)
 	MP3SetExperimentalPolyphase(opt.expPoly);
 	if (opt.expPoly) {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
-		fprintf(stderr, "warning: --exp-poly enables experimental 68030 asm mono polyphase; stereo uses the existing fast path\n");
+		fprintf(stderr, "warning: --exp-poly enables experimental 68030 asm "
+			"mono polyphase when real/amiga_m68k_polyphase.S is linked; "
+			"otherwise it falls back to the existing fast path\n");
 #else
 		fprintf(stderr, "warning: --exp-poly requested, but this build has no 68030 asm polyphase; using existing polyphase\n");
 #endif
