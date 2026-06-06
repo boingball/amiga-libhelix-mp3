@@ -42,6 +42,15 @@
  **************************************************************************************/
 
 #include "coder.h"
+#if defined(AMIGA_M68K) || \
+	(defined(__GNUC__) && (defined(__mc68000__) || defined(__mc68020__) || defined(mc68000)))
+#include "assembly.h"
+#else
+static __inline unsigned int LOADBE16(const unsigned char *buf)
+{
+	return ((unsigned int)buf[0] << 8) | (unsigned int)buf[1];
+}
+#endif
 #include "string.h"
 
 /* helper macros - see comments in hufftabs.c about the format of the huffman tables */
@@ -125,8 +134,8 @@ static int DecodeHuffmanPairs(int *xy, int nVals, int tabIdx, int bitsLeft, unsi
 			/* refill cache - assumes cachedBits <= 16 */
 			if (bitsLeft >= 16) {
 				/* load 2 new bytes into left-justified cache */
-				cache |= (unsigned int)(*buf++) << (24 - cachedBits);
-				cache |= (unsigned int)(*buf++) << (16 - cachedBits);
+				cache |= LOADBE16(buf) << (16 - cachedBits);
+				buf += 2;
 				cachedBits += 16;
 				bitsLeft -= 16;
 			} else {
@@ -174,8 +183,8 @@ static int DecodeHuffmanPairs(int *xy, int nVals, int tabIdx, int bitsLeft, unsi
 		while (nVals > 0) {
 			/* refill cache - assumes cachedBits <= 16 */
 			if (bitsLeft >= 16) {
-				cache |= (unsigned int)(*buf++) << (24 - cachedBits);
-				cache |= (unsigned int)(*buf++) << (16 - cachedBits);
+				cache |= LOADBE16(buf) << (16 - cachedBits);
+				buf += 2;
 				cachedBits += 16;
 				bitsLeft -= 16;
 			} else {
@@ -224,8 +233,8 @@ static int DecodeHuffmanPairs(int *xy, int nVals, int tabIdx, int bitsLeft, unsi
 			/* refill cache - assumes cachedBits <= 16 */
 			if (bitsLeft >= 16) {
 				/* load 2 new bytes into left-justified cache */
-				cache |= (unsigned int)(*buf++) << (24 - cachedBits);
-				cache |= (unsigned int)(*buf++) << (16 - cachedBits);
+				cache |= LOADBE16(buf) << (16 - cachedBits);
+				buf += 2;
 				cachedBits += 16;
 				bitsLeft -= 16;
 			} else {
@@ -361,8 +370,8 @@ static int DecodeHuffmanQuads(int *vwxy, int nVals, int tabIdx, int bitsLeft, un
 		/* refill cache - assumes cachedBits <= 16 */
 		if (bitsLeft >= 16) {
 			/* load 2 new bytes into left-justified cache */
-			cache |= (unsigned int)(*buf++) << (24 - cachedBits);
-			cache |= (unsigned int)(*buf++) << (16 - cachedBits);
+			cache |= LOADBE16(buf) << (16 - cachedBits);
+			buf += 2;
 			cachedBits += 16;
 			bitsLeft -= 16;
 		} else {

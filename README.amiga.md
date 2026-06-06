@@ -23,6 +23,11 @@ as `-D__riscv` only if your compiler supports the helper assembly for that
 architecture; otherwise build with `-DAMIGA_M68K` to exercise the plain-C
 fallback.
 
+On a real 68020+ target, the Huffman cache's full 16-bit refill uses one
+potentially unaligned `move.w` through `LOADBE16`.  No `REV16` byte swap is
+needed because m68k is already big-endian.  68000/68010 and non-m68k smoke
+builds retain the safe two-byte C fallback.
+
 ### Playback cleanup diagnostics
 
 Playback resources are owned by one audio-player lifecycle and released through a

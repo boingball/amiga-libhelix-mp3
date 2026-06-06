@@ -523,4 +523,35 @@ static __inline Word64 SAR64(Word64 x, int n)
 
 #endif	/* platforms */
 
+/*
+ * Read two consecutive bitstream bytes as one big-endian 16-bit value.
+ *
+ * A REV16 after a uint16_t load is useful on little-endian targets.  Native
+ * m68k is already big-endian, so the equivalent (and cheaper) operation is a
+ * single word load with no byte swap.  Restrict the potentially unaligned
+ * word load to 68020+; the portable byte loads remain safe for 68000/68010 and
+ * for non-m68k builds that define AMIGA_M68K while exercising the C backend.
+ */
+#if defined(__GNUC__) && \
+	(defined(__mc68020__) || defined(__mc68030__) || defined(__mc68040__) || \
+	 defined(__mc68060__) || defined(mc68020))
+static __inline unsigned int LOADBE16(const unsigned char *buf)
+{
+	unsigned int value;
+
+	__asm__ volatile ("moveq #0,%0\n\tmove.w (%1),%0"
+		: "=&d" (value)
+		: "a" (buf)
+		: "memory");
+	return value;
+}
+#define LOADBE16_HAS_M68K_WORD_LOAD 1
+#else
+static __inline unsigned int LOADBE16(const unsigned char *buf)
+{
+	return ((unsigned int)buf[0] << 8) | (unsigned int)buf[1];
+}
+#define LOADBE16_HAS_M68K_WORD_LOAD 0
+#endif
+
 #endif /* _ASSEMBLY_H */
