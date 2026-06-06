@@ -18,6 +18,10 @@ m68k-amigaos-gcc -m68020 -O2 -Ipub -Ireal \
   -o amiga_mp3dec amiga_mp3dec.c mp3dec.c mp3tabs.c real/*.c
 ```
 
+The command-line decoder embeds an AmigaOS `$STACK:250000` cookie, requesting a
+minimum 250,000-byte stack without requiring users to run the `Stack` command
+first.
+
 For a native smoke build on a non-Amiga host, use a portable backend define such
 as `-D__riscv` only if your compiler supports the helper assembly for that
 architecture; otherwise build with `-DAMIGA_M68K` to exercise the plain-C
