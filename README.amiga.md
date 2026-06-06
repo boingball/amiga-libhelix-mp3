@@ -263,7 +263,23 @@ decoded frame count and output sample count.
    amiga_mp3dec.imdctasm --selftest-imdct
    ```
 
-6. Checksum the C and ASM FDCT32 builds with identical inputs and output modes
+6. `AMIGA_M68K_ASM_MIDSIDE` is an opt-in 68020+ GNU m68k implementation of
+   the joint-stereo mid/side reconstruction loop.  It keeps both channel
+   pointers and guard-bit masks in registers, uses `dbf` for the bounded
+   sample loop, and performs each absolute value with a branchless
+   `asr`/`eor`/`sub` sequence.  The shift count is held in a data register
+   because m68k immediate shifts cannot encode 31.  Compare PCM checksums and
+   benchmark stereo joint-stereo inputs on the target before enabling it by
+   default.
+
+   ```sh
+   m68k-amigaos-gcc -m68030 -O3 -fomit-frame-pointer \
+     -DAMIGA_M68K_ASM_MIDSIDE -Ipub -Ireal \
+     -o amiga_mp3dec.midsideasm amiga_mp3dec.c mp3dec.c mp3tabs.c real/*.c
+   amiga_mp3dec.midsideasm --bench --decode-only --checksum stereo-joint.mp3
+   ```
+
+7. Checksum the C and ASM FDCT32 builds with identical inputs and output modes
    before enabling the ASM binary in a release or local deployment.  The
    required regression set is: mono 56 kbps, stereo 160 kbps, stereo 256 kbps,
    fast-lowrate 11025 Hz, and fast-lowrate 8820 Hz.
@@ -291,7 +307,7 @@ decoded frame count and output sample count.
    and ASM binaries.  If any PCM checksum differs, do not define
    `AMIGA_M68K_ASM_FDCT32` for the default build.
 
-7. `AMIGA_FAST_POLYPHASE` is an opt-in Amiga/m68k polyphase synthesis path
+8. `AMIGA_FAST_POLYPHASE` is an opt-in Amiga/m68k polyphase synthesis path
    for 68020+ builds.  It keeps the original implementation available when the
    flag is omitted, but replaces the 64-bit polyphase accumulator with 32-bit
    fixed-point high-multiply terms to reduce 68030 inner-loop overhead:
@@ -301,7 +317,7 @@ decoded frame count and output sample count.
      -o amiga_mp3dec.fastpoly amiga_mp3dec.c mp3dec.c mp3tabs.c real/*.c
    ```
 
-8. Compare default and `AMIGA_FAST_POLYPHASE` builds with identical inputs,
+9. Compare default and `AMIGA_FAST_POLYPHASE` builds with identical inputs,
    output modes, and checksum reporting:
 
    ```sh
@@ -315,7 +331,7 @@ decoded frame count and output sample count.
    amiga_mp3dec.fastpoly --bench --no-output --fibdelta --rate 22050 --checksum song.mp3
    ```
 
-8. Check final Amiga binaries for libgcc 64-bit helper calls before measuring:
+10. Check final Amiga binaries for libgcc 64-bit helper calls before measuring:
 
    ```sh
    m68k-amigaos-nm -u amiga_mp3dec.asm | egrep '__muldi3|__ashrdi3|__lshrdi3'

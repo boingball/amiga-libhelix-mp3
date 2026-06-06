@@ -63,11 +63,62 @@
  **************************************************************************************/
 void MidSideProc(int x[MAX_NCHAN][MAX_NSAMP], int nSamps, int mOut[2])  
 {
-	int i, xr, xl, mOutL, mOutR;
-	
 	/* L = (M+S)/sqrt(2), R = (M-S)/sqrt(2) 
 	 * NOTE: 1/sqrt(2) done in DequantChannel() - see comments there
 	 */
+#if defined(AMIGA_M68K_ASM_MIDSIDE) && defined(__GNUC__) && \
+	(defined(__mc68020__) || defined(__mc68030__) || defined(__mc68040__) || \
+	 defined(__mc68060__) || defined(mc68020))
+	int *left;
+	int *right;
+	int *out;
+
+	if (nSamps <= 0)
+		return;
+
+	left = x[0];
+	right = x[1];
+	out = mOut;
+	/*
+	 * Keep both channel pointers, masks, and the sum/difference temporaries in
+	 * registers for the complete hot loop.  d6 holds the register-form shift
+	 * count because m68k immediate shifts cannot encode 31.  The resulting
+	 * copy/asr/eor/sub sequence implements FASTABS without a data-dependent
+	 * branch.  nSamps is at most 576, so dbf's 16-bit counter is sufficient.
+	 */
+	__asm__ volatile (
+		"move.l %3,%%d7\n\t"
+		"subq.l #1,%%d7\n\t"
+		"moveq #31,%%d6\n\t"
+		"move.l (%2),%%d4\n\t"
+		"move.l 4(%2),%%d5\n"
+		"1:\n\t"
+		"move.l (%0),%%d0\n\t"
+		"move.l (%1),%%d1\n\t"
+		"move.l %%d0,%%d2\n\t"
+		"add.l %%d1,%%d2\n\t"
+		"sub.l %%d1,%%d0\n\t"
+		"move.l %%d2,(%0)+\n\t"
+		"move.l %%d0,(%1)+\n\t"
+		"move.l %%d2,%%d3\n\t"
+		"asr.l %%d6,%%d3\n\t"
+		"eor.l %%d3,%%d2\n\t"
+		"sub.l %%d3,%%d2\n\t"
+		"or.l %%d2,%%d4\n\t"
+		"move.l %%d0,%%d1\n\t"
+		"asr.l %%d6,%%d1\n\t"
+		"eor.l %%d1,%%d0\n\t"
+		"sub.l %%d1,%%d0\n\t"
+		"or.l %%d0,%%d5\n\t"
+		"dbf %%d7,1b\n\t"
+		"move.l %%d4,(%2)\n\t"
+		"move.l %%d5,4(%2)"
+		: "+&a" (left), "+&a" (right), "+&a" (out)
+		: "a" (nSamps)
+		: "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "cc", "memory");
+#else
+	int i, xr, xl, mOutL, mOutR;
+
 	mOutL = mOutR = 0;
 	for(i = 0; i < nSamps; i++) {
 		xl = x[0][i];
@@ -79,6 +130,7 @@ void MidSideProc(int x[MAX_NCHAN][MAX_NSAMP], int nSamps, int mOut[2])
 	}
 	mOut[0] |= mOutL;
 	mOut[1] |= mOutR;
+#endif
 }
 
 /**************************************************************************************
