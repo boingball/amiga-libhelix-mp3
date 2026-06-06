@@ -78,9 +78,10 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   be combined with `--play` (or a normal decode command) to print the metadata
   before playback or decoding begins.
 - `--play` is an experimental AmigaOS Paula streaming mode for CD32/TF330-style
-  68030 testing. It opens `audio.device`, decodes to mono signed 8-bit PCM, and
-  streams with two chip-memory buffers. The default playback rate is 8287 Hz for
-  030 safety; `--rate 8820` and `--rate 11025` are accepted, and `--rate 22050`
+  68030 testing. It opens `audio.device`, decodes to mono signed 8-bit PCM into
+  Fast RAM work buffers, and bulk-copies each completed half-buffer into the
+  chip-memory buffers submitted to `audio.device`. The default playback rate is
+  8287 Hz for 030 safety; `--rate 8820` and `--rate 11025` are accepted, and `--rate 22050`
   is also accepted as an experimental/high-CPU mono-first mode that may underrun
   on 030 systems. Playback rates imply `--fast-lowrate`; 22050 Hz fast-lowrate
   playback prints `22050 requires significantly more CPU and may underrun on
@@ -97,22 +98,23 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   left/right channels for stereo MP3 input where possible, and duplicates mono
   MP3 input to both output channels. Streaming stereo playback opens separate
   `audio.device` allocations for one left Paula channel and one right Paula
-  channel, converts decoded interleaved signed 16-bit PCM directly into those
-  planar signed 8-bit chip-memory buffers, and submits them without an
-  interleaved playback work buffer or submission-time deinterleave pass. Stereo
+  channel, converts decoded interleaved signed 16-bit PCM into planar signed
+  8-bit Fast RAM work buffers, and uses one bulk copy per channel into the
+  Paula chip-memory submission buffers when each half-buffer is submitted. Stereo
   supports `--rate 8820` and `--rate 11025` first; `--rate 22050` is allowed
-  only as an experimental/high-CPU stereo mode. `--rate 8287` is mono-only. Enabling stereo
-  prints `Stereo playback needs significantly more CPU and may underrun on 030.`
+  only as an experimental/high-CPU stereo mode. `--rate 8287` is mono-only.
+  Enabling stereo prints `Stereo playback needs significantly more CPU and may
+  underrun on 030.`
 - `--play-fast-path` is accepted as an explicit alias for `--play`; the normal
   `--play` mode already uses this reduced-overhead streaming path.
 - `--buffer-seconds N` chooses the requested playback depth for each half of the
   `--play` double buffer; the default is 4 seconds for safer 030 playback. Values
   must be positive integers; values above 10 seconds are clamped to 10 seconds.
-  Mono playback submits its double buffers directly to `audio.device`, so those
-  buffers must be chip memory. Streaming stereo playback fills the planar Paula
-  left/right chip-memory submission buffers directly. If the requested 22050 Hz
-  or stereo buffer set is too large for available memory, playback automatically
-  retries with smaller
+  Playback now keeps separate Fast RAM conversion buffers and chip-memory
+  `audio.device` submission buffers; mono copies one completed half-buffer at
+  submit time, while stereo copies the completed left and right planar buffers.
+  If the requested 22050 Hz or stereo buffer set is too large for available
+  memory, playback automatically retries with smaller
   half-buffers and prints the reduced byte count instead of failing immediately.
   Playback prints the selected half-buffer duration and byte size at startup, and
   reports total underruns, per-buffer underruns, late-buffer count, and the

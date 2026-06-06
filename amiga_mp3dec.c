@@ -2535,6 +2535,9 @@ typedef struct AmigaAudioPlayer {
 	signed char *splitBuf[2][2];
 	void *splitBase[2][2];
 	unsigned long splitBytes;
+	signed char *splitWorkBuf[2][2];
+	void *splitWorkBase[2][2];
+	unsigned long splitWorkBytes;
 	signed char *workBuf[2];
 	void *workBase[2];
 	unsigned long workBytes;
@@ -2569,7 +2572,7 @@ static signed char *AmigaAllocGuarded(unsigned long bytes, int chip, void **base
 
 	total = bytes + 2UL * PLAYBACK_GUARD_BYTES;
 	base = (unsigned char *)AllocMem(total,
-		(chip ? MEMF_CHIP : 0) | MEMF_CLEAR);
+		(chip ? MEMF_CHIP : MEMF_FAST) | MEMF_CLEAR);
 	if (!base)
 		return NULL;
 #ifndef NDEBUG
@@ -2650,6 +2653,13 @@ static void AmigaAudioClose(AmigaAudioPlayer *player,
 				if (status)
 					status->chipBuffersFreed++;
 			}
+			if (player->splitWorkBase[i][ch]) {
+				AmigaFreeGuarded(&player->splitWorkBase[i][ch],
+					player->splitWorkBytes, 0, status);
+				player->splitWorkBuf[i][ch] = NULL;
+				if (status)
+					status->workBuffersFreed++;
+			}
 		}
 		if (player->workBase[i]) {
 			AmigaFreeGuarded(&player->workBase[i], player->workBytes,
@@ -2672,6 +2682,7 @@ static void AmigaAudioClose(AmigaAudioPlayer *player,
 	player->stereo = 0;
 	player->period = 0;
 	player->splitBytes = 0;
+	player->splitWorkBytes = 0;
 	player->workBytes = 0;
 	player->workChip = 0;
 }
@@ -2739,6 +2750,15 @@ static int AmigaAudioOpen(AmigaAudioPlayer *player, unsigned int period,
 			return -1;
 		}
 	} else {
+		player->splitBytes = maxBytes;
+		for (i = 0; i < 2; i++) {
+			player->splitBuf[i][0] = AmigaAllocGuarded(player->splitBytes, 1,
+				&player->splitBase[i][0]);
+			if (!player->splitBuf[i][0]) {
+				AmigaAudioClose(player, NULL);
+				return -1;
+			}
+		}
 		if (AmigaAudioOpenOne(player, 0, monoChannels, sizeof(monoChannels)) != 0) {
 			AmigaAudioClose(player, NULL);
 			return -1;
@@ -2763,21 +2783,45 @@ static void AmigaAudioSubmitOne(AmigaAudioPlayer *player, int index,
 	player->sent[index][ch] = 1;
 }
 
+static void AmigaPlaybackCopy(const signed char *src, signed char *dest,
+	unsigned long bytes)
+{
+	CopyMem((APTR)src, (APTR)dest, bytes);
+}
+
 static int AmigaAudioSubmit(AmigaAudioPlayer *player, int index,
 	signed char *buf, unsigned long len)
 {
-	if (!buf || len == 0 || (player->stereo && (len & 1UL)))
+	if (len == 0 || (player->stereo && (len & 1UL)))
 		return -1;
 	if (player->stereo) {
 		unsigned long frames = len / 2UL;
 		unsigned long i;
-		for (i = 0; i < frames; i++) {
-			player->splitBuf[index][0][i] = buf[2UL * i];
-			player->splitBuf[index][1][i] = buf[2UL * i + 1UL];
+
+		if (player->splitWorkBuf[index][0] && player->splitWorkBuf[index][1]) {
+			if (frames > player->splitBytes || frames > player->splitWorkBytes)
+				return -1;
+			AmigaPlaybackCopy(player->splitWorkBuf[index][0],
+				player->splitBuf[index][0], frames);
+			AmigaPlaybackCopy(player->splitWorkBuf[index][1],
+				player->splitBuf[index][1], frames);
+		} else {
+			if (!buf)
+				return -1;
+			for (i = 0; i < frames; i++) {
+				player->splitBuf[index][0][i] = buf[2UL * i];
+				player->splitBuf[index][1][i] = buf[2UL * i + 1UL];
+			}
 		}
 		AmigaAudioSubmitOne(player, index, 1, player->splitBuf[index][1], frames);
 		AmigaAudioSubmitOne(player, index, 0, player->splitBuf[index][0], frames);
 	} else {
+		if (!buf || len > player->splitBytes)
+			return -1;
+		if (player->splitBuf[index][0] && buf != player->splitBuf[index][0]) {
+			AmigaPlaybackCopy(buf, player->splitBuf[index][0], len);
+			buf = player->splitBuf[index][0];
+		}
 		AmigaAudioSubmitOne(player, index, 0, buf, len);
 	}
 	return 0;
@@ -2835,13 +2879,29 @@ static int AmigaAudioAllocWorkBuffers(AmigaAudioPlayer *player, int stereo,
 {
 	int i;
 
-	player->workBytes = bytes;
-	player->workChip = stereo ? 0 : 1;
-	for (i = 0; i < 2; i++) {
-		player->workBuf[i] = AmigaAllocGuarded(bytes, player->workChip,
-			&player->workBase[i]);
-		if (!player->workBuf[i])
-			return -1;
+	if (stereo) {
+		player->splitWorkBytes = bytes / 2UL;
+		if (player->splitWorkBytes == 0)
+			player->splitWorkBytes = 1;
+		for (i = 0; i < 2; i++) {
+			int ch;
+			for (ch = 0; ch < 2; ch++) {
+				player->splitWorkBuf[i][ch] =
+					AmigaAllocGuarded(player->splitWorkBytes, 0,
+						&player->splitWorkBase[i][ch]);
+				if (!player->splitWorkBuf[i][ch])
+					return -1;
+			}
+		}
+	} else {
+		player->workBytes = bytes;
+		player->workChip = 0;
+		for (i = 0; i < 2; i++) {
+			player->workBuf[i] = AmigaAllocGuarded(bytes, player->workChip,
+				&player->workBase[i]);
+			if (!player->workBuf[i])
+				return -1;
+		}
 	}
 	return 0;
 }
@@ -2851,6 +2911,8 @@ typedef struct AmigaAudioPlayer {
 	int sent[2][2];
 	signed char *splitBuf[2][2];
 	unsigned long splitBytes;
+	signed char *splitWorkBuf[2][2];
+	unsigned long splitWorkBytes;
 	signed char *workBuf[2];
 	unsigned long workBytes;
 } AmigaAudioPlayer;
@@ -3005,8 +3067,15 @@ static unsigned long DecodeStreamFillPlaybackBuffer(DecodeStream *stream,
 	signed char *buf, unsigned long maxBytes)
 {
 	if (opt->stereo) {
-		int frames = DecodeStreamFillPlanarS8(stream, opt,
-			player->splitBuf[index][0], player->splitBuf[index][1],
+		signed char *left = player->splitWorkBuf[index][0] ?
+			player->splitWorkBuf[index][0] : player->splitBuf[index][0];
+		signed char *right = player->splitWorkBuf[index][1] ?
+			player->splitWorkBuf[index][1] : player->splitBuf[index][1];
+		int frames;
+
+		if (!left || !right)
+			return 0;
+		frames = DecodeStreamFillPlanarS8(stream, opt, left, right,
 			(int)(maxBytes / 2UL));
 		return (unsigned long)frames * 2UL;
 	}
@@ -3019,7 +3088,8 @@ static int AmigaAudioSubmitPlayback(AmigaAudioPlayer *player, int index,
 	if (player->stereo) {
 		if (len & 1UL)
 			return -1;
-		return AmigaAudioSubmitPlanar(player, index, len / 2UL);
+		if (!player->splitWorkBuf[index][0] && !buf)
+			return AmigaAudioSubmitPlanar(player, index, len / 2UL);
 	}
 	return AmigaAudioSubmit(player, index, buf, len);
 }
@@ -3030,8 +3100,12 @@ static int PlaybackBufferPeak(const DecodeOptions *opt,
 {
 	if (opt->stereo) {
 		unsigned long frames = len / 2UL;
-		int leftPeak = PlaybackBufferPeakS8(player->splitBuf[index][0], frames);
-		int rightPeak = PlaybackBufferPeakS8(player->splitBuf[index][1], frames);
+		const signed char *left = player->splitWorkBuf[index][0] ?
+			player->splitWorkBuf[index][0] : player->splitBuf[index][0];
+		const signed char *right = player->splitWorkBuf[index][1] ?
+			player->splitWorkBuf[index][1] : player->splitBuf[index][1];
+		int leftPeak = PlaybackBufferPeakS8(left, frames);
+		int rightPeak = PlaybackBufferPeakS8(right, frames);
 		return leftPeak > rightPeak ? leftPeak : rightPeak;
 	}
 	return PlaybackBufferPeakS8(buf, len);
@@ -3124,17 +3198,19 @@ static void PrintPlaybackDebugStartup(const DecodeOptions *opt,
 		printf("debug-play: chip buffer B left/right: %p/%p size %lu\n",
 			(void *)player->splitBuf[1][0], (void *)player->splitBuf[1][1],
 			player->splitBytes);
-		if (buf[0] || buf[1])
-			printf("debug-play: work buffer A/B: %p/%p size %lu\n",
-				(void *)buf[0], (void *)buf[1], chunkBytes);
-		else
-			printf("debug-play: work buffer: none (stereo fills planar chip buffers directly)\n");
+		printf("debug-play: fast planar work A left/right: %p/%p size %lu\n",
+			(void *)player->splitWorkBuf[0][0],
+			(void *)player->splitWorkBuf[0][1], player->splitWorkBytes);
+		printf("debug-play: fast planar work B left/right: %p/%p size %lu\n",
+			(void *)player->splitWorkBuf[1][0],
+			(void *)player->splitWorkBuf[1][1], player->splitWorkBytes);
 	} else {
-		printf("debug-play: chip buffer A: %p size %lu\n",
-			(void *)buf[0], chunkBytes);
-		printf("debug-play: chip buffer B: %p size %lu\n",
-			(void *)buf[1], chunkBytes);
-		printf("debug-play: work buffer: none (mono decodes directly to chip buffers)\n");
+		printf("debug-play: chip submit buffer A: %p size %lu\n",
+			(void *)player->splitBuf[0][0], player->splitBytes);
+		printf("debug-play: chip submit buffer B: %p size %lu\n",
+			(void *)player->splitBuf[1][0], player->splitBytes);
+		printf("debug-play: fast conversion buffer A/B: %p/%p size %lu\n",
+			(void *)buf[0], (void *)buf[1], chunkBytes);
 	}
 }
 
@@ -3156,12 +3232,22 @@ static int AmigaSetupPlaybackBuffers(AmigaAudioPlayer *player,
 
 	while (tryBytes >= minBytes) {
 		if (AmigaAudioOpen(player, period, opt->stereo, tryBytes) == 0) {
+			int workReady;
+
+			workReady = 0;
 			if (!directPlanar &&
 				AmigaAudioAllocWorkBuffers(player, opt->stereo, tryBytes) == 0) {
-				buf[0] = player->workBuf[0];
-				buf[1] = player->workBuf[1];
+				if (opt->stereo) {
+					workReady =
+						player->splitWorkBuf[0][0] && player->splitWorkBuf[0][1] &&
+						player->splitWorkBuf[1][0] && player->splitWorkBuf[1][1];
+				} else {
+					buf[0] = player->workBuf[0];
+					buf[1] = player->workBuf[1];
+					workReady = buf[0] && buf[1];
+				}
 			}
-			if (directPlanar || (buf[0] && buf[1])) {
+			if (directPlanar || workReady) {
 				*chunkBytes = tryBytes;
 				if (tryBytes != requestedBytes)
 					printf("play buffer reduced to %lu bytes per half-buffer\n",
@@ -3183,6 +3269,22 @@ static int AmigaSetupPlaybackBuffers(AmigaAudioPlayer *player,
 	fprintf(stderr, "cannot allocate audio buffers (requested %lu bytes per half-buffer)\n",
 		requestedBytes);
 	return -1;
+}
+
+static void AmigaPlaybackCopyInterleavedToWork(AmigaAudioPlayer *player,
+	int index, const signed char *pcm, unsigned long len)
+{
+	if (player->stereo) {
+		unsigned long frames = len / 2UL;
+		unsigned long i;
+
+		for (i = 0; i < frames; i++) {
+			player->splitWorkBuf[index][0][i] = pcm[2UL * i];
+			player->splitWorkBuf[index][1][i] = pcm[2UL * i + 1UL];
+		}
+	} else {
+		memcpy(player->workBuf[index], pcm, len);
+	}
 }
 
 static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes,
@@ -3227,14 +3329,19 @@ static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes
 		len[cur] = totalBytes - pos;
 		if (len[cur] > chunkBytes)
 			len[cur] = chunkBytes;
-		memcpy(buf[cur], pcm + pos, len[cur]);
+		if (opt->stereo && (len[cur] & 1UL))
+			len[cur]--;
+		if (len[cur] > 0)
+			AmigaPlaybackCopyInterleavedToWork(&player, cur, pcm + pos,
+				len[cur]);
 		pos += len[cur];
 	}
 	cur = 0;
 	pending = 0;
 	first = 1;
 	while (!gPlaybackInterrupted && len[cur] > 0) {
-		if (AmigaAudioSubmit(&player, cur, buf[cur], len[cur]) != 0) {
+		if (AmigaAudioSubmitPlayback(&player, cur, opt->stereo ? NULL : buf[cur],
+			len[cur]) != 0) {
 			fprintf(stderr, "playback buffer %s CMD_WRITE byte length is invalid\n",
 				PlaybackBufferName(cur));
 			goto cleanup;
@@ -3248,8 +3355,11 @@ static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes
 			len[1 - cur] = totalBytes - pos;
 			if (len[1 - cur] > chunkBytes)
 				len[1 - cur] = chunkBytes;
+			if (opt->stereo && (len[1 - cur] & 1UL))
+				len[1 - cur]--;
 			if (len[1 - cur] > 0) {
-				memcpy(buf[1 - cur], pcm + pos, len[1 - cur]);
+				AmigaPlaybackCopyInterleavedToWork(&player, 1 - cur,
+					pcm + pos, len[1 - cur]);
 				pos += len[1 - cur];
 			}
 		} else {
@@ -3362,7 +3472,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 	printf("play output rate: %d Hz\n", playbackRate);
 	requestedBytes = PlaybackRequestedChunkBytes(opt, playbackRate);
 	printf("PAL audio period: %u\n", period);
-	/* Mono validates a decoded frame before allocating its chip work buffers. */
+	/* Mono validates a decoded frame before allocating playback buffers. */
 	startupLen = 0;
 	if (!opt->stereo) {
 		startupLen = DecodeStreamFillPlaybackPrefill(&stream, opt, startupBuf,
@@ -3373,7 +3483,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		}
 	}
 	if (AmigaSetupPlaybackBuffers(&player, opt, period, requestedBytes,
-		opt->stereo ? 2UL : startupLen, opt->stereo, buf, &bufBytes,
+		opt->stereo ? 2UL : startupLen, 0, buf, &bufBytes,
 		&cleanupStatus) != 0) {
 		goto cleanup;
 	}
@@ -3564,8 +3674,24 @@ static int AmigaPlayLifecycleTest(const DecodeOptions *opt)
 			len *= 2UL;
 		if (len > chunkBytes)
 			len = chunkBytes;
-		memset(buf[0], 0, len);
-		if (AmigaAudioSubmit(&player, 0, buf[0], len) != 0) {
+		if (opt->stereo) {
+			if (!player.splitWorkBuf[0][0] || !player.splitWorkBuf[0][1]) {
+				fprintf(stderr, "play lifecycle test work buffer missing\n");
+				err = -1;
+			} else {
+				memset(player.splitWorkBuf[0][0], 0, len / 2UL);
+				memset(player.splitWorkBuf[0][1], 0, len / 2UL);
+			}
+		} else {
+			memset(buf[0], 0, len);
+		}
+		if (err != 0) {
+			AmigaAudioClose(&player, &cleanupStatus);
+			PrintPlaybackCleanupStatus(opt, &cleanupStatus);
+			break;
+		}
+		if (AmigaAudioSubmitPlayback(&player, 0, opt->stereo ? NULL : buf[0],
+			len) != 0) {
 			fprintf(stderr, "play lifecycle test CMD_WRITE byte length is invalid\n");
 			err = -1;
 		}
