@@ -1,0 +1,45 @@
+# Convenience build rules for the AmigaOS/m68k command-line decoder.
+# Override CC, CPU, OPTFLAGS, TARGET, or EXTRA_CFLAGS from the command line.
+# Example:
+#   make -f Makefile.amiga fast030
+
+ifeq ($(origin CC),default)
+CC := m68k-amigaos-gcc
+endif
+CPU ?= -m68020
+OPTFLAGS ?= -O2 -fomit-frame-pointer
+TARGET ?= amiga_mp3dec
+
+CPPFLAGS_COMMON := -Ipub -Ireal -DAMIGA_M68K
+CFLAGS_COMMON := $(CPU) $(OPTFLAGS)
+SOURCES := amiga_mp3dec.c mp3dec.c mp3tabs.c $(wildcard real/*.c)
+
+FAST030_CPPFLAGS := \
+	-DAMIGA_M68K_ASM \
+	-DAMIGA_M68K_ASM_FDCT32 \
+	-DAMIGA_FAST_POLYPHASE \
+	-DAMIGA_M68K_ASM_IMDCT \
+	-DAMIGA_M68K_ASM_MIDSIDE
+FAST030_CFLAGS := -m68030 -O3 -fomit-frame-pointer
+FAST030_TARGET := amiga_mp3dec.fastexp
+
+.PHONY: all fast030 clean print-command print-fast030-command
+
+all: $(TARGET)
+
+$(TARGET): $(SOURCES)
+	$(CC) $(CFLAGS_COMMON) $(CPPFLAGS_COMMON) $(EXTRA_CFLAGS) -o $@ $(SOURCES)
+
+fast030: $(FAST030_TARGET)
+
+$(FAST030_TARGET): $(SOURCES)
+	$(CC) $(FAST030_CFLAGS) $(CPPFLAGS_COMMON) $(FAST030_CPPFLAGS) $(EXTRA_CFLAGS) -o $@ $(SOURCES)
+
+print-command:
+	@printf '%s\n' '$(CC) $(CFLAGS_COMMON) $(CPPFLAGS_COMMON) $(EXTRA_CFLAGS) -o $(TARGET) $(SOURCES)'
+
+print-fast030-command:
+	@printf '%s\n' '$(CC) $(FAST030_CFLAGS) $(CPPFLAGS_COMMON) $(FAST030_CPPFLAGS) $(EXTRA_CFLAGS) -o $(FAST030_TARGET) $(SOURCES)'
+
+clean:
+	rm -f $(TARGET) $(FAST030_TARGET)
