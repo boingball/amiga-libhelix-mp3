@@ -746,8 +746,52 @@ static int PolyphaseMonoFastLowrateStride4(short *pcm, int *vbuf,
 static int PolyphaseMonoFastLowrateStride5(short *pcm, int *vbuf,
 	const int *coefBase, int phase)
 {
-	return PolyphaseMonoFastLowrateCompact(pcm, vbuf, coefBase,
-		fastLowrateStride5Samples[phase], fastLowrateStride5Count[phase]);
+	switch (phase) {
+	case 0:
+		pcm[0] = PolyphaseMonoFastSample0(vbuf, coefBase);
+		pcm[1] = PolyphaseMonoFastSampleLo(5, vbuf, coefBase);
+		pcm[2] = PolyphaseMonoFastSampleLo(10, vbuf, coefBase);
+		pcm[3] = PolyphaseMonoFastSampleLo(15, vbuf, coefBase);
+		pcm[4] = PolyphaseMonoFastSampleHi(12, vbuf, coefBase);
+		pcm[5] = PolyphaseMonoFastSampleHi(7, vbuf, coefBase);
+		pcm[6] = PolyphaseMonoFastSampleHi(2, vbuf, coefBase);
+		return 7;
+	case 1:
+		pcm[0] = PolyphaseMonoFastSampleLo(4, vbuf, coefBase);
+		pcm[1] = PolyphaseMonoFastSampleLo(9, vbuf, coefBase);
+		pcm[2] = PolyphaseMonoFastSampleLo(14, vbuf, coefBase);
+		pcm[3] = PolyphaseMonoFastSampleHi(13, vbuf, coefBase);
+		pcm[4] = PolyphaseMonoFastSampleHi(8, vbuf, coefBase);
+		pcm[5] = PolyphaseMonoFastSampleHi(3, vbuf, coefBase);
+		return 6;
+	case 2:
+		pcm[0] = PolyphaseMonoFastSampleLo(3, vbuf, coefBase);
+		pcm[1] = PolyphaseMonoFastSampleLo(8, vbuf, coefBase);
+		pcm[2] = PolyphaseMonoFastSampleLo(13, vbuf, coefBase);
+		pcm[3] = PolyphaseMonoFastSampleHi(14, vbuf, coefBase);
+		pcm[4] = PolyphaseMonoFastSampleHi(9, vbuf, coefBase);
+		pcm[5] = PolyphaseMonoFastSampleHi(4, vbuf, coefBase);
+		return 6;
+	case 3:
+		pcm[0] = PolyphaseMonoFastSampleLo(2, vbuf, coefBase);
+		pcm[1] = PolyphaseMonoFastSampleLo(7, vbuf, coefBase);
+		pcm[2] = PolyphaseMonoFastSampleLo(12, vbuf, coefBase);
+		pcm[3] = PolyphaseMonoFastSampleHi(15, vbuf, coefBase);
+		pcm[4] = PolyphaseMonoFastSampleHi(10, vbuf, coefBase);
+		pcm[5] = PolyphaseMonoFastSampleHi(5, vbuf, coefBase);
+		return 6;
+	case 4:
+		pcm[0] = PolyphaseMonoFastSampleLo(1, vbuf, coefBase);
+		pcm[1] = PolyphaseMonoFastSampleLo(6, vbuf, coefBase);
+		pcm[2] = PolyphaseMonoFastSampleLo(11, vbuf, coefBase);
+		pcm[3] = PolyphaseMonoFastSample16(vbuf, coefBase);
+		pcm[4] = PolyphaseMonoFastSampleHi(11, vbuf, coefBase);
+		pcm[5] = PolyphaseMonoFastSampleHi(6, vbuf, coefBase);
+		pcm[6] = PolyphaseMonoFastSampleHi(1, vbuf, coefBase);
+		return 7;
+	default:
+		return 0;
+	}
 }
 
 static int PolyphaseMonoFastLowrateList(short *pcm, int *vbuf,
