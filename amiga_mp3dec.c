@@ -2250,13 +2250,32 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 			if (stream->timing)
 				stream->timing->pcmConvert += clock() - t0;
 
-			for (i = 0; i < outSamps; i++)
-				stream->spill.interleaved[i] = Sample16ToS8(stream->writeBuf[i]);
-			stream->spillPos = 0;
-			stream->spillCount = outSamps;
+			/*
+			 * Playback usually has enough room for a whole decoded fast-lowrate
+			 * frame.  Convert those samples straight into the caller's chip/work
+			 * buffer instead of first filling spill[] and then memcpy()ing it out.
+			 * Only the tail that does not fit is kept in spill[] for the next call.
+			 */
+			{
+				int direct;
+				int spill;
+
+				direct = outSamps;
+				if (direct > maxBytes - produced)
+					direct = maxBytes - produced;
+				for (i = 0; i < direct; i++)
+					dest[produced + i] = Sample16ToS8(stream->writeBuf[i]);
+				produced += direct;
+
+				spill = outSamps - direct;
+				stream->spillPos = 0;
+				stream->spillCount = spill;
+				for (i = 0; i < spill; i++)
+					stream->spill.interleaved[i] =
+						Sample16ToS8(stream->writeBuf[direct + i]);
+			}
 			stream->stats->outputSamples += (unsigned long)outSamps;
 			stream->stats->decodedFrames++;
-			DecodeStreamCopySpill(stream, dest, maxBytes, &produced);
 		}
 	}
 
