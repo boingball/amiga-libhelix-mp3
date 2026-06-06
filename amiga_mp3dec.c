@@ -2263,16 +2263,29 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 				direct = outSamps;
 				if (direct > maxBytes - produced)
 					direct = maxBytes - produced;
-				for (i = 0; i < direct; i++)
+				i = 0;
+				if (direct >= 4) {
+					int direct4 = direct & ~3;
+
+					for (; i < direct4; i += 4) {
+						dest[produced + i] = Sample16ToS8(stream->writeBuf[i]);
+						dest[produced + i + 1] = Sample16ToS8(stream->writeBuf[i + 1]);
+						dest[produced + i + 2] = Sample16ToS8(stream->writeBuf[i + 2]);
+						dest[produced + i + 3] = Sample16ToS8(stream->writeBuf[i + 3]);
+					}
+				}
+				for (; i < direct; i++)
 					dest[produced + i] = Sample16ToS8(stream->writeBuf[i]);
 				produced += direct;
 
 				spill = outSamps - direct;
-				stream->spillPos = 0;
-				stream->spillCount = spill;
-				for (i = 0; i < spill; i++)
-					stream->spill.interleaved[i] =
-						Sample16ToS8(stream->writeBuf[direct + i]);
+				if (spill > 0) {
+					stream->spillPos = 0;
+					stream->spillCount = spill;
+					for (i = 0; i < spill; i++)
+						stream->spill.interleaved[i] =
+							Sample16ToS8(stream->writeBuf[direct + i]);
+				}
 			}
 			stream->stats->outputSamples += (unsigned long)outSamps;
 			stream->stats->decodedFrames++;
