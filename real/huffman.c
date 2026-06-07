@@ -400,8 +400,6 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 	bitPos = bitOffset;
 	remaining = bitsLeft;
 	while (nVals > 0) {
-		if (remaining <= 0)
-			return -1;
 		tCurr = tBase;
 		for (;;) {
 			maxBits = GetMaxbits(tCurr[0]);
@@ -412,13 +410,13 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 			if (!len) {
 				bitPos += maxBits;
 				remaining -= maxBits;
-				if (remaining < 0)
-					return -1;
 				tCurr += cw;
 				continue;
 			}
 			bitPos += len;
 			remaining -= len;
+			if (remaining < -(linBits + 2))
+				return -1;
 			break;
 		}
 
@@ -426,36 +424,35 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 		y = GetCWY(cw);
 
 		if (x == 15) {
-			if (remaining < linBits)
-				return -1;
-			x += (int)HuffmanBFExtU(buf, bitPos, linBits);
+			validBits = (remaining < linBits) ? remaining : linBits;
+			x += (int)HuffmanBFExtUPadded(buf, bitPos, linBits, validBits);
 			bitPos += linBits;
 			remaining -= linBits;
 		}
 		if (x) {
-			if (remaining < 1)
-				return -1;
-			if (HuffmanBFExtU(buf, bitPos, 1))
+			validBits = (remaining < 1) ? remaining : 1;
+			if (HuffmanBFExtUPadded(buf, bitPos, 1, validBits))
 				x |= (int)0x80000000;
 			bitPos++;
 			remaining--;
 		}
 
 		if (y == 15) {
-			if (remaining < linBits)
-				return -1;
-			y += (int)HuffmanBFExtU(buf, bitPos, linBits);
+			validBits = (remaining < linBits) ? remaining : linBits;
+			y += (int)HuffmanBFExtUPadded(buf, bitPos, linBits, validBits);
 			bitPos += linBits;
 			remaining -= linBits;
 		}
 		if (y) {
-			if (remaining < 1)
-				return -1;
-			if (HuffmanBFExtU(buf, bitPos, 1))
+			validBits = (remaining < 1) ? remaining : 1;
+			if (HuffmanBFExtUPadded(buf, bitPos, 1, validBits))
 				y |= (int)0x80000000;
 			bitPos++;
 			remaining--;
 		}
+
+		if (remaining < -(linBits * 2 + 4))
+			return -1;
 
 		*xy++ = x;
 		*xy++ = y;
