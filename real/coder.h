@@ -126,8 +126,6 @@
 #define IMDCT36_TEST_ACTIVE STATNAME(IMDCT36_TEST_ACTIVE)
 #define IMDCT36_HAS_AMIGA_M68K_ASM_RUNTIME STATNAME(IMDCT36_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define DecodeHuffmanPairs_C_REFERENCE STATNAME(DecodeHuffmanPairs_C_REFERENCE)
-#define DecodeHuffmanPairs_TEST_ACTIVE STATNAME(DecodeHuffmanPairs_TEST_ACTIVE)
-#define DecodeHuffmanPairs_HAS_AMIGA_M68K_ASM_RUNTIME STATNAME(DecodeHuffmanPairs_HAS_AMIGA_M68K_ASM_RUNTIME)
 
 #define	ISFMpeg1			STATNAME(ISFMpeg1)
 #define	ISFMpeg2			STATNAME(ISFMpeg2)
@@ -315,10 +313,6 @@ int IMDCT36_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 
 /* huffman.c selftest hooks */
 int DecodeHuffmanPairs_C_REFERENCE(int *xy, int nVals, int tabIdx, int bitsLeft, unsigned char *buf, int bitOffset);
-int DecodeHuffmanPairs_TEST_ACTIVE(int *xy, int nVals, int tabIdx, int bitsLeft, unsigned char *buf, int bitOffset);
-int DecodeHuffmanPairs_HAS_AMIGA_M68K_ASM_RUNTIME(void);
-void MP3SetExperimentalHuffman(int enabled);
-int MP3ExperimentalHuffmanEnabled(void);
 
 /* polyphase.c selftest hooks */
 void PolyphaseMonoFast_C_REFERENCE(short *pcm, int *vbuf, const int *coefBase);

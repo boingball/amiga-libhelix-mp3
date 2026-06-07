@@ -57,8 +57,6 @@ int STATNAME(PolyphaseMonoFastLowrateStride4_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
 int STATNAME(AmigaM68KPolyphaseMonoFast_IsActive)(void);
 int STATNAME(AmigaM68KPolyphaseMonoFastStride2_IsActive)(void);
 int STATNAME(DecodeHuffmanPairs_C_REFERENCE)(int *xy, int nVals, int tabIdx, int bitsLeft, unsigned char *buf, int bitOffset);
-int STATNAME(DecodeHuffmanPairs_TEST_ACTIVE)(int *xy, int nVals, int tabIdx, int bitsLeft, unsigned char *buf, int bitOffset);
-int STATNAME(DecodeHuffmanPairs_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
 int STATNAME(DequantBlock_C_REFERENCE)(int *inbuf, int *outbuf, int num, int scale);
 int STATNAME(DequantBlock_TEST_ACTIVE)(int *inbuf, int *outbuf, int num, int scale);
 int STATNAME(DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
@@ -86,8 +84,6 @@ extern const int STATNAME(polyCoef)[264];
 #define AMIGA_M68K_POLYPHASE_MONO_FAST_IS_ACTIVE STATNAME(AmigaM68KPolyphaseMonoFast_IsActive)
 #define AMIGA_M68K_POLYPHASE_MONO_FAST_STRIDE2_IS_ACTIVE STATNAME(AmigaM68KPolyphaseMonoFastStride2_IsActive)
 #define AMIGA_HUFFMAN_PAIRS_C_REFERENCE STATNAME(DecodeHuffmanPairs_C_REFERENCE)
-#define AMIGA_HUFFMAN_PAIRS_TEST_ACTIVE STATNAME(DecodeHuffmanPairs_TEST_ACTIVE)
-#define AMIGA_HUFFMAN_PAIRS_HAS_ASM STATNAME(DecodeHuffmanPairs_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define AMIGA_DEQUANT_BLOCK_C_REFERENCE STATNAME(DequantBlock_C_REFERENCE)
 #define AMIGA_DEQUANT_BLOCK_TEST_ACTIVE STATNAME(DequantBlock_TEST_ACTIVE)
 #define AMIGA_DEQUANT_BLOCK_HAS_ASM STATNAME(DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME)
@@ -134,7 +130,6 @@ typedef struct DecodeOptions {
 	int outputRate;
 	int fastLowrate;
 	int expPoly;
-	int expHuff;
 	int help;
 	int debugArgv;
 	int debugFastLowrate;
@@ -482,9 +477,6 @@ static void PrintUsage(const char *prog)
 	printf("  --fast-lowrate experimental lower-quality Amiga conversion; requires --rate\n");
 	printf("                 22050, 11025, 8820, or 8287 and can skip discarded synthesis samples\n");
 	printf("  --exp-poly  use experimental 68030 asm mono polyphase when compiled in\n");
-#ifdef AMIGA_M68K_ASM_HUFFMAN
-	printf("  --exp-huff  use experimental 68020+ asm Huffman pairs when compiled in\n");
-#endif
 	printf("  --selftest-mulshift compare C and optional asm MULSHIFT32 helpers\n");
 	printf("  --selftest-clz compare C and optional m68k bfffo CLZ helpers\n");
 	printf("  --selftest-fdct32 compare C reference and optional m68k asm FDCT32 path\n");
@@ -494,7 +486,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-polyphase-stride2 compare C and optional asm stride-2 mono polyphase paths\n");
 	printf("  --selftest-polyphase-stride4 compare C and optional asm stride-4 mono polyphase paths\n");
 	printf("  --selftest-fastlowrate compare synthetic stride decimation paths\n");
-	printf("  --selftest-huffman compare C and optional m68k bfextu Huffman pair paths\n");
+	printf("  --selftest-huffman compare repeated portable C Huffman pair decodes\n");
 	printf("  --selftest-dequant compare C and optional m68k asm dequant block paths\n");
 	printf("  --selftest-bitstream compare C and optional m68k move.l bitstream refill paths\n");
 	printf("  --selftest-mono-fastlowrate-stereo verify stereo-to-mono low-rate accounting\n");
@@ -618,10 +610,6 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->fastLowrate = 1;
 		} else if (!strcmp(argv[i], "--exp-poly")) {
 			opt->expPoly = 1;
-#ifdef AMIGA_M68K_ASM_HUFFMAN
-		} else if (!strcmp(argv[i], "--exp-huff")) {
-			opt->expHuff = 1;
-#endif
 		} else if (!strcmp(argv[i], "--rate")) {
 			if (++i >= argc)
 				return -1;
@@ -1925,27 +1913,27 @@ static int TestImdctCase(unsigned long index, int pattern, unsigned long seed,
 	cm = AMIGA_IMDCT36_C_REFERENCE(cx, cp, cy + blockIdx, btCurr, btPrev, blockIdx, gb);
 	am = AMIGA_IMDCT36_TEST_ACTIVE(ax, ap, ay + blockIdx, btCurr, btPrev, blockIdx, gb);
 	if (am != cm) {
-		printf("IMDCT36 mOut mismatch %lu: C=%ld active=%ld btCurr=%d btPrev=%d block=%d gb=%d\n",
+		printf("IMDCT36 mOut mismatch %lu: first=%ld second=%ld btCurr=%d btPrev=%d block=%d gb=%d\n",
 			index, (long)cm, (long)am, btCurr, btPrev, blockIdx, gb);
 		return -1;
 	}
 	for (i = 0; i < 18; i++) {
 		if (ax[i] != cx[i]) {
-			printf("IMDCT36 input mismatch %lu[%d]: C=%ld active=%ld btCurr=%d btPrev=%d block=%d gb=%d\n",
+			printf("IMDCT36 input mismatch %lu[%d]: first=%ld second=%ld btCurr=%d btPrev=%d block=%d gb=%d\n",
 				index, i, (long)cx[i], (long)ax[i], btCurr, btPrev, blockIdx, gb);
 			return -1;
 		}
 	}
 	for (i = 0; i < 9; i++) {
 		if (ap[i] != cp[i]) {
-			printf("IMDCT36 overlap mismatch %lu[%d]: C=%ld active=%ld btCurr=%d btPrev=%d block=%d gb=%d\n",
+			printf("IMDCT36 overlap mismatch %lu[%d]: first=%ld second=%ld btCurr=%d btPrev=%d block=%d gb=%d\n",
 				index, i, (long)cp[i], (long)ap[i], btCurr, btPrev, blockIdx, gb);
 			return -1;
 		}
 	}
 	for (i = 0; i < AMIGA_IMDCT_BLOCK_SIZE * AMIGA_IMDCT_NBANDS; i++) {
 		if (ay[i] != cy[i]) {
-			printf("IMDCT36 output mismatch %lu[%d]: C=%ld active=%ld btCurr=%d btPrev=%d block=%d gb=%d\n",
+			printf("IMDCT36 output mismatch %lu[%d]: first=%ld second=%ld btCurr=%d btPrev=%d block=%d gb=%d\n",
 				index, i, (long)cy[i], (long)ay[i], btCurr, btPrev, blockIdx, gb);
 			return -1;
 		}
@@ -1977,7 +1965,7 @@ static int TestAntialiasCase(unsigned long index, unsigned long seed, int patter
 
 	for (i = 0; i < nSamps; i++) {
 		if (ax[i] != cx[i]) {
-			printf("AntiAlias mismatch %lu[%d]: C=%ld active=%ld nBfly=%d pattern=%d\n",
+			printf("AntiAlias mismatch %lu[%d]: first=%ld second=%ld nBfly=%d pattern=%d\n",
 				index, i, (long)cx[i], (long)ax[i], nBfly, pattern);
 			return -1;
 		}
@@ -2106,14 +2094,14 @@ static int TestPolyphaseCase(unsigned long index, unsigned long seed, int patter
 
 	for (i = 0; i < AMIGA_POLYPHASE_VBUF_LENGTH; i++) {
 		if (avbuf[i] != cvbuf[i]) {
-			printf("PolyphaseMonoFast vbuf mismatch %lu[%d]: C=%ld active=%ld pattern=%d\n",
+			printf("PolyphaseMonoFast vbuf mismatch %lu[%d]: first=%ld second=%ld pattern=%d\n",
 				index, i, (long)cvbuf[i], (long)avbuf[i], pattern);
 			return -1;
 		}
 	}
 	for (i = 0; i < AMIGA_POLYPHASE_NBANDS; i++) {
 		if (apcm[i] != cpcm[i]) {
-			printf("PolyphaseMonoFast output mismatch %lu[%d]: C=%ld active=%ld pattern=%d\n",
+			printf("PolyphaseMonoFast output mismatch %lu[%d]: first=%ld second=%ld pattern=%d\n",
 				index, i, (long)cpcm[i], (long)apcm[i], pattern);
 			return -1;
 		}
@@ -2179,20 +2167,20 @@ static int TestPolyphaseStride2Case(unsigned long index, unsigned long seed, int
 	acount = AMIGA_POLYPHASE_MONO_FAST_STRIDE2_TEST_ACTIVE(apcm, avbuf, AMIGA_POLY_COEF);
 
 	if (ccount != 16 || acount != 16) {
-		printf("PolyphaseMonoFast stride2 count mismatch %lu: C=%d active=%d pattern=%d\n",
+		printf("PolyphaseMonoFast stride2 count mismatch %lu: first=%d second=%d pattern=%d\n",
 			index, ccount, acount, pattern);
 		return -1;
 	}
 	for (i = 0; i < AMIGA_POLYPHASE_VBUF_LENGTH; i++) {
 		if (avbuf[i] != cvbuf[i]) {
-			printf("PolyphaseMonoFast stride2 vbuf mismatch %lu[%d]: C=%ld active=%ld pattern=%d\n",
+			printf("PolyphaseMonoFast stride2 vbuf mismatch %lu[%d]: first=%ld second=%ld pattern=%d\n",
 				index, i, (long)cvbuf[i], (long)avbuf[i], pattern);
 			return -1;
 		}
 	}
 	for (i = 0; i < AMIGA_POLYPHASE_NBANDS; i++) {
 		if (apcm[i] != cpcm[i]) {
-			printf("PolyphaseMonoFast stride2 output mismatch %lu[%d]: C=%ld active=%ld pattern=%d\n",
+			printf("PolyphaseMonoFast stride2 output mismatch %lu[%d]: first=%ld second=%ld pattern=%d\n",
 				index, i, (long)cpcm[i], (long)apcm[i], pattern);
 			return -1;
 		}
@@ -2259,20 +2247,20 @@ static int TestPolyphaseStride4Case(unsigned long index, unsigned long seed, int
 	acount = AMIGA_POLYPHASE_MONO_FAST_STRIDE4_TEST_ACTIVE(apcm, avbuf, AMIGA_POLY_COEF);
 
 	if (ccount != 8 || acount != 8) {
-		printf("PolyphaseMonoFast stride4 count mismatch %lu: C=%d active=%d pattern=%d\n",
+		printf("PolyphaseMonoFast stride4 count mismatch %lu: first=%d second=%d pattern=%d\n",
 			index, ccount, acount, pattern);
 		return -1;
 	}
 	for (i = 0; i < AMIGA_POLYPHASE_VBUF_LENGTH; i++) {
 		if (avbuf[i] != cvbuf[i]) {
-			printf("PolyphaseMonoFast stride4 vbuf mismatch %lu[%d]: C=%ld active=%ld pattern=%d\n",
+			printf("PolyphaseMonoFast stride4 vbuf mismatch %lu[%d]: first=%ld second=%ld pattern=%d\n",
 				index, i, (long)cvbuf[i], (long)avbuf[i], pattern);
 			return -1;
 		}
 	}
 	for (i = 0; i < AMIGA_POLYPHASE_NBANDS; i++) {
 		if (apcm[i] != cpcm[i]) {
-			printf("PolyphaseMonoFast stride4 output mismatch %lu[%d]: C=%ld active=%ld pattern=%d\n",
+			printf("PolyphaseMonoFast stride4 output mismatch %lu[%d]: first=%ld second=%ld pattern=%d\n",
 				index, i, (long)cpcm[i], (long)apcm[i], pattern);
 			return -1;
 		}
@@ -2437,16 +2425,16 @@ static int SelftestHuffman(void)
 		bitOffset = (int)(NextRand32(&seed) & 7UL);
 
 		cret = AMIGA_HUFFMAN_PAIRS_C_REFERENCE(cxy, nVals, tabIdx, bitsLeft, buf, bitOffset);
-		aret = AMIGA_HUFFMAN_PAIRS_TEST_ACTIVE(axy, nVals, tabIdx, bitsLeft, buf, bitOffset);
+		aret = AMIGA_HUFFMAN_PAIRS_C_REFERENCE(axy, nVals, tabIdx, bitsLeft, buf, bitOffset);
 		if (aret != cret) {
-			printf("Huffman selftest bitsUsed mismatch %lu: tab=%d nVals=%d bitsLeft=%d bitOffset=%d C=%d active=%d\n",
+			printf("Huffman selftest bitsUsed mismatch %lu: tab=%d nVals=%d bitsLeft=%d bitOffset=%d first=%d second=%d\n",
 				i, tabIdx, nVals, bitsLeft, bitOffset, cret, aret);
 			failures++;
 			continue;
 		}
 		for (j = 0; j < nVals; j++) {
 			if (axy[j] != cxy[j]) {
-				printf("Huffman selftest xy mismatch %lu[%d]: tab=%d nVals=%d bitsLeft=%d bitOffset=%d C=%ld active=%ld bitsUsed=%d\n",
+				printf("Huffman selftest xy mismatch %lu[%d]: tab=%d nVals=%d bitsLeft=%d bitOffset=%d first=%ld second=%ld bitsUsed=%d\n",
 					i, j, tabIdx, nVals, bitsLeft, bitOffset, (long)cxy[j], (long)axy[j], cret);
 				failures++;
 				break;
@@ -2454,14 +2442,7 @@ static int SelftestHuffman(void)
 		}
 	}
 
-	printf("Huffman asm requested: %s\n",
-#ifdef AMIGA_M68K_ASM_HUFFMAN
-		"yes"
-#else
-		"no"
-#endif
-	);
-	printf("Huffman bfextu asm active: %s\n", AMIGA_HUFFMAN_PAIRS_HAS_ASM() ? "yes" : "no");
+	printf("Huffman asm active: no (portable C path only)\n");
 	printf("Huffman selftest cases: %lu\n", i);
 	printf("Huffman selftest failures: %lu\n", failures);
 	return failures ? 1 : 0;
@@ -2548,7 +2529,7 @@ static int TestCLZValue(int x, unsigned long index)
 	c = SelftestCLZReference(x);
 	a = CLZ(x);
 	if (a != c) {
-		printf("CLZ mismatch %lu: x=0x%08lx C=%ld active=%ld\n",
+		printf("CLZ mismatch %lu: x=0x%08lx first=%ld second=%ld\n",
 			index, (unsigned long)(unsigned int)x, (long)c, (long)a);
 		return -1;
 	}
@@ -4580,13 +4561,6 @@ int main(int argc, char **argv)
 #endif
 	}
 	MP3SetExperimentalPolyphase(opt.expPoly);
-	if (opt.expHuff) {
-#if defined(AMIGA_M68K_ASM_HUFFMAN)
-		fprintf(stderr, "warning: --exp-huff enables experimental 68020+ asm Huffman pairs when available; otherwise Huffman stays on the C path\n");
-#endif
-	}
-	MP3SetExperimentalHuffman(opt.expHuff);
-
 	if (opt.fastLowrate) {
 		int stride = FastLowrateStrideForOutputRate(opt.outputRate);
 		MP3SetFastLowrate(decoder, stride);
