@@ -730,6 +730,7 @@ static __inline int IMDCT36_AMIGA_M68K_LONG_WINDOW(int *xp, const int *cp,
 		"dbra %%d7,1b"
 		: "=&d" (mOut), "+a" (xp), "+a" (cp), "+a" (wp),
 		  "+a" (xPrev), "+a" (ypLo), "+a" (ypHi)
+		:
 		: "d0", "d1", "d2", "d3", "d4", "d5", "d7", "cc", "memory");
 
 	return mOut;
