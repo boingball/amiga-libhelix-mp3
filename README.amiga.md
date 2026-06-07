@@ -44,10 +44,9 @@ m68k-amigaos-gcc -m68030 -std=gnu89 -O3 -fomit-frame-pointer \
 python3 tools/amiga_fast_preferred_hunks.py amiga_mp3dec.fastexp
 ```
 
-The fast030 default deliberately leaves the experimental Huffman asm path off.
-Build `make -f Makefile.amiga exp-huff` (or add `-DAMIGA_M68K_ASM_HUFFMAN`
-yourself) only when you want a binary that exposes the runtime `--exp-huff`
-switch for further Huffman tuning.
+The Huffman decoder currently stays on the portable C path.  The previous
+experimental m68k Huffman asm toggle was removed because it could produce bit
+errors on real input.
 
 Keep a space between every `-D...` define and every `-I...` include path.  For
 example, `-DAMIGA_M68K_ASM_MIDSIDE-Ipub` is parsed as one malformed macro
@@ -270,9 +269,8 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   through normal 44100 -> 11025 `--rate` decimation and the stride-4
   fast-lowrate selector across chunk boundaries.
 - `--selftest-huffman` runs 1000 pseudo-random Huffman pair decode cases
-  through the portable C reference and the active pair decoder, so
-  `AMIGA_M68K_ASM_HUFFMAN` builds can verify the optional 68020+ `bfextu`
-  path returns identical bit counts and coefficients.
+  through repeated portable C decodes to verify stable bit counts and
+  coefficients.
 - `--selftest-dequant` compares the C dequant block reference with the active
   optional 68030 dequant inner loop for scale values -47..0 and coefficient
   magnitudes 0..8206.
@@ -399,19 +397,7 @@ decoded frame count and output sample count.
    amiga_mp3dec.midsideasm --bench --decode-only --checksum stereo-joint.mp3
    ```
 
-8. `AMIGA_M68K_ASM_HUFFMAN` is an experimental opt-in 68020+ GNU m68k
-   Huffman pair decoder path.  The normal decode path keeps using the portable
-   C Huffman pair decoder unless the binary was compiled with
-   `-DAMIGA_M68K_ASM_HUFFMAN` and the user passes `--exp-huff`.  Builds without
-   that define do not advertise the `--exp-huff` option.  Keep this path out of
-   default/release builds until it is corrected and verified on real input.
-
-   ```sh
-   make -f Makefile.amiga exp-huff
-   amiga_mp3dec.fastexp --exp-huff --selftest-huffman
-   ```
-
-9. Checksum the C and ASM FDCT32 builds with identical inputs and output modes
+8. Checksum the C and ASM FDCT32 builds with identical inputs and output modes
    before enabling the ASM binary in a release or local deployment.  The
    required regression set is: mono 56 kbps, stereo 160 kbps, stereo 256 kbps,
    fast-lowrate 11025 Hz, and fast-lowrate 8820 Hz.
