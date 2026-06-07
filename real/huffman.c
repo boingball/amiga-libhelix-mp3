@@ -431,7 +431,7 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 	remaining = bitsLeft;
 	while (nVals > 0) {
 		if (remaining <= 0)
-			return -1;
+			goto done;
 
 		tCurr = tBase;
 		for (;;) {
@@ -479,8 +479,10 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 	}
 
 done:
-	if (remaining < 0)
+	if (nVals > 0)
 		return -1;
+	if (remaining < 0)
+		remaining = 0;
 	return (startBits - remaining);
 }
 #endif
