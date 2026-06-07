@@ -220,22 +220,28 @@ AmigaM68KPolyphaseMonoFastStride2:
 	move.l	52(%sp),%a1
 	move.l	56(%sp),%a2
 
+	/* fastLowrateStride2Samples selects even samples:
+	 * 0, 2, 4, ..., 14, 16, 18, ..., 30.
+	 * PAIR indices are the actual polyphase sample numbers, so the
+	 * low half uses pairs 2/4/6/8/10/12/14 and the high half mirrors
+	 * those as 14/12/10/8/6/4/2 while storing contiguously.
+	 */
 	SAMPLE0
-	PAIR_LO 1,2
-	PAIR_LO 2,4
-	PAIR_LO 3,6
-	PAIR_LO 4,8
-	PAIR_LO 5,10
-	PAIR_LO 6,12
-	PAIR_LO 7,14
+	PAIR_LO 2,2
+	PAIR_LO 4,4
+	PAIR_LO 6,6
+	PAIR_LO 8,8
+	PAIR_LO 10,10
+	PAIR_LO 12,12
+	PAIR_LO 14,14
 	SAMPLE16_AT 16
-	PAIR_HI 7,18
-	PAIR_HI 6,20
-	PAIR_HI 5,22
-	PAIR_HI 4,24
-	PAIR_HI 3,26
-	PAIR_HI 2,28
-	PAIR_HI 1,30
+	PAIR_HI 14,18
+	PAIR_HI 12,20
+	PAIR_HI 10,22
+	PAIR_HI 8,24
+	PAIR_HI 6,26
+	PAIR_HI 4,28
+	PAIR_HI 2,30
 
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
