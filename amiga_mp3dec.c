@@ -56,6 +56,9 @@ int STATNAME(AmigaM68KPolyphaseMonoFastStride2_IsActive)(void);
 int STATNAME(DecodeHuffmanPairs_C_REFERENCE)(int *xy, int nVals, int tabIdx, int bitsLeft, unsigned char *buf, int bitOffset);
 int STATNAME(DecodeHuffmanPairs_TEST_ACTIVE)(int *xy, int nVals, int tabIdx, int bitsLeft, unsigned char *buf, int bitOffset);
 int STATNAME(DecodeHuffmanPairs_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
+int STATNAME(DequantBlock_C_REFERENCE)(int *inbuf, int *outbuf, int num, int scale);
+int STATNAME(DequantBlock_TEST_ACTIVE)(int *inbuf, int *outbuf, int num, int scale);
+int STATNAME(DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
 extern const int STATNAME(polyCoef)[264];
 #define AMIGA_FDCT32 STATNAME(FDCT32)
 #define AMIGA_FDCT32_C_REFERENCE STATNAME(FDCT32_C_REFERENCE)
@@ -78,6 +81,9 @@ extern const int STATNAME(polyCoef)[264];
 #define AMIGA_HUFFMAN_PAIRS_C_REFERENCE STATNAME(DecodeHuffmanPairs_C_REFERENCE)
 #define AMIGA_HUFFMAN_PAIRS_TEST_ACTIVE STATNAME(DecodeHuffmanPairs_TEST_ACTIVE)
 #define AMIGA_HUFFMAN_PAIRS_HAS_ASM STATNAME(DecodeHuffmanPairs_HAS_AMIGA_M68K_ASM_RUNTIME)
+#define AMIGA_DEQUANT_BLOCK_C_REFERENCE STATNAME(DequantBlock_C_REFERENCE)
+#define AMIGA_DEQUANT_BLOCK_TEST_ACTIVE STATNAME(DequantBlock_TEST_ACTIVE)
+#define AMIGA_DEQUANT_BLOCK_HAS_ASM STATNAME(DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define AMIGA_POLY_COEF STATNAME(polyCoef)
 
 #define READBUF_SIZE (1024 * 16)
@@ -112,6 +118,7 @@ typedef struct DecodeOptions {
 	int selftestPolyphaseStride4;
 	int selftestFastLowrate;
 	int selftestHuffman;
+	int selftestDequant;
 	int selftestMonoFastLowrateStereo;
 	int checksum;
 	int outputRate;
@@ -473,6 +480,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-polyphase-stride4 compare C and optional asm stride-4 mono polyphase paths\n");
 	printf("  --selftest-fastlowrate compare synthetic stride decimation paths\n");
 	printf("  --selftest-huffman compare C and optional m68k bfextu Huffman pair paths\n");
+	printf("  --selftest-dequant compare C and optional m68k asm dequant block paths\n");
 	printf("  --selftest-mono-fastlowrate-stereo verify stereo-to-mono low-rate accounting\n");
 	printf("  --checksum  print a 32-bit checksum of decoded PCM samples\n");
 	printf("  --debug-fastlowrate print per-frame/granule fast-lowrate placement\n");
@@ -580,6 +588,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->selftestFastLowrate = 1;
 		} else if (!strcmp(argv[i], "--selftest-huffman")) {
 			opt->selftestHuffman = 1;
+		} else if (!strcmp(argv[i], "--selftest-dequant")) {
+			opt->selftestDequant = 1;
 		} else if (!strcmp(argv[i], "--selftest-mono-fastlowrate-stereo")) {
 			opt->selftestMonoFastLowrateStereo = 1;
 		} else if (!strcmp(argv[i], "--checksum")) {
@@ -625,7 +635,7 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	if (opt->selftestMulshift || opt->selftestClz || opt->selftestFdct32 || opt->selftestImdct ||
 		opt->selftestPolyphase || opt->selftestPolyphaseStride2 ||
 		opt->selftestPolyphaseStride4 || opt->selftestFastLowrate ||
-		opt->selftestHuffman ||
+		opt->selftestHuffman || opt->selftestDequant ||
 		opt->selftestMonoFastLowrateStereo)
 		return 0;
 
@@ -2366,6 +2376,63 @@ static int SelftestHuffman(void)
 	printf("Huffman bfextu asm active: %s\n", AMIGA_HUFFMAN_PAIRS_HAS_ASM() ? "yes" : "no");
 	printf("Huffman selftest cases: %lu\n", i);
 	printf("Huffman selftest failures: %lu\n", failures);
+	return failures ? 1 : 0;
+}
+
+static int SelftestDequant(void)
+{
+	enum { DEQUANT_X_MAX = 8206 };
+	unsigned long cases;
+	unsigned long failures;
+	int scale;
+
+	cases = 0;
+	failures = 0;
+	for (scale = -47; scale <= 0; scale++) {
+		int x;
+		for (x = 0; x <= DEQUANT_X_MAX; x++) {
+			int signCase;
+			for (signCase = 0; signCase < (x ? 2 : 1); signCase++) {
+				int cin;
+				int ain;
+				int cout;
+				int aout;
+				int cmask;
+				int amask;
+
+				cin = signCase ? (int)(0x80000000UL | (unsigned long)x) : x;
+				ain = cin;
+				cout = (int)0x55aa55aaUL;
+				aout = (int)0xaa55aa55UL;
+				cmask = AMIGA_DEQUANT_BLOCK_C_REFERENCE(&cin, &cout, 1, scale);
+				amask = AMIGA_DEQUANT_BLOCK_TEST_ACTIVE(&ain, &aout, 1, scale);
+				cases++;
+				if (cmask != amask || cout != aout || cin != ain) {
+					printf("Dequant selftest mismatch scale=%d x=%d sign=%d C(out=%ld mask=%ld in=%ld) active(out=%ld mask=%ld in=%ld)\n",
+						scale, x, signCase, (long)cout, (long)cmask, (long)cin,
+						(long)aout, (long)amask, (long)ain);
+					failures++;
+					if (failures >= 16) {
+						printf("Dequant selftest stopped after 16 failures\n");
+						printf("Dequant selftest cases: %lu\n", cases);
+						printf("Dequant selftest failures: %lu\n", failures);
+						return 1;
+					}
+				}
+			}
+		}
+	}
+
+	printf("Dequant asm requested: %s\n",
+#ifdef AMIGA_M68K_ASM_DEQUANT
+		"yes"
+#else
+		"no"
+#endif
+	);
+	printf("Dequant asm active: %s\n", AMIGA_DEQUANT_BLOCK_HAS_ASM() ? "yes" : "no");
+	printf("Dequant selftest cases: %lu\n", cases);
+	printf("Dequant selftest failures: %lu\n", failures);
 	return failures ? 1 : 0;
 }
 
@@ -4264,6 +4331,11 @@ int main(int argc, char **argv)
 	}
 	if (opt.selftestHuffman) {
 		int selftestErr = SelftestHuffman();
+		AmigaFreeNormalizedArgs(&normalized);
+		return selftestErr;
+	}
+	if (opt.selftestDequant) {
+		int selftestErr = SelftestDequant();
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}
