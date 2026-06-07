@@ -401,7 +401,6 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 	int bitPos;
 	HuffTabType tabType;
 	unsigned short cw, *tBase, *tCurr;
-	unsigned char *cacheBuf;
 	unsigned int bits;
 
 	if(nVals <= 0)
@@ -423,19 +422,14 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 		return DecodeHuffmanPairs_C_REFERENCE(xy, nVals, tabIdx, bitsLeft, buf, bitOffset);
 
 	/*
-	 * Keep the C reference loopNoLinbits cache bookkeeping exactly, including
-	 * startBits/bitsLeft/cachedBits/padBits accounting.  The only difference is
-	 * that the Huffman and sign bits are read directly from the original buffer
-	 * with bfextu at bitPos rather than from the left-justified cache.
+	 * Keep the C reference loopNoLinbits startBits/bitsLeft/cachedBits/padBits
+	 * accounting, but read the Huffman and sign bits directly from the original
+	 * buffer with bfextu at bitPos rather than from the left-justified cache.
+	 * bitPos is the sole tracker of the next unread bit, so do not pre-drain
+	 * byte-alignment bits into cachedBits here.
 	 */
-	cacheBuf = buf;
 	bitPos = bitOffset;
-
-	/* initially fill cache with any partial byte */
-	cachedBits = (8 - bitOffset) & 0x07;
-	if (cachedBits)
-		cacheBuf++;
-	bitsLeft -= cachedBits;
+	cachedBits = 0;
 
 	/* no-linbits decode loop, mirrored from DecodeHuffmanPairs_C_REFERENCE */
 	tCurr = tBase;
@@ -443,13 +437,10 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 	while (nVals > 0) {
 		/* refill cache - assumes cachedBits <= 16 */
 		if (bitsLeft >= 16) {
-			cacheBuf += 2;
 			cachedBits += 16;
 			bitsLeft -= 16;
 		} else {
 			if (cachedBits + bitsLeft <= 0)	return -1;
-			if (bitsLeft > 0)	cacheBuf++;
-			if (bitsLeft > 8)	cacheBuf++;
 			cachedBits += bitsLeft;
 			bitsLeft = 0;
 
@@ -500,7 +491,6 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 		}
 	}
 	bitsLeft += (cachedBits - padBits);
-	(void)cacheBuf;
 	return (startBits - bitsLeft);
 }
 #endif
