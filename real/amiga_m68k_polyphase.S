@@ -278,11 +278,9 @@ MonoFastPolyphaseStride4_Amiga_m68k:
 .Lstride4_tap:
 	move.l	(%a3)+,%d0
 	move.l	(%a5),%d1
-	asl.l	#6,%d1
 	cmpi.b	#2,%d5
 	bne.s	.Lstride4_lo_coef
 	move.l	4(%a5),%d1
-	asl.l	#6,%d1
 .Lstride4_lo_coef:
 	muls.l	%d1,%d2:%d0
 	add.l	%d2,%d3
@@ -294,7 +292,6 @@ MonoFastPolyphaseStride4_Amiga_m68k:
 	bne.s	.Lstride4_hi_coef
 	move.l	(%a5),%d1
 .Lstride4_hi_coef:
-	asl.l	#6,%d1
 	muls.l	%d1,%d2:%d0
 	cmpi.b	#2,%d5
 	beq.s	.Lstride4_add_hi
