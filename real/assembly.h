@@ -56,6 +56,13 @@
 #ifndef _ASSEMBLY_H
 #define _ASSEMBLY_H
 
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE) && defined(__GNUC__)
+extern void MonoFastPolyphaseStride4_Amiga_m68k(short *pcm, int *vbuf,
+	const int *coefBase) __asm__("MonoFastPolyphaseStride4_Amiga_m68k")
+	__attribute__((weak));
+#endif
+
+
 #if (defined _WIN32 && !defined _WIN32_WCE) || (defined __WINS__ && defined _SYMBIAN) || defined(_OPENWAVE_SIMULATOR) || defined(WINCE_EMULATOR)    /* Symbian emulator for Ix86 */
 
 #pragma warning( disable : 4035 )	/* complains about inline asm not returning a value */

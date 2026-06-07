@@ -254,6 +254,9 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   kernel.
 - `--selftest-polyphase-stride2` compares the C stride-2 mono fast-lowrate
   polyphase selection with the optional contiguous-output m68k assembly kernel.
+- `--selftest-polyphase-stride4` compares the C stride-4 mono fast-lowrate
+  polyphase selection with the optional 11025 Hz m68k assembly kernel over 500
+  pseudo-random vbuf states.
 - `--selftest-fastlowrate` compares a synthetic ramp/impulse-like PCM sequence
   through normal 44100 -> 11025 `--rate` decimation and the stride-4
   fast-lowrate selector across chunk boundaries.
