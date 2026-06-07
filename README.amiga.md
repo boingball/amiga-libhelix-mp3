@@ -268,6 +268,9 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   through the portable C reference and the active pair decoder, so
   `AMIGA_M68K_ASM_HUFFMAN` builds can verify the optional 68020+ `bfextu`
   path returns identical bit counts and coefficients.
+- `--selftest-dequant` compares the C dequant block reference with the active
+  optional 68030 dequant inner loop for scale values -47..0 and coefficient
+  magnitudes 0..8206.
 - `--checksum` prints a 32-bit checksum of the decoded 16-bit PCM stream before
   optional mixing, downsampling, or output-format conversion. With
   `--fast-lowrate`, it instead covers the low-rate output samples so experiments

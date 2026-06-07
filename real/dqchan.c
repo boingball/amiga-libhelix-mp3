@@ -129,7 +129,20 @@ int pow2frac[8] = {
  *
  * Return:      bitwise-OR of the unsigned outputs (for guard bit calculations)
  **************************************************************************************/
-static int DequantBlock(int *inbuf, int *outbuf, int num, int scale)
+#if defined(AMIGA_M68K) && defined(AMIGA_M68K_ASM_DEQUANT) && defined(__GNUC__) && \
+	(defined(__mc68020__) || defined(__mc68030__) || defined(__mc68040__) || \
+	 defined(__mc68060__) || defined(mc68020))
+#define DEQUANTBLOCK_HAS_AMIGA_M68K_ASM 1
+#else
+#define DEQUANTBLOCK_HAS_AMIGA_M68K_ASM 0
+#endif
+
+static __inline int DequantBlock_MULSHIFT32_C_REFERENCE(int x, int y)
+{
+	return (int)(((long long)x * (long long)y) >> 32);
+}
+
+int DequantBlock_C_REFERENCE(int *inbuf, int *outbuf, int num, int scale)
 {
 	int tab4[4];
 	int scalef, scalei, shift;
@@ -176,7 +189,7 @@ static int DequantBlock(int *inbuf, int *outbuf, int num, int scale)
 				y = pow43[x-16];
 
 				/* fractional scale */
-				y = MULSHIFT32(y, scalef);
+				y = DequantBlock_MULSHIFT32_C_REFERENCE(y, scalef);
 				shift = scalei - 3;
 
 			} else {
@@ -195,14 +208,14 @@ static int DequantBlock(int *inbuf, int *outbuf, int num, int scale)
 
 				/* polynomial */
 				y = coef[0];
-				y = MULSHIFT32(y, x) + coef[1];
-				y = MULSHIFT32(y, x) + coef[2];
-				y = MULSHIFT32(y, x) + coef[3];
-				y = MULSHIFT32(y, x) + coef[4];
-				y = MULSHIFT32(y, pow2frac[shift]) << 3;
+				y = DequantBlock_MULSHIFT32_C_REFERENCE(y, x) + coef[1];
+				y = DequantBlock_MULSHIFT32_C_REFERENCE(y, x) + coef[2];
+				y = DequantBlock_MULSHIFT32_C_REFERENCE(y, x) + coef[3];
+				y = DequantBlock_MULSHIFT32_C_REFERENCE(y, x) + coef[4];
+				y = DequantBlock_MULSHIFT32_C_REFERENCE(y, pow2frac[shift]) << 3;
 
 				/* fractional scale */
-				y = MULSHIFT32(y, scalef);
+				y = DequantBlock_MULSHIFT32_C_REFERENCE(y, scalef);
 				shift = scalei - pow2exp[shift];
 			}
 
@@ -225,6 +238,164 @@ static int DequantBlock(int *inbuf, int *outbuf, int num, int scale)
 	} while (--num);
 
 	return mask;
+}
+
+#if DEQUANTBLOCK_HAS_AMIGA_M68K_ASM
+static int DequantBlock_AmigaM68KAsm(int *inbuf, int *outbuf, int num, int scale)
+{
+	int tab4[4];
+	int scalef, scalei, shift;
+	int sx, x, y;
+	int mask = 0;
+	const int *tab16, *coef;
+	register const int *tab4Reg __asm__("a2");
+	register int scalefReg __asm__("d5");
+	register int scaleiReg __asm__("d6");
+	register int tab4ShiftReg __asm__("d7");
+
+	tab16 = pow43_14[scale & 0x3];
+	scalef = pow14[scale & 0x3];
+	scalei = MIN(scale >> 2, 31);
+
+	/* Keep the small-coefficient table unshifted for the register-indirect asm path. */
+	shift = MIN(scalei + 3, 31);
+	shift = MAX(shift, 0);
+	tab4[0] = 0;
+	tab4[1] = tab16[1];
+	tab4[2] = tab16[2];
+	tab4[3] = tab16[3];
+	tab4Reg = tab4;
+	scalefReg = scalef;
+	scaleiReg = scalei;
+	tab4ShiftReg = shift;
+
+	do {
+
+		sx = *inbuf++;
+		x = sx & 0x7fffffff;	/* sx = sign|mag */
+
+		/* Zero is the dominant sparse-spectrum case; avoid scale/sign work. */
+		if (!x) {
+			*outbuf++ = 0;
+			continue;
+		}
+
+		if (x < 4) {
+			/* 68020+ indexed load, one variable arithmetic shift, and mask update. */
+			__asm__ volatile (
+				"move.l (%[tab],%[idx].l*4),%[out]\n\t"
+				"asr.l %[sh],%[out]\n\t"
+				"or.l %[out],%[mask]"
+				: [out] "=&d" (y), [mask] "+d" (mask)
+				: [tab] "a" (tab4Reg), [idx] "d" (x), [sh] "d" (tab4ShiftReg)
+				: "cc");
+			*outbuf++ = (sx < 0) ? -y : y;
+			continue;
+
+		} else if (x < 16) {
+
+			y = tab16[x];
+			y = (scaleiReg < 0) ? y << -scaleiReg : y >> scaleiReg;
+
+		} else {
+
+			if (x < 64) {
+
+				y = pow43[x-16];
+
+				/* fractional scale */
+				y = MULSHIFT32(y, scalefReg);
+				shift = scaleiReg - 3;
+
+			} else {
+
+				/* normalize to [0x40000000, 0x7fffffff] */
+				x <<= 17;
+				shift = 0;
+				if (x < 0x08000000)
+					x <<= 4, shift += 4;
+				if (x < 0x20000000)
+					x <<= 2, shift += 2;
+				if (x < 0x40000000)
+					x <<= 1, shift += 1;
+
+				coef = (x < SQRTHALF) ? poly43lo : poly43hi;
+
+				/* polynomial and fractional scale in one block, so GCC cannot spill between muls.l ops. */
+				{
+					int hi, lo;
+					__asm__ volatile (
+						"move.l (%[coef]),%[out]\n\t"
+						"move.l %[x],%[lo]\n\t"
+						"muls.l %[out],%[hi]:%[lo]\n\t"
+						"move.l %[hi],%[out]\n\t"
+						"add.l 4(%[coef]),%[out]\n\t"
+						"move.l %[x],%[lo]\n\t"
+						"muls.l %[out],%[hi]:%[lo]\n\t"
+						"move.l %[hi],%[out]\n\t"
+						"add.l 8(%[coef]),%[out]\n\t"
+						"move.l %[x],%[lo]\n\t"
+						"muls.l %[out],%[hi]:%[lo]\n\t"
+						"move.l %[hi],%[out]\n\t"
+						"add.l 12(%[coef]),%[out]\n\t"
+						"move.l %[x],%[lo]\n\t"
+						"muls.l %[out],%[hi]:%[lo]\n\t"
+						"move.l %[hi],%[out]\n\t"
+						"add.l 16(%[coef]),%[out]\n\t"
+						"move.l %[powfrac],%[lo]\n\t"
+						"muls.l %[out],%[hi]:%[lo]\n\t"
+						"move.l %[hi],%[out]\n\t"
+						"lsl.l #3,%[out]\n\t"
+						"move.l %[scalef],%[lo]\n\t"
+						"muls.l %[out],%[hi]:%[lo]\n\t"
+						"move.l %[hi],%[out]"
+						: [out] "=&d" (y), [hi] "=&d" (hi), [lo] "=&d" (lo)
+						: [x] "d" (x), [coef] "a" (coef),
+						  [powfrac] "d" (pow2frac[shift]), [scalef] "d" (scalefReg)
+						: "cc");
+				}
+				shift = scaleiReg - pow2exp[shift];
+			}
+
+			/* integer scale */
+			if (shift < 0) {
+				shift = -shift;
+				if (y > (0x7fffffff >> shift))
+					y = 0x7fffffff;		/* clip */
+				else
+					y <<= shift;
+			} else {
+				y >>= shift;
+			}
+		}
+
+		/* sign and store */
+		mask |= y;
+		*outbuf++ = (sx < 0) ? -y : y;
+
+	} while (--num);
+
+	return mask;
+}
+#endif
+
+int DequantBlock_TEST_ACTIVE(int *inbuf, int *outbuf, int num, int scale)
+{
+#if DEQUANTBLOCK_HAS_AMIGA_M68K_ASM
+	return DequantBlock_AmigaM68KAsm(inbuf, outbuf, num, scale);
+#else
+	return DequantBlock_C_REFERENCE(inbuf, outbuf, num, scale);
+#endif
+}
+
+int DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME(void)
+{
+	return DEQUANTBLOCK_HAS_AMIGA_M68K_ASM;
+}
+
+static int DequantBlock(int *inbuf, int *outbuf, int num, int scale)
+{
+	return DequantBlock_TEST_ACTIVE(inbuf, outbuf, num, scale);
 }
 
 /**************************************************************************************

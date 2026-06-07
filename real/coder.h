@@ -94,6 +94,9 @@
 #define	GetBits				STATNAME(GetBits)
 #define	CalcBitsUsed		STATNAME(CalcBitsUsed)
 #define	DequantChannel		STATNAME(DequantChannel)
+#define DequantBlock_C_REFERENCE STATNAME(DequantBlock_C_REFERENCE)
+#define DequantBlock_TEST_ACTIVE STATNAME(DequantBlock_TEST_ACTIVE)
+#define DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME STATNAME(DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define	MidSideProc			STATNAME(MidSideProc)
 #define	IntensityProcMPEG1	STATNAME(IntensityProcMPEG1)
 #define	IntensityProcMPEG2	STATNAME(IntensityProcMPEG2)
@@ -284,6 +287,9 @@ int CalcBitsUsed(BitStreamInfo *bsi, unsigned char *startBuf, int startOffset);
 /* dequant.c, dqchan.c, stproc.c */
 int DequantChannel(int *sampleBuf, int *workBuf, int *nonZeroBound, FrameHeader *fh, SideInfoSub *sis, 
 					ScaleFactorInfoSub *sfis, CriticalBandInfo *cbi);
+int DequantBlock_C_REFERENCE(int *inbuf, int *outbuf, int num, int scale);
+int DequantBlock_TEST_ACTIVE(int *inbuf, int *outbuf, int num, int scale);
+int DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 void MidSideProc(int x[MAX_NCHAN][MAX_NSAMP], int nSamps, int mOut[2]);
 void IntensityProcMPEG1(int x[MAX_NCHAN][MAX_NSAMP], int nSamps, FrameHeader *fh, ScaleFactorInfoSub *sfis, 
 						CriticalBandInfo *cbi, int midSideFlag, int mixFlag, int mOut[2]);
