@@ -475,6 +475,8 @@ static int DecodeHuffmanPairs_BFEXTU(int *xy, int nVals, int tabIdx, int bitsLef
 	}
 
 done:
+	if (remaining < 0)
+		return -1;
 	return (startBits - remaining);
 }
 #endif
