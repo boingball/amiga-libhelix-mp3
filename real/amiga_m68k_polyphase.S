@@ -249,68 +249,31 @@ AmigaM68KPolyphaseMonoFastStride2:
 
 
 /* void MonoFastPolyphaseStride4_Amiga_m68k(short *pcm, int *vbuf, const int *coefBase)
- * Emits stride-4 samples 0,4,8,12,16,20,24,28 contiguously in pcm[0]..pcm[7].
- * Compact looped 68030 version: keep code small for the 256-byte I-cache while
- * using muls.l high products and pointer-register tap walks like the stride-2
- * calling convention above.
+ * Emits stride-4 phase-0 samples 0,4,8,12,16,20,24,28 contiguously
+ * in pcm[0]..pcm[7].  Keep the coefficient offsets identical to the
+ * straight-line PAIR_LO/PAIR_HI kernels above: pair P uses coefBase +
+ * P*64 bytes (P*16 ints), while vbuf uses P*256 bytes (P*64 ints).
  */
 MonoFastPolyphaseStride4_Amiga_m68k:
 	movem.l	%d2-%d7/%a2-%a6,-(%sp)
 	move.l	48(%sp),%a0		| pcm
 	move.l	52(%sp),%a1		| vbuf
 	move.l	56(%sp),%a2		| coefBase
-	lea	.Lstride4_desc,%a6
-	moveq	#7,%d7
-.Lstride4_sample:
-	moveq	#0,%d3			| accumulator
-	moveq	#0,%d4
-	moveq	#0,%d5
-	move.b	(%a6)+,%d4		| pair index
-	move.b	(%a6)+,%d5		| mode: 0=lo, 1=mid16, 2=hi
-	move.l	%a1,%a3
-	move.l	%a2,%a5
-	lsl.w	#6,%d4			| vbuf pair offset in longwords
-	lea	0(%a3,%d4.w*4),%a3	| vLo
-	lsr.w	#2,%d4			| coef pair offset in int pairs (pair * 16)
-	lea	0(%a5,%d4.w*4),%a5	| coef
-	lea	92(%a3),%a4		| vHi = vLo + 23
-	moveq	#7,%d6
-.Lstride4_tap:
-	move.l	(%a3)+,%d0
-	move.l	(%a5),%d1
-	cmpi.b	#2,%d5
-	bne.s	.Lstride4_lo_coef
-	move.l	4(%a5),%d1
-.Lstride4_lo_coef:
-	muls.l	%d1,%d2:%d0
-	add.l	%d2,%d3
-	cmpi.b	#1,%d5
-	beq.s	.Lstride4_next_tap
-	move.l	(%a4),%d0
-	move.l	4(%a5),%d1
-	cmpi.b	#2,%d5
-	bne.s	.Lstride4_hi_coef
-	move.l	(%a5),%d1
-.Lstride4_hi_coef:
-	muls.l	%d1,%d2:%d0
-	cmpi.b	#2,%d5
-	beq.s	.Lstride4_add_hi
-	sub.l	%d2,%d3
-	bra.s	.Lstride4_after_hi
-.Lstride4_add_hi:
-	add.l	%d2,%d3
-.Lstride4_after_hi:
-	subq.l	#4,%a4
-.Lstride4_next_tap:
-	addq.l	#8,%a5
-	dbra	%d6,.Lstride4_tap
-	CLIP_STORE %d3,0
-	addq.l	#2,%a0
-	dbra	%d7,.Lstride4_sample
+
+	/* Matches fastLowrateStride4Samples[0] in polyphase.c:
+	 * 0, 4, 8, 12, 16, 20, 24, 28.
+	 */
+	SAMPLE0
+	PAIR_LO 4,2
+	PAIR_LO 8,4
+	PAIR_LO 12,6
+	SAMPLE16_AT 8
+	PAIR_HI 12,10
+	PAIR_HI 8,12
+	PAIR_HI 4,14
+
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
 
 	.even
-.Lstride4_desc:
-	.byte	0,0, 4,0, 8,0, 12,0, 16,1, 12,2, 8,2, 4,2
 #endif /* AMIGA_M68K_ASM_POLYPHASE */
