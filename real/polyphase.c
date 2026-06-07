@@ -95,6 +95,9 @@ int MP3ExperimentalPolyphaseEnabled(void)
 extern void AmigaM68KPolyphaseMonoFast(short *pcm, int *vbuf,
 	const int *coefBase) __asm__("AmigaM68KPolyphaseMonoFast")
 	__attribute__((weak));
+extern void AmigaM68KPolyphaseMonoFastStride2(short *pcm, int *vbuf,
+	const int *coefBase) __asm__("AmigaM68KPolyphaseMonoFastStride2")
+	__attribute__((weak));
 #endif
 
 static __inline short ClipToShort(int x, int fracBits)
@@ -878,9 +881,23 @@ int AmigaM68KPolyphaseMonoFast_IsActive(void)
 #endif
 }
 
+int AmigaM68KPolyphaseMonoFastStride2_IsActive(void)
+{
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
+	return AmigaM68KPolyphaseMonoFastStride2 ? 1 : 0;
+#else
+	return 0;
+#endif
+}
+
 int PolyphaseMonoFast_HAS_AMIGA_M68K_ASM_RUNTIME(void)
 {
 	return AmigaM68KPolyphaseMonoFast_IsActive();
+}
+
+int PolyphaseMonoFastLowrateStride2_HAS_AMIGA_M68K_ASM_RUNTIME(void)
+{
+	return AmigaM68KPolyphaseMonoFastStride2_IsActive();
 }
 
 void PolyphaseMonoFast_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase)
@@ -892,6 +909,30 @@ void PolyphaseMonoFast_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase)
 	}
 #endif
 	PolyphaseMonoFast_C_REFERENCE(pcm, vbuf, coefBase);
+}
+
+
+int PolyphaseMonoFastLowrateStride2_C_REFERENCE(short *pcm, int *vbuf, const int *coefBase)
+{
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE)
+	return PolyphaseMonoFastLowrateList(pcm, vbuf, coefBase,
+		fastLowrateStride2Samples, 16);
+#else
+	int phase;
+	phase = 0;
+	return PolyphaseMonoFastLowrate(pcm, vbuf, coefBase, 2, &phase);
+#endif
+}
+
+int PolyphaseMonoFastLowrateStride2_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase)
+{
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
+	if (AmigaM68KPolyphaseMonoFastStride2_IsActive()) {
+		AmigaM68KPolyphaseMonoFastStride2(pcm, vbuf, coefBase);
+		return 16;
+	}
+#endif
+	return PolyphaseMonoFastLowrateStride2_C_REFERENCE(pcm, vbuf, coefBase);
 }
 
 int PolyphaseMonoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int stride, int *phase)
@@ -908,9 +949,16 @@ int PolyphaseMonoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int str
 	}
 
 	localPhase = *phase;
-	if (stride == 2 && localPhase == 0)
+	if (stride == 2 && localPhase == 0) {
+#if defined(AMIGA_M68K_ASM_POLYPHASE)
+		if (AmigaM68KPolyphaseMonoFastStride2_IsActive()) {
+			AmigaM68KPolyphaseMonoFastStride2(pcm, vbuf, coefBase);
+			return 16;
+		}
+#endif
 		return PolyphaseMonoFastLowrateList(pcm, vbuf, coefBase,
 			fastLowrateStride2Samples, 16);
+	}
 	if (stride == 4)
 		return PolyphaseMonoFastLowrateStride4(pcm, vbuf, coefBase, localPhase);
 	if (stride == 5) {

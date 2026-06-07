@@ -9,6 +9,7 @@
 	.text
 	.even
 	.globl	AmigaM68KPolyphaseMonoFast
+	.globl	AmigaM68KPolyphaseMonoFastStride2
 /* void AmigaM68KPolyphaseMonoFast(short *pcm, int *vbuf, const int *coefBase)
  * 4(%sp)  = pcm
  * 8(%sp)  = vbuf
@@ -88,6 +89,65 @@ AmigaM68KPolyphaseMonoFast:
 	CLIP_STORE %d3,32
 .endm
 
+.macro SAMPLE16_AT poff
+	clr.l	%d3
+	PROD_ADD 4096,1024,%d3
+	PROD_ADD 4100,1028,%d3
+	PROD_ADD 4104,1032,%d3
+	PROD_ADD 4108,1036,%d3
+	PROD_ADD 4112,1040,%d3
+	PROD_ADD 4116,1044,%d3
+	PROD_ADD 4120,1048,%d3
+	PROD_ADD 4124,1052,%d3
+	CLIP_STORE %d3,\poff
+.endm
+
+.macro PAIR_LO pair, poff
+	.set VB, (\pair * 256)
+	.set CF, (\pair * 64)
+	clr.l	%d3
+	PROD_ADD VB+0,CF+0,%d3
+	PROD_SUB VB+92,CF+4,%d3
+	PROD_ADD VB+4,CF+8,%d3
+	PROD_SUB VB+88,CF+12,%d3
+	PROD_ADD VB+8,CF+16,%d3
+	PROD_SUB VB+84,CF+20,%d3
+	PROD_ADD VB+12,CF+24,%d3
+	PROD_SUB VB+80,CF+28,%d3
+	PROD_ADD VB+16,CF+32,%d3
+	PROD_SUB VB+76,CF+36,%d3
+	PROD_ADD VB+20,CF+40,%d3
+	PROD_SUB VB+72,CF+44,%d3
+	PROD_ADD VB+24,CF+48,%d3
+	PROD_SUB VB+68,CF+52,%d3
+	PROD_ADD VB+28,CF+56,%d3
+	PROD_SUB VB+64,CF+60,%d3
+	CLIP_STORE %d3,\poff
+.endm
+
+.macro PAIR_HI pair, poff
+	.set VB, (\pair * 256)
+	.set CF, (\pair * 64)
+	clr.l	%d3
+	PROD_ADD VB+0,CF+4,%d3
+	PROD_ADD VB+92,CF+0,%d3
+	PROD_ADD VB+4,CF+12,%d3
+	PROD_ADD VB+88,CF+8,%d3
+	PROD_ADD VB+8,CF+20,%d3
+	PROD_ADD VB+84,CF+16,%d3
+	PROD_ADD VB+12,CF+28,%d3
+	PROD_ADD VB+80,CF+24,%d3
+	PROD_ADD VB+16,CF+36,%d3
+	PROD_ADD VB+76,CF+32,%d3
+	PROD_ADD VB+20,CF+44,%d3
+	PROD_ADD VB+72,CF+40,%d3
+	PROD_ADD VB+24,CF+52,%d3
+	PROD_ADD VB+68,CF+48,%d3
+	PROD_ADD VB+28,CF+60,%d3
+	PROD_ADD VB+64,CF+56,%d3
+	CLIP_STORE %d3,\poff
+.endm
+
 .macro PAIR pair
 	.set VB, (\pair * 256)
 	.set CF, (\pair * 64)
@@ -146,6 +206,36 @@ AmigaM68KPolyphaseMonoFast:
 	PAIR 13
 	PAIR 14
 	PAIR 15
+
+	movem.l	(%sp)+,%d2-%d7/%a2-%a6
+	rts
+
+
+/* void AmigaM68KPolyphaseMonoFastStride2(short *pcm, int *vbuf, const int *coefBase)
+ * Emits the 16 stride-2 samples contiguously in pcm[0]..pcm[15].
+ */
+AmigaM68KPolyphaseMonoFastStride2:
+	movem.l	%d2-%d7/%a2-%a6,-(%sp)
+	move.l	48(%sp),%a0
+	move.l	52(%sp),%a1
+	move.l	56(%sp),%a2
+
+	SAMPLE0
+	PAIR_LO 1,2
+	PAIR_LO 2,4
+	PAIR_LO 3,6
+	PAIR_LO 4,8
+	PAIR_LO 5,10
+	PAIR_LO 6,12
+	PAIR_LO 7,14
+	SAMPLE16_AT 16
+	PAIR_HI 7,18
+	PAIR_HI 6,20
+	PAIR_HI 5,22
+	PAIR_HI 4,24
+	PAIR_HI 3,26
+	PAIR_HI 2,28
+	PAIR_HI 1,30
 
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts

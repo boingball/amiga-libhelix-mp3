@@ -252,6 +252,8 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   optional 68030 assembly kernel.  `--exp-poly` no longer runs this selftest
   automatically; use this standalone flag when you want to re-verify the asm
   kernel.
+- `--selftest-polyphase-stride2` compares the C stride-2 mono fast-lowrate
+  polyphase selection with the optional contiguous-output m68k assembly kernel.
 - `--selftest-fastlowrate` compares a synthetic ramp/impulse-like PCM sequence
   through normal 44100 -> 11025 `--rate` decimation and the stride-4
   fast-lowrate selector across chunk boundaries.
