@@ -62,6 +62,7 @@ int STATNAME(DecodeHuffmanPairs_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
 int STATNAME(DequantBlock_C_REFERENCE)(int *inbuf, int *outbuf, int num, int scale);
 int STATNAME(DequantBlock_TEST_ACTIVE)(int *inbuf, int *outbuf, int num, int scale);
 int STATNAME(DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
+int STATNAME(BitstreamRefillSelftest)(void);
 extern const int STATNAME(polyCoef)[264];
 #define AMIGA_FDCT32 STATNAME(FDCT32)
 #define AMIGA_FDCT32_C_REFERENCE STATNAME(FDCT32_C_REFERENCE)
@@ -90,6 +91,7 @@ extern const int STATNAME(polyCoef)[264];
 #define AMIGA_DEQUANT_BLOCK_C_REFERENCE STATNAME(DequantBlock_C_REFERENCE)
 #define AMIGA_DEQUANT_BLOCK_TEST_ACTIVE STATNAME(DequantBlock_TEST_ACTIVE)
 #define AMIGA_DEQUANT_BLOCK_HAS_ASM STATNAME(DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME)
+#define AMIGA_BITSTREAM_REFILL_SELFTEST STATNAME(BitstreamRefillSelftest)
 #define AMIGA_POLY_COEF STATNAME(polyCoef)
 
 #define READBUF_SIZE (1024 * 16)
@@ -126,6 +128,7 @@ typedef struct DecodeOptions {
 	int selftestFastLowrate;
 	int selftestHuffman;
 	int selftestDequant;
+	int selftestBitstream;
 	int selftestMonoFastLowrateStereo;
 	int checksum;
 	int outputRate;
@@ -493,6 +496,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-fastlowrate compare synthetic stride decimation paths\n");
 	printf("  --selftest-huffman compare C and optional m68k bfextu Huffman pair paths\n");
 	printf("  --selftest-dequant compare C and optional m68k asm dequant block paths\n");
+	printf("  --selftest-bitstream compare C and optional m68k move.l bitstream refill paths\n");
 	printf("  --selftest-mono-fastlowrate-stereo verify stereo-to-mono low-rate accounting\n");
 	printf("  --checksum  print a 32-bit checksum of decoded PCM samples\n");
 	printf("  --debug-fastlowrate print per-frame/granule fast-lowrate placement\n");
@@ -604,6 +608,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->selftestHuffman = 1;
 		} else if (!strcmp(argv[i], "--selftest-dequant")) {
 			opt->selftestDequant = 1;
+		} else if (!strcmp(argv[i], "--selftest-bitstream")) {
+			opt->selftestBitstream = 1;
 		} else if (!strcmp(argv[i], "--selftest-mono-fastlowrate-stereo")) {
 			opt->selftestMonoFastLowrateStereo = 1;
 		} else if (!strcmp(argv[i], "--checksum")) {
@@ -654,7 +660,7 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 		opt->selftestAntialias || opt->selftestPolyphase || opt->selftestPolyphaseStride2 ||
 		opt->selftestPolyphaseStride4 || opt->selftestFastLowrate ||
 		opt->selftestHuffman || opt->selftestDequant ||
-		opt->selftestMonoFastLowrateStereo)
+		opt->selftestBitstream || opt->selftestMonoFastLowrateStereo)
 		return 0;
 
 	if (opt->stereo && !opt->play) {
@@ -4458,6 +4464,11 @@ int main(int argc, char **argv)
 	}
 	if (opt.selftestDequant) {
 		int selftestErr = SelftestDequant();
+		AmigaFreeNormalizedArgs(&normalized);
+		return selftestErr;
+	}
+	if (opt.selftestBitstream) {
+		int selftestErr = AMIGA_BITSTREAM_REFILL_SELFTEST();
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}

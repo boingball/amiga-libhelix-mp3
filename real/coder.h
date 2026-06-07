@@ -92,6 +92,7 @@
 /* additional external symbols to name-mangle for static linking */
 #define	SetBitstreamPointer	STATNAME(SetBitstreamPointer)
 #define	GetBits				STATNAME(GetBits)
+#define BitstreamRefillSelftest STATNAME(BitstreamRefillSelftest)
 #define	CalcBitsUsed		STATNAME(CalcBitsUsed)
 #define	DequantChannel		STATNAME(DequantChannel)
 #define DequantBlock_C_REFERENCE STATNAME(DequantBlock_C_REFERENCE)
@@ -285,6 +286,7 @@ typedef struct _SubbandInfo {
 /* bitstream.c */
 void SetBitstreamPointer(BitStreamInfo *bsi, int nBytes, unsigned char *buf);
 unsigned int GetBits(BitStreamInfo *bsi, int nBits);
+int BitstreamRefillSelftest(void);
 int CalcBitsUsed(BitStreamInfo *bsi, unsigned char *startBuf, int startOffset);
 
 /* dequant.c, dqchan.c, stproc.c */

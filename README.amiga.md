@@ -297,14 +297,17 @@ decoded frame count and output sample count.
    output on target hardware to separate frame decode, conversion/compression,
    and filesystem cost.
 3. `AMIGA_M68K_ASM` currently optimizes `MULSHIFT32` with optional 68020+
-   `muls.l` inline assembly and `CLZ` with optional 68020+ `bfffo` inline
-   assembly.  Build and prove both helpers before enabling deeper asm paths:
+   `muls.l` inline assembly, `CLZ` with optional 68020+ `bfffo` inline
+   assembly, and the hot 4-byte bitstream refill with an optional 68020+
+   `move.l (%a0)+,%d0` inline load.  Build and prove these helpers before
+   enabling deeper asm paths:
 
    ```sh
    m68k-amigaos-gcc -m68020 -std=gnu89 -O2 -DAMIGA_M68K_ASM -Ipub -Ireal \
      -o amiga_mp3dec.asm amiga_mp3dec.c mp3dec.c mp3tabs.c real/*.c
    amiga_mp3dec.asm --selftest-mulshift
    amiga_mp3dec.asm --selftest-clz
+   amiga_mp3dec.asm --selftest-bitstream
    ```
 
    Upstream GCC's m68k backend has a `clzsi2` pattern that emits `bfffo` when

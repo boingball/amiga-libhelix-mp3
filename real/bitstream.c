@@ -41,6 +41,8 @@
  * bitstream.c - bitstream unpacking, frame header parsing, side info parsing
  **************************************************************************************/
 
+#include <stdio.h>
+
 #include "coder.h"
 #include "assembly.h"
 
@@ -84,18 +86,42 @@ void SetBitstreamPointer(BitStreamInfo *bsi, int nBytes, unsigned char *buf)
  * TODO:        optimize for ARM
  *              possibly add little/big-endian modes for doing 32-bit loads
  **************************************************************************************/
+#if defined(AMIGA_M68K) && defined(AMIGA_M68K_ASM) && defined(__GNUC__) \
+	&& (defined(__mc68020__) || defined(__mc68030__) || defined(__mc68040__) || defined(__mc68060__))
+#define AMIGA_M68K_BITSTREAM_MOVEL 1
+#endif
+
+static __inline void RefillBitstreamCache4_C_REFERENCE(BitStreamInfo *bsi)
+{
+	bsi->iCache  = ((unsigned int)(*bsi->bytePtr++)) << 24;
+	bsi->iCache |= ((unsigned int)(*bsi->bytePtr++)) << 16;
+	bsi->iCache |= ((unsigned int)(*bsi->bytePtr++)) <<  8;
+	bsi->iCache |=  (unsigned int)(*bsi->bytePtr++);
+	bsi->cachedBits = 32;
+	bsi->nBytes -= 4;
+}
+
+static __inline void RefillBitstreamCache4_TEST_ACTIVE(BitStreamInfo *bsi)
+{
+#ifdef AMIGA_M68K_BITSTREAM_MOVEL
+	__asm__ volatile (
+		"move.l (%0)+,%1"
+		: "+a" (bsi->bytePtr), "=d" (bsi->iCache)
+		: );
+	bsi->cachedBits = 32;
+	bsi->nBytes -= 4;
+#else
+	RefillBitstreamCache4_C_REFERENCE(bsi);
+#endif
+}
+
 static __inline void RefillBitstreamCache(BitStreamInfo *bsi)
 {
 	int nBytes = bsi->nBytes;
 
 	/* optimize for common case, independent of machine endian-ness */
 	if (nBytes >= 4) {
-		bsi->iCache  = (*bsi->bytePtr++) << 24;
-		bsi->iCache |= (*bsi->bytePtr++) << 16;
-		bsi->iCache |= (*bsi->bytePtr++) <<  8;
-		bsi->iCache |= (*bsi->bytePtr++);
-		bsi->cachedBits = 32;
-		bsi->nBytes -= 4;
+		RefillBitstreamCache4_TEST_ACTIVE(bsi);
 	} else {
 		bsi->iCache = 0;
 		while (nBytes--) {
@@ -106,6 +132,61 @@ static __inline void RefillBitstreamCache(BitStreamInfo *bsi)
 		bsi->cachedBits = 8*bsi->nBytes;
 		bsi->nBytes = 0;
 	}
+}
+
+int BitstreamRefillSelftest(void)
+{
+	enum { BITSTREAM_SELFTEST_CASES = 10000 };
+	unsigned long seed;
+	unsigned long failures;
+	unsigned long i;
+
+	seed = 0x62737472UL;
+	failures = 0;
+	for (i = 0; i < BITSTREAM_SELFTEST_CASES; i++) {
+		unsigned char buf[8];
+		BitStreamInfo c;
+		BitStreamInfo a;
+		int j;
+
+		for (j = 0; j < (int)sizeof(buf); j++) {
+			seed = (seed * 1664525UL) + 1013904223UL;
+			buf[j] = (unsigned char)(seed >> 24);
+		}
+
+		SetBitstreamPointer(&c, 4, buf);
+		SetBitstreamPointer(&a, 4, buf);
+		RefillBitstreamCache4_C_REFERENCE(&c);
+		RefillBitstreamCache4_TEST_ACTIVE(&a);
+
+		if (a.iCache != c.iCache || a.bytePtr != c.bytePtr ||
+			a.cachedBits != c.cachedBits || a.nBytes != c.nBytes) {
+			printf("Bitstream refill selftest mismatch %lu: "
+				"bytes=%02lx %02lx %02lx %02lx "
+				"C(cache=%08lx advance=%ld bits=%ld nBytes=%ld) "
+				"active(cache=%08lx advance=%ld bits=%ld nBytes=%ld)\n",
+				i, (unsigned long)buf[0], (unsigned long)buf[1],
+				(unsigned long)buf[2], (unsigned long)buf[3],
+				(unsigned long)c.iCache, (long)(c.bytePtr - buf),
+				(long)c.cachedBits, (long)c.nBytes,
+				(unsigned long)a.iCache, (long)(a.bytePtr - buf),
+				(long)a.cachedBits, (long)a.nBytes);
+			failures++;
+			if (failures >= 16)
+				break;
+		}
+	}
+
+	printf("Bitstream move.l asm active: %s\n",
+#ifdef AMIGA_M68K_BITSTREAM_MOVEL
+		"yes"
+#else
+		"no"
+#endif
+	);
+	printf("Bitstream refill selftest cases: %lu\n", i);
+	printf("Bitstream refill selftest failures: %lu\n", failures);
+	return failures ? 1 : 0;
 }
 
 /**************************************************************************************
