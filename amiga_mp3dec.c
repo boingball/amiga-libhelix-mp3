@@ -46,6 +46,7 @@ int STATNAME(IMDCT36_C_REFERENCE)(int *xCurr, int *xPrev, int *y, int btCurr, in
 int STATNAME(IMDCT36_TEST_ACTIVE)(int *xCurr, int *xPrev, int *y, int btCurr, int btPrev, int blockIdx, int gb);
 int STATNAME(IMDCT36_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
 int STATNAME(IMDCTThinOutputSelftest)(void);
+int STATNAME(IMDCTSubbandCapSelftest)(void);
 void STATNAME(PolyphaseMonoFast_C_REFERENCE)(short *pcm, int *vbuf, const int *coefBase);
 void STATNAME(PolyphaseMonoFast_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase);
 int STATNAME(PolyphaseMonoFast_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
@@ -76,6 +77,7 @@ extern const int STATNAME(polyCoef)[264];
 #define AMIGA_IMDCT36_TEST_ACTIVE STATNAME(IMDCT36_TEST_ACTIVE)
 #define AMIGA_IMDCT36_HAS_ASM STATNAME(IMDCT36_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define AMIGA_IMDCT_THIN_SELFTEST STATNAME(IMDCTThinOutputSelftest)
+#define AMIGA_IMDCT_SUBBAND_CAP_SELFTEST STATNAME(IMDCTSubbandCapSelftest)
 #define AMIGA_POLYPHASE_MONO_FAST_C_REFERENCE STATNAME(PolyphaseMonoFast_C_REFERENCE)
 #define AMIGA_POLYPHASE_MONO_FAST_TEST_ACTIVE STATNAME(PolyphaseMonoFast_TEST_ACTIVE)
 #define AMIGA_POLYPHASE_MONO_FAST_HAS_ASM STATNAME(PolyphaseMonoFast_HAS_AMIGA_M68K_ASM_RUNTIME)
@@ -124,6 +126,7 @@ typedef struct DecodeOptions {
 	int selftestFdct32;
 	int selftestImdct;
 	int selftestImdctThin;
+	int selftestSubbandCap;
 	int selftestAntialias;
 	int selftestPolyphase;
 	int selftestPolyphaseStride2;
@@ -492,6 +495,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-fdct32 compare C reference and optional m68k asm FDCT32 path\n");
 	printf("  --selftest-imdct compare C reference and optional m68k asm long IMDCT path\n");
 	printf("  --selftest-imdct-thin compare full and requested thinned IMDCT output paths\n");
+	printf("  --selftest-subband-cap verify low-rate mono IMDCT subband cap behavior\n");
 	printf("  --selftest-antialias compare C reference and optional m68k asm antialias path\n");
 	printf("  --selftest-polyphase compare C fast mono polyphase and optional m68k asm path\n");
 	printf("  --selftest-polyphase-stride2 compare C and optional asm stride-2 mono polyphase paths\n");
@@ -600,6 +604,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->selftestImdct = 1;
 		} else if (!strcmp(argv[i], "--selftest-imdct-thin")) {
 			opt->selftestImdctThin = 1;
+		} else if (!strcmp(argv[i], "--selftest-subband-cap")) {
+			opt->selftestSubbandCap = 1;
 		} else if (!strcmp(argv[i], "--selftest-antialias")) {
 			opt->selftestAntialias = 1;
 		} else if (!strcmp(argv[i], "--selftest-polyphase")) {
@@ -667,6 +673,7 @@ if (opt->selftestMulshift ||
     opt->selftestFdct32 ||
     opt->selftestImdct ||
     opt->selftestImdctThin ||
+    opt->selftestSubbandCap ||
     opt->selftestAntialias ||
     opt->selftestPolyphase ||
     opt->selftestPolyphaseStride2 ||
@@ -4517,6 +4524,11 @@ int main(int argc, char **argv)
 	}
 	if (opt.selftestImdctThin) {
 		int selftestErr = AMIGA_IMDCT_THIN_SELFTEST();
+		AmigaFreeNormalizedArgs(&normalized);
+		return selftestErr;
+	}
+	if (opt.selftestSubbandCap) {
+		int selftestErr = AMIGA_IMDCT_SUBBAND_CAP_SELFTEST();
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}
