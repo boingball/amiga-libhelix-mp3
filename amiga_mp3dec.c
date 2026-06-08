@@ -55,6 +55,8 @@ int STATNAME(PolyphaseMonoFastLowrateStride2_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
 int STATNAME(PolyphaseMonoFastLowrateStride4_C_REFERENCE)(short *pcm, int *vbuf, const int *coefBase);
 int STATNAME(PolyphaseMonoFastLowrateStride4_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase);
 int STATNAME(PolyphaseMonoFastLowrateStride4_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
+int STATNAME(PolyphaseStereoFastLowrateStride4_C_REFERENCE)(short *pcm, int *vbuf, const int *coefBase, int phase);
+int STATNAME(PolyphaseStereoFastLowrateStride4_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase, int phase);
 int STATNAME(AmigaM68KPolyphaseMonoFast_IsActive)(void);
 int STATNAME(AmigaM68KPolyphaseMonoFastStride2_IsActive)(void);
 int STATNAME(DecodeHuffmanPairs_C_REFERENCE)(int *xy, int nVals, int tabIdx, int bitsLeft, unsigned char *buf, int bitOffset);
@@ -83,6 +85,8 @@ extern const int STATNAME(polyCoef)[264];
 #define AMIGA_POLYPHASE_MONO_FAST_STRIDE4_C_REFERENCE STATNAME(PolyphaseMonoFastLowrateStride4_C_REFERENCE)
 #define AMIGA_POLYPHASE_MONO_FAST_STRIDE4_TEST_ACTIVE STATNAME(PolyphaseMonoFastLowrateStride4_TEST_ACTIVE)
 #define AMIGA_POLYPHASE_MONO_FAST_STRIDE4_HAS_ASM STATNAME(PolyphaseMonoFastLowrateStride4_HAS_AMIGA_M68K_ASM_RUNTIME)
+#define AMIGA_POLYPHASE_STEREO_FAST_STRIDE4_C_REFERENCE STATNAME(PolyphaseStereoFastLowrateStride4_C_REFERENCE)
+#define AMIGA_POLYPHASE_STEREO_FAST_STRIDE4_TEST_ACTIVE STATNAME(PolyphaseStereoFastLowrateStride4_TEST_ACTIVE)
 #define AMIGA_M68K_POLYPHASE_MONO_FAST_IS_ACTIVE STATNAME(AmigaM68KPolyphaseMonoFast_IsActive)
 #define AMIGA_M68K_POLYPHASE_MONO_FAST_STRIDE2_IS_ACTIVE STATNAME(AmigaM68KPolyphaseMonoFastStride2_IsActive)
 #define AMIGA_HUFFMAN_PAIRS_C_REFERENCE STATNAME(DecodeHuffmanPairs_C_REFERENCE)
@@ -124,6 +128,7 @@ typedef struct DecodeOptions {
 	int selftestPolyphase;
 	int selftestPolyphaseStride2;
 	int selftestPolyphaseStride4;
+	int selftestPolyphaseStride4Stereo;
 	int selftestFastLowrate;
 	int selftestHuffman;
 	int selftestDequant;
@@ -491,6 +496,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-polyphase compare C fast mono polyphase and optional m68k asm path\n");
 	printf("  --selftest-polyphase-stride2 compare C and optional asm stride-2 mono polyphase paths\n");
 	printf("  --selftest-polyphase-stride4 compare C and optional asm stride-4 mono polyphase paths\n");
+	printf("  --selftest-polyphase-stride4-stereo compare stereo stride-4 compact polyphase output\n");
 	printf("  --selftest-fastlowrate compare synthetic stride decimation paths\n");
 	printf("  --selftest-huffman compare repeated portable C Huffman pair decodes\n");
 	printf("  --selftest-dequant compare C and optional m68k asm dequant block paths\n");
@@ -602,6 +608,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->selftestPolyphaseStride2 = 1;
 		} else if (!strcmp(argv[i], "--selftest-polyphase-stride4")) {
 			opt->selftestPolyphaseStride4 = 1;
+		} else if (!strcmp(argv[i], "--selftest-polyphase-stride4-stereo")) {
+			opt->selftestPolyphaseStride4Stereo = 1;
 		} else if (!strcmp(argv[i], "--selftest-fastlowrate")) {
 			opt->selftestFastLowrate = 1;
 		} else if (!strcmp(argv[i], "--selftest-huffman")) {
@@ -654,11 +662,21 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	if (opt->help)
 		return 0;
 
-	if (opt->selftestMulshift || opt->selftestClz || opt->selftestFdct32 || opt->selftestImdct ||
-		opt->selftestImdctThin || opt->selftestAntialias || opt->selftestPolyphase || opt->selftestPolyphaseStride2 ||
-		opt->selftestPolyphaseStride4 || opt->selftestFastLowrate ||
-		opt->selftestHuffman || opt->selftestDequant ||
-		opt->selftestBitstream || opt->selftestMonoFastLowrateStereo)
+if (opt->selftestMulshift ||
+    opt->selftestClz ||
+    opt->selftestFdct32 ||
+    opt->selftestImdct ||
+    opt->selftestImdctThin ||
+    opt->selftestAntialias ||
+    opt->selftestPolyphase ||
+    opt->selftestPolyphaseStride2 ||
+    opt->selftestPolyphaseStride4 ||
+    opt->selftestPolyphaseStride4Stereo ||
+    opt->selftestFastLowrate ||
+    opt->selftestHuffman ||
+    opt->selftestDequant ||
+    opt->selftestBitstream ||
+    opt->selftestMonoFastLowrateStereo)
 		return 0;
 
 	if (opt->stereo && !opt->play) {
@@ -2305,6 +2323,80 @@ static int SelftestPolyphaseStride4(void)
 		AMIGA_POLYPHASE_MONO_FAST_STRIDE4_HAS_ASM() ? "yes" : "no");
 	printf("Polyphase stride4 selftest cases: %lu\n", i);
 	printf("Polyphase stride4 selftest failures: %lu\n", failures);
+	return failures ? 1 : 0;
+}
+
+static int TestPolyphaseStride4StereoCase(unsigned long index, unsigned long seed, int pattern, int phase)
+{
+	static int cvbuf[AMIGA_POLYPHASE_VBUF_LENGTH];
+	static int avbuf[AMIGA_POLYPHASE_VBUF_LENGTH];
+	static short cpcm[AMIGA_POLYPHASE_NBANDS * 2];
+	static short apcm[AMIGA_POLYPHASE_NBANDS * 2];
+	int ccount;
+	int acount;
+	int i;
+
+	for (i = 0; i < AMIGA_POLYPHASE_VBUF_LENGTH; i++) {
+		seed = seed * 1664525UL + 1013904223UL;
+		if (pattern == 0)
+			cvbuf[i] = 0;
+		else if (pattern == 1)
+			cvbuf[i] = ((int)seed) >> 9;
+		else
+			cvbuf[i] = (i & 1) ? 0x03ffffff : (int)0xfc000000UL;
+		avbuf[i] = cvbuf[i];
+	}
+	for (i = 0; i < AMIGA_POLYPHASE_NBANDS * 2; i++) {
+		cpcm[i] = (short)(0x7200 + i);
+		apcm[i] = (short)(0x7200 + i);
+	}
+
+	ccount = AMIGA_POLYPHASE_STEREO_FAST_STRIDE4_C_REFERENCE(cpcm, cvbuf, AMIGA_POLY_COEF, phase);
+	acount = AMIGA_POLYPHASE_STEREO_FAST_STRIDE4_TEST_ACTIVE(apcm, avbuf, AMIGA_POLY_COEF, phase);
+
+	if (ccount != 16 || acount != 16) {
+		printf("PolyphaseStereoFast stride4 count mismatch %lu phase=%d: first=%d second=%d pattern=%d\n",
+			index, phase, ccount, acount, pattern);
+		return -1;
+	}
+	for (i = 0; i < AMIGA_POLYPHASE_VBUF_LENGTH; i++) {
+		if (avbuf[i] != cvbuf[i]) {
+			printf("PolyphaseStereoFast stride4 vbuf mismatch %lu phase=%d[%d]: first=%ld second=%ld pattern=%d\n",
+				index, phase, i, (long)cvbuf[i], (long)avbuf[i], pattern);
+			return -1;
+		}
+	}
+	for (i = 0; i < AMIGA_POLYPHASE_NBANDS * 2; i++) {
+		if (apcm[i] != cpcm[i]) {
+			printf("PolyphaseStereoFast stride4 output mismatch %lu phase=%d[%d]: first=%ld second=%ld pattern=%d\n",
+				index, phase, i, (long)cpcm[i], (long)apcm[i], pattern);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static int SelftestPolyphaseStride4Stereo(void)
+{
+	unsigned long i;
+	unsigned long failures;
+	unsigned long seed;
+	int pattern;
+	int phase;
+
+	failures = 0;
+	seed = 0x57721566UL;
+	for (i = 0; i < 500UL; i++) {
+		seed = seed * 1664525UL + 1013904223UL;
+		pattern = (i < 8UL) ? 0 : ((i < 16UL) ? 2 : 1);
+		for (phase = 0; phase < 4; phase++) {
+			if (TestPolyphaseStride4StereoCase(i, seed, pattern, phase) != 0)
+				failures++;
+		}
+	}
+
+	printf("Polyphase stride4 stereo selftest cases: %lu\n", i * 4UL);
+	printf("Polyphase stride4 stereo selftest failures: %lu\n", failures);
 	return failures ? 1 : 0;
 }
 
@@ -4445,6 +4537,11 @@ int main(int argc, char **argv)
 	}
 	if (opt.selftestPolyphaseStride4) {
 		int selftestErr = SelftestPolyphaseStride4();
+		AmigaFreeNormalizedArgs(&normalized);
+		return selftestErr;
+	}
+	if (opt.selftestPolyphaseStride4Stereo) {
+		int selftestErr = SelftestPolyphaseStride4Stereo();
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}
