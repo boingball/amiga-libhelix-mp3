@@ -112,6 +112,8 @@
 #define PolyphaseMonoFastLowrateStride4_C_REFERENCE STATNAME(PolyphaseMonoFastLowrateStride4_C_REFERENCE)
 #define PolyphaseMonoFastLowrateStride4_TEST_ACTIVE STATNAME(PolyphaseMonoFastLowrateStride4_TEST_ACTIVE)
 #define PolyphaseMonoFastLowrateStride4_HAS_AMIGA_M68K_ASM_RUNTIME STATNAME(PolyphaseMonoFastLowrateStride4_HAS_AMIGA_M68K_ASM_RUNTIME)
+#define PolyphaseStereoFastLowrateStride4_C_REFERENCE STATNAME(PolyphaseStereoFastLowrateStride4_C_REFERENCE)
+#define PolyphaseStereoFastLowrateStride4_TEST_ACTIVE STATNAME(PolyphaseStereoFastLowrateStride4_TEST_ACTIVE)
 #define AmigaM68KPolyphaseMonoFast_IsActive STATNAME(AmigaM68KPolyphaseMonoFast_IsActive)
 #define AmigaM68KPolyphaseMonoFastStride2_IsActive STATNAME(AmigaM68KPolyphaseMonoFastStride2_IsActive)
 #define MonoFastPolyphaseStride4_Amiga_m68k_IsActive STATNAME(MonoFastPolyphaseStride4_Amiga_m68k_IsActive)
@@ -324,6 +326,8 @@ int PolyphaseMonoFastLowrateStride2_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 int PolyphaseMonoFastLowrateStride4_C_REFERENCE(short *pcm, int *vbuf, const int *coefBase);
 int PolyphaseMonoFastLowrateStride4_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase);
 int PolyphaseMonoFastLowrateStride4_HAS_AMIGA_M68K_ASM_RUNTIME(void);
+int PolyphaseStereoFastLowrateStride4_C_REFERENCE(short *pcm, int *vbuf, const int *coefBase, int phase);
+int PolyphaseStereoFastLowrateStride4_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase, int phase);
 int AmigaM68KPolyphaseMonoFast_IsActive(void);
 int AmigaM68KPolyphaseMonoFastStride2_IsActive(void);
 int MonoFastPolyphaseStride4_Amiga_m68k_IsActive(void);
