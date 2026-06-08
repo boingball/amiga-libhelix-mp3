@@ -1190,25 +1190,8 @@ int PolyphaseStereoFastLowrateStride4_C_REFERENCE(short *pcm, int *vbuf,
 	const int *coefBase, int phase)
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE)
-#if defined(AMIGA_M68K_ASM_POLYPHASE)
-	switch (phase) {
-	case 0:
-		if (StereoFastPolyphaseStride4Phase0_Amiga_m68k_IsActive())
-			return StereoFastPolyphaseStride4Phase0_Amiga_m68k(pcm, vbuf, coefBase);
-		break;
-	case 1:
-		if (StereoFastPolyphaseStride4Phase1_Amiga_m68k_IsActive())
-			return StereoFastPolyphaseStride4Phase1_Amiga_m68k(pcm, vbuf, coefBase);
-		break;
-	case 2:
-		if (StereoFastPolyphaseStride4Phase2_Amiga_m68k_IsActive())
-			return StereoFastPolyphaseStride4Phase2_Amiga_m68k(pcm, vbuf, coefBase);
-		break;
-	case 3:
-		if (StereoFastPolyphaseStride4Phase3_Amiga_m68k_IsActive())
-			return StereoFastPolyphaseStride4Phase3_Amiga_m68k(pcm, vbuf, coefBase);
-		break;
-	}
+	return PolyphaseStereoFastLowrateList(pcm, vbuf, coefBase,
+		fastLowrateStride4Samples[phase], 8);
 #endif
 	return PolyphaseStereoFastLowrateList(pcm, vbuf, coefBase,
 		fastLowrateStride4Samples[phase], 8);
