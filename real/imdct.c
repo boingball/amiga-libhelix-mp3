@@ -291,6 +291,29 @@ static __inline void FreqInvertOdd(int *y)
 }
 
 
+static int IMDCTApplySubbandCap(const MP3DecInfo *mp3DecInfo, BlockCount *bc)
+{
+	if (bc)
+		bc->subbandCapActive = 0;
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_FAST_SUBBAND_CAP)
+	/* Cap subbands to 16 for stride-4/5 (11025/8820 Hz) mono output.
+	 * Subbands 16-31 are filtered out by the polyphase window at these
+	 * output rates and contribute nothing audible. Inspired by MPEGA
+	 * library's freq_div=2 / sb_max=SBLIMIT/2 fast path.
+	 * nBlocksLong must also be capped to keep AntiAlias consistent. */
+	if (mp3DecInfo && bc && mp3DecInfo->fastLowrateStride >= 4 && mp3DecInfo->outputMono) {
+		if (bc->nBlocksTotal > 16) bc->nBlocksTotal = 16;
+		if (bc->nBlocksLong  > 16) bc->nBlocksLong  = 16;
+		if (bc->nBlocksPrev  > 16) bc->nBlocksPrev  = 16;
+		bc->subbandCapActive = 1;
+		return 1;
+	}
+#else
+	(void)mp3DecInfo;
+#endif
+	return 0;
+}
+
 static int IMDCTThinOutputCanActivate(const MP3DecInfo *mp3DecInfo)
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_IMDCT_THIN_OUTPUT)
@@ -1133,6 +1156,144 @@ static unsigned int IMDCTThinChecksumPCM(const int y[BLOCK_SIZE][NBANDS], int gb
 	return sum;
 }
 
+static int IMDCTCountHighSubbandNonZero(const int y[BLOCK_SIZE][NBANDS])
+{
+	int t;
+	int sb;
+	int count;
+
+	count = 0;
+	for (t = 0; t < BLOCK_SIZE; t++) {
+		for (sb = 16; sb < NBANDS; sb++) {
+			if (y[t][sb] != 0)
+				count++;
+		}
+	}
+	return count;
+}
+
+int IMDCTSubbandCapSelftest(void)
+{
+	int xUncap[MAX_NSAMP];
+	int xCap[MAX_NSAMP];
+	int prevUncap[MAX_NSAMP / 2];
+	int prevCap[MAX_NSAMP / 2];
+	int yUncap[BLOCK_SIZE][NBANDS];
+	int yCap[BLOCK_SIZE][NBANDS];
+	SideInfoSub sis;
+	BlockCount baseBc;
+	BlockCount uncapBc;
+	BlockCount capBc;
+	BlockCount helperBc;
+	MP3DecInfo decInfo;
+	int i;
+	int outUncap;
+	int outCap;
+	int highNonZero;
+	int helperApplied;
+	unsigned int pcmUncap;
+	unsigned int pcmCap;
+	int failures;
+
+	for (i = 0; i < MAX_NSAMP; i++) {
+		xUncap[i] = ((i * 1103515245UL + 12345UL) & 0x001fffff) - 0x00100000;
+		xCap[i] = xUncap[i];
+	}
+	for (i = 0; i < MAX_NSAMP / 2; i++) {
+		prevUncap[i] = ((i * 69069UL + 1UL) & 0x0007ffff) - 0x00040000;
+		prevCap[i] = prevUncap[i];
+	}
+	memset(yUncap, 0xa5, sizeof(yUncap));
+	memset(yCap, 0xa5, sizeof(yCap));
+	memset(&sis, 0, sizeof(sis));
+	memset(&baseBc, 0, sizeof(baseBc));
+	memset(&decInfo, 0, sizeof(decInfo));
+
+	sis.blockType = 0;
+	sis.mixedBlock = 0;
+	baseBc.nBlocksLong = 32;
+	baseBc.nBlocksTotal = 32;
+	baseBc.nBlocksPrev = 32;
+	baseBc.prevType = 0;
+	baseBc.prevWinSwitch = 0;
+	baseBc.currWinSwitch = 0;
+	baseBc.gbIn = 8;
+	uncapBc = baseBc;
+	capBc = baseBc;
+	capBc.nBlocksLong = 16;
+	capBc.nBlocksTotal = 16;
+	capBc.nBlocksPrev = 16;
+	capBc.subbandCapActive = 1;
+
+	outUncap = HybridTransform(xUncap, prevUncap, yUncap, &sis, &uncapBc);
+	outCap = HybridTransform(xCap, prevCap, yCap, &sis, &capBc);
+	pcmUncap = IMDCTThinChecksumPCM(yUncap, uncapBc.gbOut);
+	pcmCap = IMDCTThinChecksumPCM(yCap, capBc.gbOut);
+	highNonZero = IMDCTCountHighSubbandNonZero(yUncap);
+
+	failures = 0;
+	if (pcmUncap == pcmCap) {
+		printf("subband cap selftest checksum did not change: uncapped=%lu capped=%lu\n",
+			(unsigned long)pcmUncap, (unsigned long)pcmCap);
+		failures++;
+	}
+	if (highNonZero == 0) {
+		printf("subband cap selftest found no non-zero uncapped subband 16-31 samples\n");
+		failures++;
+	}
+	if (outUncap <= outCap) {
+		printf("subband cap selftest nBlocksOut unexpected: uncapped=%d capped=%d\n",
+			outUncap, outCap);
+		failures++;
+	}
+
+	decInfo.fastLowrateStride = 4;
+	decInfo.outputMono = 1;
+	helperBc = baseBc;
+	helperApplied = IMDCTApplySubbandCap(&decInfo, &helperBc);
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_FAST_SUBBAND_CAP)
+	if (!helperApplied || helperBc.nBlocksTotal != 16 || helperBc.nBlocksLong != 16 ||
+		helperBc.nBlocksPrev != 16 || !helperBc.subbandCapActive) {
+		printf("subband cap selftest stride-4 helper failed: applied=%d total=%d long=%d prev=%d active=%d\n",
+			helperApplied, helperBc.nBlocksTotal, helperBc.nBlocksLong, helperBc.nBlocksPrev,
+			helperBc.subbandCapActive);
+		failures++;
+	}
+#else
+	if (helperApplied || helperBc.nBlocksTotal != 32 || helperBc.nBlocksLong != 32 ||
+		helperBc.nBlocksPrev != 32) {
+		printf("subband cap selftest compile-gated helper changed state while unavailable\n");
+		failures++;
+	}
+#endif
+
+	decInfo.fastLowrateStride = 1;
+	decInfo.outputMono = 1;
+	helperBc = baseBc;
+	helperApplied = IMDCTApplySubbandCap(&decInfo, &helperBc);
+	if (helperApplied || helperBc.nBlocksTotal != 32 || helperBc.nBlocksLong != 32 ||
+		helperBc.nBlocksPrev != 32 || helperBc.subbandCapActive) {
+		printf("subband cap selftest full-rate helper unexpectedly applied: applied=%d total=%d long=%d prev=%d active=%d\n",
+			helperApplied, helperBc.nBlocksTotal, helperBc.nBlocksLong, helperBc.nBlocksPrev,
+			helperBc.subbandCapActive);
+		failures++;
+	}
+
+	printf("subband cap compile gate: %s\n",
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_FAST_SUBBAND_CAP)
+		"available"
+#else
+		"unavailable"
+#endif
+	);
+	printf("subband cap uncapped PCM checksum: %lu\n", (unsigned long)pcmUncap);
+	printf("subband cap capped PCM checksum: %lu\n", (unsigned long)pcmCap);
+	printf("subband cap uncapped non-zero y samples in subbands 16-31: %d\n", highNonZero);
+	printf("subband cap full-rate stride-1 helper: not applied\n");
+	printf("subband cap selftest: %s\n", failures ? "FAIL" : "PASS");
+	return failures ? -1 : 0;
+}
+
 int IMDCTThinOutputSelftest(void)
 {
 	int xFull[MAX_NSAMP];
@@ -1291,6 +1452,7 @@ int IMDCT(MP3DecInfo *mp3DecInfo, int gr, int ch)
 	/* for readability, use a struct instead of passing a million parameters to HybridTransform() */
 	bc.nBlocksTotal = (hi->nonZeroBound[ch] + 17) / 18;
 	bc.nBlocksPrev = mi->numPrevIMDCT[ch];
+	IMDCTApplySubbandCap(mp3DecInfo, &bc);
 	bc.prevType = mi->prevType[ch];
 	bc.prevWinSwitch = mi->prevWinSwitch[ch];
 	bc.currWinSwitch = (si->sis[gr][ch].mixedBlock ? blockCutoff : 0);	/* where WINDOW switches (not nec. transform) */
