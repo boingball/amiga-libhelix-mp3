@@ -662,14 +662,21 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	if (opt->help)
 		return 0;
 
-	if (opt->selftestMulshift || opt->selftestClz || opt->selftestFdct32 || opt->selftestImdct ||
-		opt->selftestImdctThin || opt->selftestAntialias || opt->selftestPolyphase || opt->selftestPolyphaseStride2 ||
-		opt->selftestPolyphaseStride4 || opt->selftestFastLowrate ||
-		opt->selftestAntialias || opt->selftestPolyphase || opt->selftestPolyphaseStride2 ||
-		opt->selftestPolyphaseStride4 || opt->selftestPolyphaseStride4Stereo ||
-		opt->selftestFastLowrate ||
-		opt->selftestHuffman || opt->selftestDequant ||
-		opt->selftestBitstream || opt->selftestMonoFastLowrateStereo)
+if (opt->selftestMulshift ||
+    opt->selftestClz ||
+    opt->selftestFdct32 ||
+    opt->selftestImdct ||
+    opt->selftestImdctThin ||
+    opt->selftestAntialias ||
+    opt->selftestPolyphase ||
+    opt->selftestPolyphaseStride2 ||
+    opt->selftestPolyphaseStride4 ||
+    opt->selftestPolyphaseStride4Stereo ||
+    opt->selftestFastLowrate ||
+    opt->selftestHuffman ||
+    opt->selftestDequant ||
+    opt->selftestBitstream ||
+    opt->selftestMonoFastLowrateStereo)
 		return 0;
 
 	if (opt->stereo && !opt->play) {
