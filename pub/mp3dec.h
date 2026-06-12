@@ -167,6 +167,8 @@ void MP3SetExperimentalIMDCTThin(HMP3Decoder hMP3Decoder, int enabled);
 int MP3ExperimentalIMDCTThinActive(HMP3Decoder hMP3Decoder);
 void MP3SetExperimentalPolyphase(int enabled);
 int MP3ExperimentalPolyphaseEnabled(void);
+void MP3SetExperimentalReducedTaps(int enabled);
+int MP3ExperimentalReducedTapsEnabled(void);
 void MP3SetExperimentalHuffman(int enabled);
 int MP3ExperimentalHuffmanEnabled(void);
 void MP3SetOutputMono(HMP3Decoder hMP3Decoder, int enabled);
