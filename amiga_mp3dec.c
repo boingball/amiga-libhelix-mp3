@@ -30,6 +30,14 @@
 #include "assembly.h"
 #include "statname.h"
 
+#ifdef AMIGA_M68K
+volatile WORD gVuPeakL = 0;
+volatile WORD gVuPeakR = 0;
+#else
+volatile short gVuPeakL = 0;
+volatile short gVuPeakR = 0;
+#endif
+
 #if defined(AMIGA_M68K)
 /* Tell AmigaOS to provide at least 250 KB of stack for this executable. */
 static const char amigaStackCookie[] __attribute__((used)) = "$STACK:250000";
@@ -3221,6 +3229,64 @@ static int DecodeStreamCopySpill(DecodeStream *stream, signed char *dest,
 	return n;
 }
 
+static void UpdateVuPeak(const signed char *buf, int n, int stereo)
+{
+	int i;
+	int v;
+	int peakL = 0;
+	int peakR = 0;
+
+	if (!buf || n <= 0) {
+		gVuPeakL = 0;
+		gVuPeakR = 0;
+		return;
+	}
+	if (stereo) {
+		for (i = 0; i + 1 < n; i += 2) {
+			v = buf[i] < 0 ? -buf[i] : buf[i];
+			if (v > peakL)
+				peakL = v;
+			v = buf[i + 1] < 0 ? -buf[i + 1] : buf[i + 1];
+			if (v > peakR)
+				peakR = v;
+		}
+	} else {
+		for (i = 0; i < n; i++) {
+			v = buf[i] < 0 ? -buf[i] : buf[i];
+			if (v > peakL)
+				peakL = v;
+		}
+		peakR = peakL;
+	}
+	gVuPeakL = (short)peakL;
+	gVuPeakR = (short)peakR;
+}
+
+static void UpdateVuPeakPlanar(const signed char *left, const signed char *right,
+	int frames)
+{
+	int i;
+	int v;
+	int peakL = 0;
+	int peakR = 0;
+
+	if (!left || !right || frames <= 0) {
+		gVuPeakL = 0;
+		gVuPeakR = 0;
+		return;
+	}
+	for (i = 0; i < frames; i++) {
+		v = left[i] < 0 ? -left[i] : left[i];
+		if (v > peakL)
+			peakL = v;
+		v = right[i] < 0 ? -right[i] : right[i];
+		if (v > peakR)
+			peakR = v;
+	}
+	gVuPeakL = (short)peakL;
+	gVuPeakR = (short)peakR;
+}
+
 static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 	signed char *dest, int maxBytes)
 {
@@ -3387,6 +3453,8 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 		}
 	}
 
+	if (produced > 0)
+		UpdateVuPeak(dest, produced, opt->stereo);
 	return produced;
 }
 
@@ -3563,6 +3631,8 @@ static int DecodeStreamFillPlanarS8(DecodeStream *stream, const DecodeOptions *o
 		if (stream->timing)
 			stream->timing->pcmConvert += clock() - t0;
 	}
+	if (produced > 0)
+		UpdateVuPeakPlanar(left, right, produced);
 	return produced;
 }
 
@@ -4682,6 +4752,13 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		int underrun;
 		int late;
 
+#if defined(AMIGA_M68K)
+		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C) {
+			gPlaybackInterrupted = 1;
+			break;
+		}
+#endif
+
 		/* Detect whether the playing buffer has already run dry before WaitIO
 		 * reaps it; after WaitIO the buffer is always done. */
 		underrun = AmigaAudioDone(&player, active);
@@ -4690,6 +4767,13 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 			err = -1;
 			break;
 		}
+#if defined(AMIGA_M68K)
+		/* Check for GUI Stop signal without blocking before decoding more data. */
+		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C) {
+			gPlaybackInterrupted = 1;
+			break;
+		}
+#endif
 		if (opt->debugPlay)
 			printf("debug-play: CMD_WRITE completed %s\n",
 				PlaybackBufferName(active));
