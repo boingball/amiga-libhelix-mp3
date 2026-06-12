@@ -22,6 +22,9 @@
 #include <intuition/intuitionbase.h>
 #include <libraries/asl.h>
 #include <libraries/gadtools.h>
+#include <devices/timer.h>
+#include <exec/io.h>
+#include <exec/ports.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <proto/exec.h>
@@ -37,6 +40,9 @@
 enum {
 	GID_FILE = 1,
 	GID_BROWSE,
+	GID_TITLE,
+	GID_ARTIST,
+	GID_ALBUM,
 	GID_FAST_LOWRATE,
 	GID_FAST_MEM,
 	GID_MONO,
@@ -49,16 +55,32 @@ enum {
 	GID_COUNT
 };
 
+typedef struct Mp3Tags {
+	char title[64];
+	char artist[64];
+	char album[64];
+	int  bitrateKbps;
+	int  sampleRate;
+} Mp3Tags;
+
 typedef struct HelixAmp3Gui {
 	struct Window  *win;
 	struct Gadget  *gadgets;
 	struct Gadget  *gadContext;
 	struct Gadget  *gadFile;
+	struct Gadget  *gadTitle;
+	struct Gadget  *gadArtist;
+	struct Gadget  *gadAlbum;
 	struct Gadget  *gadStatus;
 	struct Gadget  *gadBuffer;
 	struct Gadget  *gadPlay;
 	struct Gadget  *gadStop;
 	struct VisualInfo *vi;
+	struct MsgPort *timerPort;
+	struct timerequest *timerReq;
+	int timerOpen;
+	int timerPending;
+	Mp3Tags tags;
 	char  inputName[HELIXAMP3_MAX_PATH];
 	char  fileText[HELIXAMP3_MAX_PATH];
 	char  statusText[128];
@@ -117,6 +139,210 @@ static void SafeCopy(char *dst, size_t dstSize, const char *src)
 	dst[dstSize - 1] = '\0';
 }
 
+
+static void StripTrailing(char *s)
+{
+	int n;
+
+	if (!s)
+		return;
+	n = (int)strlen(s);
+	while (n > 0) {
+		unsigned char c = (unsigned char)s[n - 1];
+		if (c != ' ' && c != '\t' && c != '\r' && c != '\n' && c != '\0')
+			break;
+		s[--n] = '\0';
+	}
+}
+
+static void CopyTagField(char *dst, size_t dstSize, const unsigned char *src,
+	long len)
+{
+	long i;
+	long start;
+	long out;
+
+	if (!dst || dstSize == 0)
+		return;
+	dst[0] = '\0';
+	if (!src || len <= 0)
+		return;
+	start = 0;
+	if (src[0] == 0 || src[0] == 3)
+		start = 1;
+	out = 0;
+	for (i = start; i < len && out + 1 < (long)dstSize; i++) {
+		unsigned char c = src[i];
+		if (c == '\0')
+			break;
+		dst[out++] = (char)c;
+	}
+	dst[out] = '\0';
+	StripTrailing(dst);
+}
+
+static long Id3Synchsafe(const unsigned char *b)
+{
+	return ((long)(b[0] & 0x7f) << 21) | ((long)(b[1] & 0x7f) << 14) |
+		((long)(b[2] & 0x7f) << 7) | (long)(b[3] & 0x7f);
+}
+
+static long Id3BigEndian32(const unsigned char *b)
+{
+	return ((long)b[0] << 24) | ((long)b[1] << 16) |
+		((long)b[2] << 8) | (long)b[3];
+}
+
+static int IsMpegSyncHeader(const unsigned char *h)
+{
+	return h[0] == 0xff && (h[1] == 0xfb || h[1] == 0xfa ||
+		h[1] == 0xf3 || h[1] == 0xf2 || h[1] == 0xe3 || h[1] == 0xe2);
+}
+
+static void ReadMpegInfo(FILE *f, Mp3Tags *tags)
+{
+	static const int bitrateTab[16] = {
+		0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0
+	};
+	static const int samplerateTab[4] = { 44100, 48000, 32000, 0 };
+	unsigned char h[4];
+	int b;
+	int idx;
+
+	if (!f || !tags)
+		return;
+	h[0] = h[1] = h[2] = h[3] = 0;
+	while ((b = fgetc(f)) != EOF) {
+		h[0] = h[1];
+		h[1] = h[2];
+		h[2] = h[3];
+		h[3] = (unsigned char)b;
+		if (IsMpegSyncHeader(h)) {
+			idx = (h[2] >> 4) & 0x0f;
+			tags->bitrateKbps = bitrateTab[idx];
+			idx = (h[2] >> 2) & 0x03;
+			tags->sampleRate = samplerateTab[idx];
+			return;
+		}
+	}
+}
+
+static void ReadId3v1(FILE *f, Mp3Tags *tags)
+{
+	unsigned char buf[128];
+
+	if (!f || !tags)
+		return;
+	if (fseek(f, -128L, SEEK_END) != 0)
+		return;
+	if (fread(buf, 1, sizeof(buf), f) != sizeof(buf))
+		return;
+	if (memcmp(buf, "TAG", 3) != 0)
+		return;
+	if (!tags->title[0])
+		CopyTagField(tags->title, sizeof(tags->title), buf + 3, 30);
+	if (!tags->artist[0])
+		CopyTagField(tags->artist, sizeof(tags->artist), buf + 33, 30);
+	if (!tags->album[0])
+		CopyTagField(tags->album, sizeof(tags->album), buf + 63, 30);
+}
+
+static void ReadId3v2Frames(FILE *f, Mp3Tags *tags, const unsigned char *hdr)
+{
+	unsigned char fh[10];
+	long tagStart;
+	long tagSize;
+	long tagEnd;
+	int version;
+
+	version = hdr[3];
+	tagStart = ftell(f);
+	tagSize = Id3Synchsafe(hdr + 6);
+	tagEnd = tagStart + tagSize;
+	while (ftell(f) < tagEnd) {
+		char id[5];
+		long frameSize;
+		long payloadPos;
+		long remain;
+		char *target;
+
+		if (version == 2) {
+			if (fread(fh, 1, 6, f) != 6)
+				break;
+			if (fh[0] == 0)
+				break;
+			id[0] = (char)fh[0]; id[1] = (char)fh[1]; id[2] = (char)fh[2]; id[3] = '\0';
+			frameSize = ((long)fh[3] << 16) | ((long)fh[4] << 8) | (long)fh[5];
+		} else {
+			if (fread(fh, 1, 10, f) != 10)
+				break;
+			if (fh[0] == 0)
+				break;
+			id[0] = (char)fh[0]; id[1] = (char)fh[1]; id[2] = (char)fh[2]; id[3] = (char)fh[3]; id[4] = '\0';
+			frameSize = version == 4 ? Id3Synchsafe(fh + 4) : Id3BigEndian32(fh + 4);
+		}
+		payloadPos = ftell(f);
+		if (frameSize <= 0 || payloadPos + frameSize > tagEnd)
+			break;
+		target = NULL;
+		if ((version == 2 && strcmp(id, "TT2") == 0) || strcmp(id, "TIT2") == 0)
+			target = tags->title;
+		else if ((version == 2 && strcmp(id, "TP1") == 0) || strcmp(id, "TPE1") == 0)
+			target = tags->artist;
+		else if ((version == 2 && strcmp(id, "TAL") == 0) || strcmp(id, "TALB") == 0)
+			target = tags->album;
+		if (target && !target[0]) {
+			unsigned char text[96];
+			long n = frameSize;
+			if (n > (long)sizeof(text))
+				n = (long)sizeof(text);
+			if (fread(text, 1, (size_t)n, f) == (size_t)n)
+				CopyTagField(target, 64, text, n);
+		} else {
+			if (fseek(f, frameSize, SEEK_CUR) != 0)
+				break;
+		}
+		remain = payloadPos + frameSize - ftell(f);
+		if (remain > 0 && fseek(f, remain, SEEK_CUR) != 0)
+			break;
+	}
+	fseek(f, tagEnd, SEEK_SET);
+}
+
+static void ReadMp3Tags(const char *path, Mp3Tags *tags)
+{
+	FILE *f;
+	unsigned char hdr[10];
+	int hadId3v2;
+
+	if (!tags)
+		return;
+	memset(tags, 0, sizeof(*tags));
+	f = fopen(path, "rb");
+	if (!f)
+		return;
+	hadId3v2 = 0;
+	if (fread(hdr, 1, sizeof(hdr), f) == sizeof(hdr) && memcmp(hdr, "ID3", 3) == 0) {
+		hadId3v2 = 1;
+		ReadId3v2Frames(f, tags, hdr);
+	} else {
+		fseek(f, 0, SEEK_SET);
+	}
+	ReadMpegInfo(f, tags);
+	if (!hadId3v2)
+		ReadId3v1(f, tags);
+	fclose(f);
+}
+
+static void FormatReadyStatus(const Mp3Tags *tags, char *buf, size_t bufSize)
+{
+	if (tags && tags->bitrateKbps > 0 && tags->sampleRate > 0)
+		sprintf(buf, "%d kbps / %d Hz - Ready.", tags->bitrateKbps,
+			tags->sampleRate);
+	else
+		SafeCopy(buf, bufSize, "Ready.");
+}
+
 static void SetStatus(HelixAmp3Gui *gui, const char *text)
 {
 	SafeCopy(gui->statusText, sizeof(gui->statusText), text);
@@ -137,6 +363,99 @@ static void SetFileDisplay(HelixAmp3Gui *gui, const char *text)
 			GTTX_Text, (ULONG)gui->fileText,
 			TAG_DONE);
 	}
+}
+
+static void UpdateTagDisplay(HelixAmp3Gui *gui)
+{
+	if (!gui->win)
+		return;
+	if (gui->gadTitle) {
+		GT_SetGadgetAttrs(gui->gadTitle, gui->win, NULL,
+			GTTX_Text, (ULONG)(gui->tags.title[0] ? gui->tags.title : "-"),
+			TAG_DONE);
+	}
+	if (gui->gadArtist) {
+		GT_SetGadgetAttrs(gui->gadArtist, gui->win, NULL,
+			GTTX_Text, (ULONG)(gui->tags.artist[0] ? gui->tags.artist : "-"),
+			TAG_DONE);
+	}
+	if (gui->gadAlbum) {
+		GT_SetGadgetAttrs(gui->gadAlbum, gui->win, NULL,
+			GTTX_Text, (ULONG)(gui->tags.album[0] ? gui->tags.album : "-"),
+			TAG_DONE);
+	}
+}
+
+static void DrawVuMeter(HelixAmp3Gui *gui)
+{
+	struct RastPort *rp;
+	int fillL;
+	int fillR;
+	WORD x = 55;
+	WORD y = 162;
+	WORD w = 300;
+	WORD h = 8;
+
+	if (!gui->win)
+		return;
+	rp = gui->win->RPort;
+	SetAPen(rp, 1);
+	Move(rp, 42, y + h - 1);
+	Text(rp, "L", 1);
+	Move(rp, 42, y + (2 * h) + 3);
+	Text(rp, "R", 1);
+	DrawBevelBox(rp, x - 2, y - 2, w + 4, (2 * h) + 8, TAG_DONE);
+	fillL = ((int)gVuPeakL * w) / 127;
+	if (fillL < 0)
+		fillL = 0;
+	if (fillL > w)
+		fillL = w;
+	fillR = ((int)gVuPeakR * w) / 127;
+	if (fillR < 0)
+		fillR = 0;
+	if (fillR > w)
+		fillR = w;
+	SetAPen(rp, 3);
+	if (fillL > 0)
+		RectFill(rp, x, y, x + fillL - 1, y + h - 1);
+	SetAPen(rp, 0);
+	if (fillL < w)
+		RectFill(rp, x + fillL, y, x + w - 1, y + h - 1);
+	SetAPen(rp, 3);
+	if (fillR > 0)
+		RectFill(rp, x, y + h + 2, x + fillR - 1, y + 2 * h + 1);
+	SetAPen(rp, 0);
+	if (fillR < w)
+		RectFill(rp, x + fillR, y + h + 2, x + w - 1, y + 2 * h + 1);
+}
+
+static void DecayVuMeter(void)
+{
+	gVuPeakL = (WORD)(((int)gVuPeakL * 3) / 4);
+	gVuPeakR = (WORD)(((int)gVuPeakR * 3) / 4);
+}
+
+static void SendTimerRequest(HelixAmp3Gui *gui, ULONG micros)
+{
+	if (!gui->timerReq || gui->timerPending)
+		return;
+	gui->timerReq->tr_node.io_Command = TR_ADDREQUEST;
+	gui->timerReq->tr_time.tv_secs = micros / 1000000UL;
+	gui->timerReq->tr_time.tv_micro = micros % 1000000UL;
+	SendIO((struct IORequest *)gui->timerReq);
+	gui->timerPending = 1;
+}
+
+static void HandleTimerSignal(HelixAmp3Gui *gui)
+{
+	if (!gui->timerReq)
+		return;
+	while (GetMsg(gui->timerPort))
+		;
+	gui->timerPending = 0;
+	DrawVuMeter(gui);
+	DecayVuMeter();
+	SendTimerRequest(gui, 100000UL);
 }
 
 static struct Gadget *MakeGadget(HelixAmp3Gui *gui, struct Gadget *prev,
@@ -195,8 +514,35 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	if (!gad)
 		return -1;
 
+	gui->gadTitle = gad = MakeGadget(gui, gad, TEXT_KIND, GID_TITLE,
+		55, 42, 300, 14, "Title:",
+		GTTX_Text, (ULONG)"-",
+		GTTX_Border, TRUE,
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0);
+	if (!gad)
+		return -1;
+
+	gui->gadArtist = gad = MakeGadget(gui, gad, TEXT_KIND, GID_ARTIST,
+		55, 64, 300, 14, "Artist:",
+		GTTX_Text, (ULONG)"-",
+		GTTX_Border, TRUE,
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0);
+	if (!gad)
+		return -1;
+
+	gui->gadAlbum = gad = MakeGadget(gui, gad, TEXT_KIND, GID_ALBUM,
+		55, 86, 300, 14, "Album:",
+		GTTX_Text, (ULONG)"-",
+		GTTX_Border, TRUE,
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0);
+	if (!gad)
+		return -1;
+
 	gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_FAST_LOWRATE,
-		22, 46, 20, 12, "Fast-lowrate",
+		22, 114, 20, 12, "Fast-lowrate",
 		GTCB_Checked, gui->fastLowrate,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -205,7 +551,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_FAST_MEM,
-		160, 46, 20, 12, "Fast-mem",
+		160, 114, 20, 12, "Fast-mem",
 		GTCB_Checked, gui->fastMem,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -214,7 +560,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_MONO,
-		278, 46, 20, 12, "Mono",
+		278, 114, 20, 12, "Mono",
 		GTCB_Checked, gui->mono,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -223,7 +569,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, CYCLE_KIND, GID_RATE,
-		55, 76, 98, 16, "Rate:",
+		55, 134, 98, 16, "Rate:",
 		GTCY_Labels, (ULONG)kRateLabels,
 		GTCY_Active, gui->rateIndex,
 		TAG_IGNORE, 0,
@@ -232,7 +578,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, CYCLE_KIND, GID_QUALITY,
-		238, 76, 112, 16, "Quality:",
+		238, 134, 112, 16, "Quality:",
 		GTCY_Labels, (ULONG)kQualityLabels,
 		GTCY_Active, gui->qualityIndex,
 		TAG_IGNORE, 0,
@@ -241,7 +587,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadBuffer = gad = MakeGadget(gui, gad, SLIDER_KIND, GID_BUFFER,
-		70, 108, 220, 16, "Buffer:",
+		70, 184, 220, 16, "Buffer:",
 		GTSL_Min, 1,
 		GTSL_Max, 30,
 		GTSL_Level, gui->bufferSeconds,
@@ -250,7 +596,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadPlay = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_PLAY,
-		45, 140, 72, 18, "Play",
+		45, 216, 72, 18, "Play",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -259,7 +605,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadStop = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_STOP,
-		310, 140, 72, 18, "Stop",
+		310, 216, 72, 18, "Stop",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -268,7 +614,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadStatus = gad = MakeGadget(gui, gad, TEXT_KIND, GID_STATUS,
-		58, 174, 350, 14, "Status:",
+		58, 244, 350, 14, "Status:",
 		GTTX_Text, (ULONG)gui->statusText,
 		GTTX_Border, TRUE,
 		TAG_IGNORE, 0,
@@ -359,7 +705,7 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	nw.LeftEdge = 40;
 	nw.TopEdge = 30;
 	nw.Width = 420;
-	nw.Height = 200;
+	nw.Height = 270;
 	nw.DetailPen = 0;
 	nw.BlockPen = 1;
 	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_MOUSEMOVE | IDCMP_CLOSEWINDOW |
@@ -370,9 +716,9 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	nw.FirstGadget = gui->gadgets;
 	nw.Title = (UBYTE *)"MiniAMP3";
 	nw.MinWidth = 420;
-	nw.MinHeight = 200;
+	nw.MinHeight = 270;
 	nw.MaxWidth = 640;
-	nw.MaxHeight = 256;
+	nw.MaxHeight = 320;
 	nw.Type = WBENCHSCREEN;
 	gui->win = OpenWindow(&nw);
 	if (!gui->win) {
@@ -389,12 +735,49 @@ static int GuiOpen(HelixAmp3Gui *gui)
 		IntuitionBase = NULL;
 		return -1;
 	}
+	gui->timerPort = CreateMsgPort();
+	if (gui->timerPort)
+		gui->timerReq = (struct timerequest *)CreateIORequest(gui->timerPort,
+			sizeof(struct timerequest));
+	if (gui->timerReq && OpenDevice(TIMERNAME, UNIT_VBLANK,
+		(struct IORequest *)gui->timerReq, 0) == 0) {
+		gui->timerOpen = 1;
+	} else {
+		if (gui->timerReq) {
+			DeleteIORequest((struct IORequest *)gui->timerReq);
+			gui->timerReq = NULL;
+		}
+		if (gui->timerPort) {
+			DeleteMsgPort(gui->timerPort);
+			gui->timerPort = NULL;
+		}
+	}
 	GT_RefreshWindow(gui->win, NULL);
+	DrawVuMeter(gui);
+	if (gui->timerOpen)
+		SendTimerRequest(gui, 100000UL);
 	return 0;
 }
 
 static void GuiClose(HelixAmp3Gui *gui)
 {
+	if (gui->timerReq) {
+		if (gui->timerPending) {
+			AbortIO((struct IORequest *)gui->timerReq);
+			WaitIO((struct IORequest *)gui->timerReq);
+			gui->timerPending = 0;
+		}
+		if (gui->timerOpen) {
+			CloseDevice((struct IORequest *)gui->timerReq);
+			gui->timerOpen = 0;
+		}
+		DeleteIORequest((struct IORequest *)gui->timerReq);
+		gui->timerReq = NULL;
+	}
+	if (gui->timerPort) {
+		DeleteMsgPort(gui->timerPort);
+		gui->timerPort = NULL;
+	}
 	if (gui->win) {
 		CloseWindow(gui->win);
 		gui->win = NULL;
@@ -445,7 +828,10 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 		}
 		SafeCopy(gui->inputName, sizeof(gui->inputName), path);
 		SetFileDisplay(gui, gui->inputName);
-		SetStatus(gui, "File chosen. Press Play to start.");
+		ReadMp3Tags(gui->inputName, &gui->tags);
+		UpdateTagDisplay(gui);
+		FormatReadyStatus(&gui->tags, gui->statusText, sizeof(gui->statusText));
+		SetStatus(gui, gui->statusText);
 	}
 	FreeAslRequest(req);
 }
@@ -526,7 +912,11 @@ static void StopPlayback(HelixAmp3Gui *gui)
 	}
 	gGuiPlayer.stopRequested = 1;
 	gPlaybackInterrupted = 1;
-	SetStatus(gui, "Stop requested; waiting for playback loop to exit.");
+	/* Wake the playback subprocess immediately so it does not sit in WaitIO
+	 * for the remainder of a multi-second audio buffer. */
+	if (gGuiPlayer.process)
+		Signal((struct Task *)gGuiPlayer.process, SIGBREAKF_CTRL_C);
+	SetStatus(gui, "Stopping...");
 }
 
 static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code)
@@ -619,9 +1009,12 @@ int main(int argc, char **argv)
 	if (GuiOpen(&gui) != 0)
 		return 1;
 	while (!gui.closeRequested) {
-		Wait(HELIXAMP3_SIGMASK(&gui) | SIGBREAKF_CTRL_C);
+		ULONG timerMask = gui.timerPort ? (1UL << gui.timerPort->mp_SigBit) : 0;
+		ULONG sigs = Wait(HELIXAMP3_SIGMASK(&gui) | timerMask | SIGBREAKF_CTRL_C);
 		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C)
 			gui.closeRequested = 1;
+		if (timerMask && (sigs & timerMask))
+			HandleTimerSignal(&gui);
 		GuiPoll(&gui);
 	}
 	if (gGuiPlayer.running)
