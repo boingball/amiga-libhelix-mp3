@@ -1079,6 +1079,7 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 
 
 static void DrawArtPanel(HelixAmp3Gui *gui);
+static void HandleDoneSignal(HelixAmp3Gui *gui);
 
 static int JpegGreySample(const pjpeg_image_info_t *info, int off)
 {
@@ -1430,6 +1431,13 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 		;
 	gui->timerPending = 0;
 	gui->timerIsArt = 0;
+
+	if (gui->playbackActive && !gGuiPlayer.process) {
+		/* The playback task can finish between GUI waits; recover the UI state
+		 * on the next timer tick even if the done signal was missed or coalesced.
+		 */
+		HandleDoneSignal(gui);
+	}
 
 	if (gui->playbackActive && !expiredWasArt) {
 		int phase = gGuiPlaybackStatus.phase;
@@ -2080,11 +2088,21 @@ static void ResetDecoderStatics(void)
 static void PlaybackEntry(void)
 {
 	struct MsgPort *donePort;
+	int stopBeforeStart;
 
+	/* StartPlayback() already clears the stop flags before CreateNewProcTags().
+	 * Do not clear them again here: Stop can be pressed after the GUI marks
+	 * playback active but before this subprocess has entered the decoder.
+	 * ResetDecoderStatics() clears decoder globals, so preserve an early Stop
+	 * request and turn it back into an interrupt instead of letting the child
+	 * run while the GUI is stuck in "Stopping...".
+	 */
+	stopBeforeStart = gGuiPlayer.stopRequested;
 	ResetDecoderStatics();
-	gGuiPlayer.stopRequested = 0;
-	gPlaybackInterrupted = 0;
-	HelixAmp3CliMain(gGuiPlayer.argc, gGuiPlayer.argv);
+	if (stopBeforeStart)
+		gPlaybackInterrupted = 1;
+	else
+		HelixAmp3CliMain(gGuiPlayer.argc, gGuiPlayer.argv);
 	donePort = gDonePort;
 	gDonePort = NULL;
 	gGuiPlayer.process = NULL;
