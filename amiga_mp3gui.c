@@ -2110,7 +2110,18 @@ static void SyncMenuChecks(HelixAmp3Gui *gui)
 		gui->progressEnabled);
 }
 
+static void StopPlayback(HelixAmp3Gui *gui);
 static void GuiClose(HelixAmp3Gui *gui);
+
+static void DrainWindowMessages(HelixAmp3Gui *gui)
+{
+	struct IntuiMessage *msg;
+
+	if (!gui || !gui->win)
+		return;
+	while ((msg = GT_GetIMsg(gui->win->UserPort)) != NULL)
+		GT_ReplyIMsg(msg);
+}
 
 static int GuiOpen(HelixAmp3Gui *gui)
 {
@@ -2252,6 +2263,18 @@ static int GuiOpen(HelixAmp3Gui *gui)
 
 static void GuiClose(HelixAmp3Gui *gui)
 {
+	CancelArtDecode(gui);
+	if (gui->playbackActive)
+		StopPlayback(gui);
+	if (gui->win) {
+		/* Stop Intuition from queuing new IDCMP traffic, then reply anything
+		 * already pending before the window and GadTools objects disappear.
+		 * Leaving stale IntuiMessages on an app window port is a classic source
+		 * of recoverable alerts on memory cleanup.
+		 */
+		ModifyIDCMP(gui->win, 0);
+		DrainWindowMessages(gui);
+	}
 	if (gui->timerReq) {
 		if (gui->timerPending) {
 			AbortIO((struct IORequest *)gui->timerReq);
@@ -2286,7 +2309,10 @@ static void GuiClose(HelixAmp3Gui *gui)
 		FreeMenus(gui->menuStrip);
 		gui->menuStrip = NULL;
 	}
+	if (gui->win && gui->gadgets)
+		RemoveGList(gui->win, gui->gadgets, -1);
 	if (gui->win) {
+		DrainWindowMessages(gui);
 		CloseWindow(gui->win);
 		gui->win = NULL;
 	}
@@ -2717,10 +2743,19 @@ int main(int argc, char **argv)
 		while (gui.playbackActive && gui.donePort) {
 			ULONG doneMask = 1UL << gui.donePort->mp_SigBit;
 			ULONG sigs = Wait(doneMask | SIGBREAKF_CTRL_C);
+
+			if (sigs & SIGBREAKF_CTRL_C) {
+				/* Do not tear down the done port while the playback process can
+				 * still post gDoneMsg to it.  Keep the shutdown path deterministic
+				 * and keep nudging the child until it acknowledges Stop.
+				 */
+				gGuiPlayer.stopRequested = 1;
+				gPlaybackInterrupted = 1;
+				if (gGuiPlayer.process)
+					Signal((struct Task *)gGuiPlayer.process, SIGBREAKF_CTRL_C);
+			}
 			if (sigs & doneMask)
 				HandleDoneSignal(&gui);
-			if (sigs & SIGBREAKF_CTRL_C)
-				break;
 		}
 	}
 	SaveGuiSettings(&gui);
