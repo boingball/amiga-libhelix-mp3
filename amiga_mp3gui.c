@@ -36,33 +36,45 @@
 #include <proto/gadtools.h>
 #include <proto/graphics.h>
 #include <proto/timer.h>
+#include "picojpeg.h"
 
 #define HELIXAMP3_MAX_PATH 256
 #define HELIXAMP3_ARGC_MAX 18
 #define HELIXAMP3_SIGMASK(gui) (1UL << (gui)->win->UserPort->mp_SigBit)
 
-#define GUI_LEFT_MARGIN   8
-#define GUI_TOP_Y        16
-#define GUI_ROW_H        14
-#define ROW_FILE    (GUI_TOP_Y + 0 * GUI_ROW_H)
-#define ROW_TITLE   (GUI_TOP_Y + 1 * GUI_ROW_H)
-#define ROW_ARTIST  (GUI_TOP_Y + 2 * GUI_ROW_H)
-#define ROW_ALBUM   (GUI_TOP_Y + 3 * GUI_ROW_H)
-#define ROW_CHECKS  (GUI_TOP_Y + 4 * GUI_ROW_H + 4)
-#define ROW_CYCLES  (GUI_TOP_Y + 5 * GUI_ROW_H + 4)
-#define ROW_BUFFER  (GUI_TOP_Y + 6 * GUI_ROW_H + 4)
-#define ROW_PROG    (GUI_TOP_Y + 7 * GUI_ROW_H + 4)
-#define ROW_BUTTONS (GUI_TOP_Y + 8 * GUI_ROW_H + 8)
-#define ROW_STATUS  (GUI_TOP_Y + 9 * GUI_ROW_H + 8)
-#define WIN_W       460
-#define WIN_H       (ROW_STATUS + GUI_ROW_H + 12)
+#define GUI_WIN_W       560    /* inner width; wide enough for all controls */
+#define GUI_WIN_H       260    /* inner height */
 
-#define PROG_X      60
-#define PROG_W     300
-#define PROG_H       8
-#define PROG_TOP_Y ROW_PROG
-#define TIME_X     (PROG_X + PROG_W + 8)
-#define TIME_W      88
+#define GUI_MARGIN_L     8     /* left margin */
+#define GUI_MARGIN_R     8     /* right margin */
+#define GUI_TOP_Y       20     /* y of first gadget row */
+#define GUI_ROW_H       18     /* row pitch - enough for Topaz 8 + padding */
+
+#define ART_W           64
+#define ART_H           64
+#define ART_DEPTH        2
+#define ART_X           (GUI_WIN_W - ART_W - GUI_MARGIN_R)
+#define ART_Y           GUI_TOP_Y
+
+#define TEXT_COL_W      (ART_X - GUI_MARGIN_L - 8)
+
+#define ROW_FILE        (GUI_TOP_Y)
+#define ROW_TITLE       (GUI_TOP_Y + 1 * GUI_ROW_H)
+#define ROW_ARTIST      (GUI_TOP_Y + 2 * GUI_ROW_H)
+#define ROW_ALBUM       (GUI_TOP_Y + 3 * GUI_ROW_H)
+#define ROW_CHECKS      (GUI_TOP_Y + 4 * GUI_ROW_H + 4)
+#define ROW_CYCLES      (GUI_TOP_Y + 5 * GUI_ROW_H + 4)
+#define ROW_BUFFER      (GUI_TOP_Y + 6 * GUI_ROW_H + 4)
+#define ROW_PROGRESS    (GUI_TOP_Y + 7 * GUI_ROW_H + 8)
+#define ROW_BUTTONS     (GUI_TOP_Y + 8 * GUI_ROW_H + 12)
+#define ROW_STATUS      (GUI_TOP_Y + 9 * GUI_ROW_H + 12)
+
+#define PROG_X          (GUI_MARGIN_L + 8)
+#define PROG_W          (GUI_WIN_W - PROG_X - 90 - GUI_MARGIN_R)
+#define PROG_H          8
+#define PROG_TOP_Y      (ROW_PROGRESS + 4)
+#define TIME_X          (PROG_X + PROG_W + 6)
+#define TIME_W          80
 #define TIMER_TICK_MICROS 1000000UL
 
 #define MENUNUM_PROJECT   0
@@ -97,6 +109,8 @@ typedef struct Mp3Tags {
 	int  bitrateKbps;
 	int  sampleRate;
 	int  durationSecs;
+	unsigned char *artData;
+	unsigned long artBytes;
 } Mp3Tags;
 
 typedef struct HelixAmp3Gui {
@@ -113,6 +127,8 @@ typedef struct HelixAmp3Gui {
 	struct Gadget  *gadStop;
 	struct VisualInfo *visualInfo;
 	struct Menu *menuStrip;
+	struct BitMap *artBitMap;
+	int artValid;
 	struct MsgPort *timerPort;
 	struct MsgPort *donePort;
 	struct timerequest *timerReq;
@@ -207,6 +223,64 @@ static void SafeCopy(char *dst, size_t dstSize, const char *src)
 	dst[dstSize - 1] = '\0';
 }
 
+
+
+static void FreeTags(Mp3Tags *tags)
+{
+	if (!tags)
+		return;
+	if (tags->artData) {
+		FreeMem(tags->artData, tags->artBytes);
+		tags->artData = NULL;
+		tags->artBytes = 0;
+	}
+}
+
+static unsigned long ApicImageOffset(const unsigned char *payload,
+	unsigned long payloadBytes)
+{
+	unsigned long pos = 1;
+
+	if (!payload || payloadBytes < 4)
+		return payloadBytes;
+	while (pos < payloadBytes && payload[pos])
+		pos++;
+	pos++;
+	if (pos >= payloadBytes)
+		return payloadBytes;
+	pos++;
+	if (payload[0] == 1 || payload[0] == 2) {
+		while (pos + 1 < payloadBytes &&
+			!(payload[pos] == 0 && payload[pos + 1] == 0))
+			pos += 2;
+		pos += 2;
+	} else {
+		while (pos < payloadBytes && payload[pos])
+			pos++;
+		pos++;
+	}
+	return pos <= payloadBytes ? pos : payloadBytes;
+}
+
+static unsigned long PicImageOffset(const unsigned char *payload,
+	unsigned long payloadBytes)
+{
+	unsigned long pos = 5;
+
+	if (!payload || payloadBytes < 6)
+		return payloadBytes;
+	if (payload[0] == 1 || payload[0] == 2) {
+		while (pos + 1 < payloadBytes &&
+			!(payload[pos] == 0 && payload[pos + 1] == 0))
+			pos += 2;
+		pos += 2;
+	} else {
+		while (pos < payloadBytes && payload[pos])
+			pos++;
+		pos++;
+	}
+	return pos <= payloadBytes ? pos : payloadBytes;
+}
 
 static void StripTrailing(char *s)
 {
@@ -357,6 +431,38 @@ static void ReadId3v2Frames(FILE *f, Mp3Tags *tags, const unsigned char *hdr)
 		payloadPos = ftell(f);
 		if (frameSize <= 0 || payloadPos + frameSize > tagEnd)
 			break;
+		if (!tags->artData &&
+			((version == 2 && strcmp(id, "PIC") == 0) ||
+			strcmp(id, "APIC") == 0) &&
+			frameSize > 4 && frameSize <= 512L * 1024L) {
+			unsigned char *payload;
+
+			payload = (unsigned char *)malloc((size_t)frameSize);
+			if (payload && fread(payload, 1, (size_t)frameSize, f) ==
+				(size_t)frameSize) {
+				unsigned long imgOff;
+				unsigned long imgBytes;
+
+				imgOff = (version == 2) ? PicImageOffset(payload,
+					(unsigned long)frameSize) : ApicImageOffset(payload,
+					(unsigned long)frameSize);
+				imgBytes = (unsigned long)frameSize - imgOff;
+				if (imgOff < (unsigned long)frameSize && imgBytes > 4) {
+					tags->artData = (unsigned char *)AllocMem(imgBytes,
+						MEMF_ANY);
+					if (tags->artData) {
+						memcpy(tags->artData, payload + imgOff, imgBytes);
+						tags->artBytes = imgBytes;
+					}
+				}
+			}
+			free(payload);
+			remain = payloadPos + frameSize - ftell(f);
+			if (remain > 0 && fseek(f, remain, SEEK_CUR) != 0)
+				break;
+			continue;
+		}
+
 		target = NULL;
 		if ((version == 2 && strcmp(id, "TT2") == 0) || strcmp(id, "TIT2") == 0)
 			target = tags->title;
@@ -382,6 +488,60 @@ static void ReadId3v2Frames(FILE *f, Mp3Tags *tags, const unsigned char *hdr)
 	fseek(f, tagEnd, SEEK_SET);
 }
 
+
+static void TryFolderArt(const char *inputName, Mp3Tags *tags)
+{
+	static const char *kCoverNames[] = {
+		"folder.jpg", "cover.jpg", "album.jpg", "front.jpg", NULL
+	};
+	char dirPath[HELIXAMP3_MAX_PATH];
+	char artPath[HELIXAMP3_MAX_PATH];
+	int i;
+
+	if (!inputName || !tags || tags->artData)
+		return;
+	SafeCopy(dirPath, sizeof(dirPath), inputName);
+	{
+		char *q = dirPath + strlen(dirPath);
+		while (q > dirPath && *q != '/' && *q != ':')
+			q--;
+		if (*q == '/' || *q == ':')
+			*(q + 1) = '\0';
+		else
+			dirPath[0] = '\0';
+	}
+	for (i = 0; kCoverNames[i] && !tags->artData; i++) {
+		FILE *af;
+
+		SafeCopy(artPath, sizeof(artPath), dirPath);
+		strncat(artPath, kCoverNames[i],
+			sizeof(artPath) - strlen(artPath) - 1);
+		af = fopen(artPath, "rb");
+		if (af) {
+			long sz;
+
+			fseek(af, 0, SEEK_END);
+			sz = ftell(af);
+			fseek(af, 0, SEEK_SET);
+			if (sz > 4 && sz <= 512L * 1024L) {
+				tags->artData = (unsigned char *)AllocMem((unsigned long)sz,
+					MEMF_ANY);
+				if (tags->artData) {
+					if (fread(tags->artData, 1, (size_t)sz, af) ==
+						(size_t)sz) {
+						tags->artBytes = (unsigned long)sz;
+					} else {
+						FreeMem(tags->artData, (unsigned long)sz);
+						tags->artData = NULL;
+						tags->artBytes = 0;
+					}
+				}
+			}
+			fclose(af);
+		}
+	}
+}
+
 static void ReadMp3Tags(const char *path, Mp3Tags *tags)
 {
 	FILE *f;
@@ -391,6 +551,7 @@ static void ReadMp3Tags(const char *path, Mp3Tags *tags)
 
 	if (!tags)
 		return;
+	FreeTags(tags);
 	memset(tags, 0, sizeof(*tags));
 	f = fopen(path, "rb");
 	if (!f)
@@ -419,6 +580,7 @@ static void ReadMp3Tags(const char *path, Mp3Tags *tags)
 	if (!hadId3v2)
 		ReadId3v1(f, tags);
 	fclose(f);
+	TryFolderArt(path, tags);
 }
 
 static void FormatReadyStatus(const Mp3Tags *tags, char *buf, size_t bufSize)
@@ -471,6 +633,228 @@ static void UpdateTagDisplay(HelixAmp3Gui *gui)
 			GTTX_Text, (ULONG)(gui->tags.album[0] ? gui->tags.album : "-"),
 			TAG_DONE);
 	}
+}
+
+
+typedef struct {
+	const unsigned char *data;
+	unsigned long pos;
+	unsigned long size;
+} PjpegSrc;
+
+static const unsigned char kBayer4x4[4][4] = {
+	{  0,  8,  2, 10 },
+	{ 12,  4, 14,  6 },
+	{  3, 11,  1,  9 },
+	{ 15,  7, 13,  5 }
+};
+
+static unsigned char pjpeg_cb(unsigned char *buf, unsigned char buf_size,
+	unsigned char *bytes_actually_read, void *ud)
+{
+	PjpegSrc *src = (PjpegSrc *)ud;
+	unsigned long left;
+	unsigned char n;
+
+	left = src->size - src->pos;
+	n = (unsigned char)(left < (unsigned long)buf_size ? left :
+		(unsigned long)buf_size);
+	if (n) {
+		memcpy(buf, src->data + src->pos, n);
+		src->pos += n;
+	}
+	*bytes_actually_read = n;
+	return 0;
+}
+
+static int McuSampleOffset(const pjpeg_image_info_t *info, int x, int y)
+{
+	int blockX = x / 8;
+	int blockY = y / 8;
+	int blocksPerRow = info->m_MCUWidth / 8;
+	int block = blockY * blocksPerRow + blockX;
+
+	return block * 64 + (y & 7) * 8 + (x & 7);
+}
+
+static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegBytes,
+	unsigned char *greyOut, int outW, int outH)
+{
+	pjpeg_image_info_t info;
+	PjpegSrc src;
+	unsigned char status;
+	int mcuIndex;
+
+	if (!jpegData || jpegBytes <= 4 || !greyOut)
+		return -1;
+	src.data = jpegData;
+	src.pos = 0;
+	src.size = jpegBytes;
+	memset(greyOut, 0x80, (size_t)(outW * outH));
+	status = pjpeg_decode_init(&info, pjpeg_cb, &src, 0);
+	if (status != 0 || info.m_width <= 0 || info.m_height <= 0)
+		return -1;
+
+	for (mcuIndex = 0; mcuIndex < info.m_MCUSPerRow * info.m_MCUSPerCol;
+		mcuIndex++) {
+		int mcuX;
+		int mcuY;
+		int y;
+
+		status = pjpeg_decode_mcu();
+		if (status == PJPG_NO_MORE_BLOCKS)
+			break;
+		if (status != 0)
+			return -1;
+		mcuX = (mcuIndex % info.m_MCUSPerRow) * info.m_MCUWidth;
+		mcuY = (mcuIndex / info.m_MCUSPerRow) * info.m_MCUHeight;
+		for (y = 0; y < info.m_MCUHeight; y++) {
+			int srcY = mcuY + y;
+			int x;
+
+			if (srcY >= info.m_height)
+				continue;
+			for (x = 0; x < info.m_MCUWidth; x++) {
+				int srcX = mcuX + x;
+				int dstX;
+				int dstY;
+				int off;
+				int g;
+
+				if (srcX >= info.m_width)
+					continue;
+				dstX = (srcX * outW) / info.m_width;
+				dstY = (srcY * outH) / info.m_height;
+				if (dstX < 0 || dstX >= outW || dstY < 0 || dstY >= outH)
+					continue;
+				off = McuSampleOffset(&info, x, y);
+				if (info.m_comps == 1)
+					g = info.m_pMCUBufR[off];
+				else
+					g = ((int)info.m_pMCUBufR[off] * 30 +
+						(int)info.m_pMCUBufG[off] * 59 +
+						(int)info.m_pMCUBufB[off] * 11) / 100;
+				greyOut[dstY * outW + dstX] = (unsigned char)g;
+			}
+		}
+	}
+	return 0;
+}
+
+static struct BitMap *AllocArtBitMap(void)
+{
+	struct BitMap *bm;
+	int i;
+
+	bm = (struct BitMap *)AllocMem(sizeof(struct BitMap), MEMF_CLEAR);
+	if (!bm)
+		return NULL;
+	InitBitMap(bm, ART_DEPTH, ART_W, ART_H);
+	for (i = 0; i < ART_DEPTH; i++) {
+		bm->Planes[i] = (PLANEPTR)AllocRaster(ART_W, ART_H);
+		if (!bm->Planes[i]) {
+			while (--i >= 0)
+				FreeRaster(bm->Planes[i], ART_W, ART_H);
+			FreeMem(bm, sizeof(struct BitMap));
+			return NULL;
+		}
+	}
+	return bm;
+}
+
+static void FreeArtBitMap(struct BitMap *bm)
+{
+	int i;
+
+	if (!bm)
+		return;
+	for (i = 0; i < ART_DEPTH; i++) {
+		if (bm->Planes[i])
+			FreeRaster(bm->Planes[i], ART_W, ART_H);
+	}
+	FreeMem(bm, sizeof(struct BitMap));
+}
+
+static void GreyToBitMap(const unsigned char *grey, struct BitMap *bm)
+{
+	static const unsigned char penMap[4] = { 1, 0, 2, 2 };
+	int y;
+	int x;
+	int pnum;
+
+	for (pnum = 0; pnum < ART_DEPTH; pnum++)
+		memset(bm->Planes[pnum], 0, (size_t)RASSIZE(ART_W, ART_H));
+	for (y = 0; y < ART_H; y++) {
+		for (x = 0; x < ART_W; x++) {
+			int g = grey[y * ART_W + x];
+			int d = kBayer4x4[y & 3][x & 3] - 8;
+			int level;
+			int pen;
+			int byteIdx;
+			int bitIdx;
+
+			g += d * 8;
+			if (g < 0)
+				g = 0;
+			if (g > 255)
+				g = 255;
+			level = g / 64;
+			if (level > 3)
+				level = 3;
+			pen = penMap[level];
+			byteIdx = y * (ART_W / 8) + (x / 8);
+			bitIdx = 7 - (x & 7);
+			if (pen & 1)
+				((unsigned char *)bm->Planes[0])[byteIdx] |= (1 << bitIdx);
+			if (pen & 2)
+				((unsigned char *)bm->Planes[1])[byteIdx] |= (1 << bitIdx);
+		}
+	}
+}
+
+static void DrawArtPanel(HelixAmp3Gui *gui)
+{
+	struct RastPort *rp;
+
+	if (!gui->win)
+		return;
+	rp = gui->win->RPort;
+	DrawBevelBox(rp, ART_X - 2, ART_Y - 2, ART_W + 4, ART_H + 4,
+		GT_VisualInfo, (ULONG)gui->visualInfo,
+		GTBB_Recessed, TRUE,
+		TAG_DONE);
+	if (gui->artValid && gui->artBitMap) {
+		BltBitMapRastPort(gui->artBitMap, 0, 0, rp, ART_X, ART_Y,
+			ART_W, ART_H, 0xF0);
+	} else {
+		SetAPen(rp, 1);
+		RectFill(rp, ART_X, ART_Y, ART_X + ART_W - 1, ART_Y + ART_H - 1);
+		SetAPen(rp, 2);
+		Move(rp, ART_X + 16, ART_Y + ART_H / 2);
+		Text(rp, "No art", 6);
+	}
+}
+
+static void UpdateArtDisplay(HelixAmp3Gui *gui)
+{
+	unsigned char greyBuf[ART_W * ART_H];
+
+	if (gui->artBitMap) {
+		FreeArtBitMap(gui->artBitMap);
+		gui->artBitMap = NULL;
+		gui->artValid = 0;
+	}
+	if (gui->tags.artData && gui->tags.artBytes > 4) {
+		if (DecodeJpegToGrey(gui->tags.artData, gui->tags.artBytes,
+			greyBuf, ART_W, ART_H) == 0) {
+			gui->artBitMap = AllocArtBitMap();
+			if (gui->artBitMap) {
+				GreyToBitMap(greyBuf, gui->artBitMap);
+				gui->artValid = 1;
+			}
+		}
+	}
+	DrawArtPanel(gui);
 }
 
 static void DrawProgressFrame(HelixAmp3Gui *gui)
@@ -601,6 +985,7 @@ static void GuiRefresh(HelixAmp3Gui *gui)
 	GT_EndRefresh(gui->win, TRUE);
 	DrawProgressFrame(gui);
 	DrawProgress(gui);
+	DrawArtPanel(gui);
 }
 
 static void SetDecodeThenPlay(HelixAmp3Gui *gui, int enabled)
@@ -668,7 +1053,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	gad = gui->gadContext;
 
 	gui->gadFile = gad = MakeGadget(gui, gad, TEXT_KIND, GID_FILE,
-		55, ROW_FILE, 280, 14, "File:",
+		GUI_MARGIN_L + 48, ROW_FILE, TEXT_COL_W - 100, 16, "File:",
 		GTTX_Text, (ULONG)gui->fileText,
 		GTTX_Border, TRUE,
 		TAG_IGNORE, 0,
@@ -677,7 +1062,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, BUTTON_KIND, GID_BROWSE,
-		345, ROW_FILE - 2, 68, 16, "Browse",
+		ART_X - 56, ROW_FILE - 1, 56, 16, "Browse",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -686,7 +1071,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadTitle = gad = MakeGadget(gui, gad, TEXT_KIND, GID_TITLE,
-		55, ROW_TITLE, 300, 14, "Title:",
+		GUI_MARGIN_L + 44, ROW_TITLE, TEXT_COL_W - 44, 16, "Title:",
 		GTTX_Text, (ULONG)"-",
 		GTTX_Border, TRUE,
 		TAG_IGNORE, 0,
@@ -695,7 +1080,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadArtist = gad = MakeGadget(gui, gad, TEXT_KIND, GID_ARTIST,
-		55, ROW_ARTIST, 300, 14, "Artist:",
+		GUI_MARGIN_L + 44, ROW_ARTIST, TEXT_COL_W - 44, 16, "Artist:",
 		GTTX_Text, (ULONG)"-",
 		GTTX_Border, TRUE,
 		TAG_IGNORE, 0,
@@ -704,7 +1089,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadAlbum = gad = MakeGadget(gui, gad, TEXT_KIND, GID_ALBUM,
-		55, ROW_ALBUM, 300, 14, "Album:",
+		GUI_MARGIN_L + 44, ROW_ALBUM, TEXT_COL_W - 44, 16, "Album:",
 		GTTX_Text, (ULONG)"-",
 		GTTX_Border, TRUE,
 		TAG_IGNORE, 0,
@@ -713,7 +1098,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_FAST_LOWRATE,
-		22, ROW_CHECKS, 20, 12, "Fast-lr",
+		GUI_MARGIN_L + 14, ROW_CHECKS, 20, 12, "Fast-lr",
 		GTCB_Checked, gui->fastLowrate,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -722,7 +1107,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_FAST_MEM,
-		160, ROW_CHECKS, 20, 12, "Fast-mem",
+		GUI_MARGIN_L + 150, ROW_CHECKS, 20, 12, "Fast-mem",
 		GTCB_Checked, gui->fastMem,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -731,7 +1116,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_MONO,
-		278, ROW_CHECKS, 20, 12, "Mono",
+		GUI_MARGIN_L + 280, ROW_CHECKS, 20, 12, "Mono",
 		GTCB_Checked, gui->mono,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -740,7 +1125,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, CYCLE_KIND, GID_RATE,
-		55, ROW_CYCLES, 98, 16, "Rate:",
+		GUI_MARGIN_L + 48, ROW_CYCLES, 80, 16, "Rate:",
 		GTCY_Labels, (ULONG)kRateLabels,
 		GTCY_Active, gui->rateIndex,
 		TAG_IGNORE, 0,
@@ -749,7 +1134,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, CYCLE_KIND, GID_QUALITY,
-		238, ROW_CYCLES, 112, 16, "Quality:",
+		GUI_MARGIN_L + 230, ROW_CYCLES, 100, 16, "Quality:",
 		GTCY_Labels, (ULONG)kQualityLabels,
 		GTCY_Active, gui->qualityIndex,
 		TAG_IGNORE, 0,
@@ -758,7 +1143,8 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadBuffer = gad = MakeGadget(gui, gad, SLIDER_KIND, GID_BUFFER,
-		70, ROW_BUFFER, 220, 16, "Buffer:",
+		GUI_MARGIN_L + 62, ROW_BUFFER,
+		GUI_WIN_W - GUI_MARGIN_L - GUI_MARGIN_R - 80, 16, "Buffer:",
 		GTSL_Min, 1,
 		GTSL_Max, 30,
 		GTSL_Level, gui->bufferSeconds,
@@ -767,7 +1153,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadPlay = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_PLAY,
-		45, ROW_BUTTONS, 72, 18, "Play",
+		GUI_MARGIN_L + 120, ROW_BUTTONS, 80, 18, "Play",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -776,7 +1162,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadStop = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_STOP,
-		310, ROW_BUTTONS, 72, 18, "Stop",
+		GUI_MARGIN_L + 300, ROW_BUTTONS, 80, 18, "Stop",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -785,7 +1171,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadStatus = gad = MakeGadget(gui, gad, TEXT_KIND, GID_STATUS,
-		58, ROW_STATUS, 350, 14, "Status:",
+		GUI_MARGIN_L + 50, ROW_STATUS, GUI_WIN_W - GUI_MARGIN_L - GUI_MARGIN_R - 70, 16, "Status:",
 		GTTX_Text, (ULONG)gui->statusText,
 		GTTX_Border, TRUE,
 		TAG_IGNORE, 0,
@@ -910,8 +1296,8 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	memset(&nw, 0, sizeof(nw));
 	nw.LeftEdge = 40;
 	nw.TopEdge = 30;
-	nw.Width = WIN_W;
-	nw.Height = WIN_H;
+	nw.Width = GUI_WIN_W;
+	nw.Height = GUI_WIN_H;
 	nw.DetailPen = 0;
 	nw.BlockPen = 1;
 	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_MOUSEMOVE | IDCMP_CLOSEWINDOW |
@@ -921,12 +1307,16 @@ static int GuiOpen(HelixAmp3Gui *gui)
 		WFLG_SMART_REFRESH;
 	nw.FirstGadget = gui->gadgets;
 	nw.Title = (UBYTE *)"MiniAMP3";
-	nw.MinWidth = WIN_W;
-	nw.MinHeight = WIN_H;
+	nw.MinWidth = GUI_WIN_W;
+	nw.MinHeight = GUI_WIN_H;
 	nw.MaxWidth = 680;
-	nw.MaxHeight = 220;
+	nw.MaxHeight = 320;
 	nw.Type = WBENCHSCREEN;
-	gui->win = OpenWindow(&nw);
+	gui->win = OpenWindowTags(&nw,
+		WA_InnerWidth, GUI_WIN_W,
+		WA_InnerHeight, GUI_WIN_H,
+		WA_Font, (ULONG)&gui->smallTextAttr,
+		TAG_DONE);
 	if (!gui->win) {
 		fprintf(stderr, "cannot open MiniAMP3 window\n");
 		FreeGadgets(gui->gadgets);
@@ -978,6 +1368,7 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	GT_RefreshWindow(gui->win, NULL);
 	DrawProgressFrame(gui);
 	DrawProgress(gui);
+	DrawArtPanel(gui);
 	if (gui->timerOpen)
 		SendTimerRequest(gui, TIMER_TICK_MICROS);
 	return 0;
@@ -1011,6 +1402,12 @@ static void GuiClose(HelixAmp3Gui *gui)
 		DeleteMsgPort(gui->donePort);
 		gui->donePort = NULL;
 	}
+	if (gui->artBitMap) {
+		FreeArtBitMap(gui->artBitMap);
+		gui->artBitMap = NULL;
+		gui->artValid = 0;
+	}
+	FreeTags(&gui->tags);
 	if (gui->win && gui->menuStrip)
 		ClearMenuStrip(gui->win);
 	if (gui->menuStrip) {
@@ -1079,6 +1476,7 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 		gui->totalSecs = gui->tags.durationSecs;
 		gui->elapsedSecs = 0;
 		UpdateTagDisplay(gui);
+		UpdateArtDisplay(gui);
 		DrawProgress(gui);
 		FormatReadyStatus(&gui->tags, gui->statusText, sizeof(gui->statusText));
 		SetStatus(gui, gui->statusText);

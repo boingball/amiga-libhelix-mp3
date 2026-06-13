@@ -16,7 +16,7 @@ CPPFLAGS_COMMON := -Ipub -Ireal -DAMIGA_M68K
 CFLAGS_COMMON := $(CPU) $(STD) $(OPTFLAGS)
 DECODER_SOURCES := mp3dec.c mp3tabs.c $(wildcard real/*.c)
 SOURCES := amiga_mp3dec.c $(DECODER_SOURCES)
-GUI_SOURCES := amiga_mp3gui.c
+GUI_SOURCES := amiga_mp3gui.c picojpeg.c
 # The GUI uses gadtools.library via proto/gadtools.h; no linker flag is needed.
 
 FAST030_CPPFLAGS := \
