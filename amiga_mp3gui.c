@@ -20,6 +20,7 @@
 #include <exec/tasks.h>
 #include <intuition/intuition.h>
 #include <intuition/intuitionbase.h>
+#include <intuition/screens.h>
 #include <libraries/asl.h>
 #include <libraries/gadtools.h>
 #include <graphics/gfxbase.h>
@@ -141,6 +142,7 @@ typedef struct HelixAmp3Gui {
 	Mp3Tags tags;
 	char  inputName[HELIXAMP3_MAX_PATH];
 	char  fileText[HELIXAMP3_MAX_PATH];
+	char  lastDrawer[HELIXAMP3_MAX_PATH];
 	char  statusText[128];
 	int   fastLowrate;
 	int   fastMem;
@@ -252,6 +254,24 @@ static void SafeCopy(char *dst, size_t dstSize, const char *src)
 }
 
 
+static void CopyDrawerFromPath(char *drawer, size_t drawerSize, const char *path)
+{
+	char *q;
+
+	if (!drawer || drawerSize == 0)
+		return;
+	drawer[0] = '\0';
+	if (!path || !path[0])
+		return;
+	SafeCopy(drawer, drawerSize, path);
+	q = drawer + strlen(drawer);
+	while (q > drawer && *q != '/' && *q != ':')
+		q--;
+	if (*q == '/' || *q == ':')
+		*(q + 1) = '\0';
+	else
+		drawer[0] = '\0';
+}
 
 static void FreeTags(Mp3Tags *tags)
 {
@@ -931,16 +951,25 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 	return 0;
 }
 
-static int ArtPenCount(const struct RastPort *rp)
+static int ArtGreyPen(HelixAmp3Gui *gui, int level)
 {
-	int penCount = 2;
+	struct DrawInfo *dri;
+	int pen;
 
-	if (rp && rp->BitMap && rp->BitMap->Depth > 1) {
-		penCount = 1 << rp->BitMap->Depth;
-		if (penCount > 16)
-			penCount = 16;
+	pen = level ? 1 : 0;
+	if (!gui || !gui->win || !gui->win->WScreen)
+		return pen;
+	dri = GetScreenDrawInfo(gui->win->WScreen);
+	if (dri) {
+		if (level <= 0)
+			pen = dri->dri_Pens[SHADOWPEN];
+		else if (level == 1)
+			pen = dri->dri_Pens[BACKGROUNDPEN];
+		else
+			pen = dri->dri_Pens[SHINEPEN];
+		FreeScreenDrawInfo(gui->win->WScreen, dri);
 	}
-	return penCount;
+	return pen;
 }
 
 static void DrawArtPanel(HelixAmp3Gui *gui)
@@ -957,19 +986,19 @@ static void DrawArtPanel(HelixAmp3Gui *gui)
 		GTBB_Recessed, TRUE,
 		TAG_DONE);
 	if (gui->artValid) {
-		int penCount = ArtPenCount(rp);
+		int darkPen = ArtGreyPen(gui, 0);
+		int midPen = ArtGreyPen(gui, 1);
+		int lightPen = ArtGreyPen(gui, 2);
 
 		for (y = 0; y < ART_H; y++) {
 			for (x = 0; x < ART_W; x++) {
 				int g = gui->artGreyBuf[y * ART_W + x];
 				int d = kBayer4x4[y & 3][x & 3] - 8;
-				int pen = ((g + d * 4) * penCount) >> 8;
+				int shade = (g + d * 2) >= 176 ? 2 :
+					((g + d * 2) >= 80 ? 1 : 0);
 
-				if (pen < 0)
-					pen = 0;
-				else if (pen >= penCount)
-					pen = penCount - 1;
-				SetAPen(rp, pen);
+				SetAPen(rp, shade == 2 ? lightPen :
+					(shade == 1 ? midPen : darkPen));
 				WritePixel(rp, ART_X + x, ART_Y + y);
 			}
 		}
@@ -1530,10 +1559,15 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 	struct FileRequester *req;
 	char path[HELIXAMP3_MAX_PATH];
 
+	if (!gui->lastDrawer[0] && gui->inputName[0])
+		CopyDrawerFromPath(gui->lastDrawer, sizeof(gui->lastDrawer),
+			gui->inputName);
 	req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
 		ASLFR_TitleText, (ULONG)"Select MP3 for MiniAMP3",
 		ASLFR_DoPatterns, TRUE,
 		ASLFR_InitialPattern, (ULONG)"#?.mp3",
+		ASLFR_InitialDrawer,
+			(ULONG)(gui->lastDrawer[0] ? gui->lastDrawer : NULL),
 		TAG_DONE);
 	if (!req) {
 		SetStatus(gui, "Cannot allocate ASL file requester.");
@@ -1542,6 +1576,8 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 	if (AslRequest(req, NULL)) {
 		path[0] = '\0';
 		if (req->fr_Drawer && req->fr_Drawer[0]) {
+			SafeCopy(gui->lastDrawer, sizeof(gui->lastDrawer),
+				req->fr_Drawer);
 			SafeCopy(path, sizeof(path), req->fr_Drawer);
 			AddPart(path, req->fr_File, sizeof(path));
 		} else {
