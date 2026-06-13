@@ -54,7 +54,6 @@
 
 #define ART_W           64
 #define ART_H           64
-#define ART_DEPTH        2
 #define MAX_JPEG_DIM    1024
 #define ART_X           (GUI_WIN_W - ART_W - GUI_MARGIN_R)
 #define ART_Y           GUI_TOP_Y
@@ -131,8 +130,8 @@ typedef struct HelixAmp3Gui {
 	struct Gadget  *gadStop;
 	struct VisualInfo *visualInfo;
 	struct Menu *menuStrip;
-	struct BitMap *artBitMap;
 	int artValid;
+	unsigned char artGreyBuf[ART_W * ART_H];
 	struct MsgPort *timerPort;
 	struct MsgPort *donePort;
 	struct timerequest *timerReq;
@@ -915,80 +914,11 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 	return 0;
 }
 
-static struct BitMap *AllocArtBitMap(void)
-{
-	struct BitMap *bm;
-	int i;
-
-	bm = (struct BitMap *)AllocMem(sizeof(struct BitMap), MEMF_CLEAR);
-	if (!bm)
-		return NULL;
-	InitBitMap(bm, ART_DEPTH, ART_W, ART_H);
-	for (i = 0; i < ART_DEPTH; i++) {
-		bm->Planes[i] = (PLANEPTR)AllocRaster(ART_W, ART_H);
-		if (!bm->Planes[i]) {
-			while (--i >= 0)
-				FreeRaster(bm->Planes[i], ART_W, ART_H);
-			FreeMem(bm, sizeof(struct BitMap));
-			return NULL;
-		}
-	}
-	return bm;
-}
-
-static void FreeArtBitMap(struct BitMap *bm)
-{
-	int i;
-
-	if (!bm)
-		return;
-	for (i = 0; i < ART_DEPTH; i++) {
-		if (bm->Planes[i])
-			FreeRaster(bm->Planes[i], ART_W, ART_H);
-	}
-	FreeMem(bm, sizeof(struct BitMap));
-}
-
-static void GreyToBitMap(const unsigned char *grey, struct BitMap *bm)
-{
-	static const unsigned char penMap[4] = { 1, 0, 2, 2 };
-	int y;
-	int x;
-	int pnum;
-
-	for (pnum = 0; pnum < ART_DEPTH; pnum++)
-		memset(bm->Planes[pnum], 0, (size_t)RASSIZE(ART_W, ART_H));
-	for (y = 0; y < ART_H; y++) {
-		for (x = 0; x < ART_W; x++) {
-			int g = grey[y * ART_W + x];
-			int d = kBayer4x4[y & 3][x & 3] - 8;
-			int level;
-			int pen;
-			int byteIdx;
-			int bitIdx;
-
-			g += d * 8;
-			if (g < 0)
-				g = 0;
-			if (g > 255)
-				g = 255;
-			level = g / 64;
-			if (level > 3)
-				level = 3;
-			pen = penMap[level];
-			byteIdx = y * (ART_W / 8) + (x / 8);
-			bitIdx = 7 - (x & 7);
-			if (pen & 1)
-				((unsigned char *)bm->Planes[0])[byteIdx] |= (1 << bitIdx);
-			if (pen & 2)
-				((unsigned char *)bm->Planes[1])[byteIdx] |= (1 << bitIdx);
-		}
-	}
-}
-
 static void DrawArtPanel(HelixAmp3Gui *gui)
 {
 	struct RastPort *rp;
+	int x;
+	int y;
 
 	if (!gui->win)
 		return;
@@ -997,13 +927,22 @@ static void DrawArtPanel(HelixAmp3Gui *gui)
 		GT_VisualInfo, (ULONG)gui->visualInfo,
 		GTBB_Recessed, TRUE,
 		TAG_DONE);
-	if (gui->artValid && gui->artBitMap) {
-		BltBitMapRastPort(gui->artBitMap, 0, 0, rp, ART_X, ART_Y,
-			ART_W, ART_H, 0xF0);
+	if (gui->artValid) {
+		for (y = 0; y < ART_H; y++) {
+			for (x = 0; x < ART_W; x++) {
+				int g = gui->artGreyBuf[y * ART_W + x];
+				/* Map 0-255 grey to pen 0 (dark) or pen 1 (light) with dithering. */
+				int d = kBayer4x4[y & 3][x & 3];
+				int pen = ((g + (d - 8) * 8) >= 128) ? 1 : 0;
+
+				SetAPen(rp, pen);
+				WritePixel(rp, ART_X + x, ART_Y + y);
+			}
+		}
 	} else {
-		SetAPen(rp, 1);
+		SetAPen(rp, 0);
 		RectFill(rp, ART_X, ART_Y, ART_X + ART_W - 1, ART_Y + ART_H - 1);
-		SetAPen(rp, 2);
+		SetAPen(rp, 1);
 		Move(rp, ART_X + 16, ART_Y + ART_H / 2);
 		Text(rp, "No art", 6);
 	}
@@ -1013,19 +952,12 @@ static void UpdateArtDisplay(HelixAmp3Gui *gui)
 {
 	unsigned char greyBuf[ART_W * ART_H];
 
-	if (gui->artBitMap) {
-		FreeArtBitMap(gui->artBitMap);
-		gui->artBitMap = NULL;
-		gui->artValid = 0;
-	}
+	gui->artValid = 0;
 	if (gui->tags.artData && gui->tags.artBytes > 4) {
 		if (DecodeJpegToGrey(gui->tags.artData, gui->tags.artBytes,
 			greyBuf, ART_W, ART_H, gui->tags.artIsPng) == 0) {
-			gui->artBitMap = AllocArtBitMap();
-			if (gui->artBitMap) {
-				GreyToBitMap(greyBuf, gui->artBitMap);
-				gui->artValid = 1;
-			}
+			gui->artValid = 1;
+			memcpy(gui->artGreyBuf, greyBuf, ART_W * ART_H);
 		}
 	}
 	DrawArtPanel(gui);
@@ -1513,11 +1445,6 @@ static void GuiClose(HelixAmp3Gui *gui)
 			;
 		DeleteMsgPort(gui->donePort);
 		gui->donePort = NULL;
-	}
-	if (gui->artBitMap) {
-		FreeArtBitMap(gui->artBitMap);
-		gui->artBitMap = NULL;
-		gui->artValid = 0;
 	}
 	FreeTags(&gui->tags);
 	if (gui->win && gui->menuStrip)

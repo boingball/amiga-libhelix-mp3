@@ -444,14 +444,14 @@ static unsigned char pj_read_dri(void)
 	return 0;
 }
 
-static int pj_idct_descale(long x, int n)
+static int pj_idct_descale(int x, int n)
 {
-	return (int)((x + (1L << (n - 1))) >> n);
+	return (int)(((long long)x + ((long long)1 << (n - 1))) >> n);
 }
 
 static int pj_idct_multiply(int x, int c)
 {
-	return pj_idct_descale((long)x * c, PJ_IDCT_CONST_BITS);
+	return (int)(((long long)x * c) >> PJ_IDCT_CONST_BITS);
 }
 
 static pj_u8 pj_idct_clamp(int x)
