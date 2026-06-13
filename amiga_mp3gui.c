@@ -861,7 +861,9 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 	src.pos = 0;
 	src.size = jpegBytes;
 	memset(greyOut, 0x80, (size_t)(outW * outH));
-	status = pjpeg_decode_init(&info, pjpeg_cb, &src, 0);
+	/* Reduced decoding keeps only the JPEG block averages, which is much
+	 * faster and visually sufficient for the fixed 64x64 artwork thumbnail. */
+	status = pjpeg_decode_init(&info, pjpeg_cb, &src, 1);
 	if (status != 0 || info.m_width <= 0 || info.m_height <= 0 ||
 		info.m_width > MAX_JPEG_DIM || info.m_height > MAX_JPEG_DIM)
 		return -1;
@@ -928,13 +930,23 @@ static void DrawArtPanel(HelixAmp3Gui *gui)
 		GTBB_Recessed, TRUE,
 		TAG_DONE);
 	if (gui->artValid) {
+		int penCount = 2;
+
+		if (rp->BitMap && rp->BitMap->Depth > 1) {
+			penCount = 1 << rp->BitMap->Depth;
+			if (penCount > 4)
+				penCount = 4;
+		}
 		for (y = 0; y < ART_H; y++) {
 			for (x = 0; x < ART_W; x++) {
 				int g = gui->artGreyBuf[y * ART_W + x];
-				/* Map 0-255 grey to pen 0 (dark) or pen 1 (light) with dithering. */
-				int d = kBayer4x4[y & 3][x & 3];
-				int pen = ((g + (d - 8) * 8) >= 128) ? 1 : 0;
+				int d = kBayer4x4[y & 3][x & 3] - 8;
+				int pen = ((g + d * 4) * penCount) >> 8;
 
+				if (pen < 0)
+					pen = 0;
+				else if (pen >= penCount)
+					pen = penCount - 1;
 				SetAPen(rp, pen);
 				WritePixel(rp, ART_X + x, ART_Y + y);
 			}

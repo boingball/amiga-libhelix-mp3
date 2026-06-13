@@ -89,6 +89,7 @@ static int gMcuIndex;
 static int gRestartInterval;
 static int gRestartLeft;
 static int gNextRestart;
+static int gReduce;
 static PjComponent gComp[PJPG_MAX_COMPONENTS];
 static int gQuant[PJPG_MAX_TABLES][64];
 static pj_u8 gQuantValid[PJPG_MAX_TABLES];
@@ -610,7 +611,8 @@ static unsigned char pj_decode_block(int ci, pj_u8 *out)
 	int s;
 	int diff;
 	int k;
-	memset(coef, 0, sizeof(coef));
+	if (!gReduce)
+		memset(coef, 0, sizeof(coef));
 	if (!gQuantValid[c->tq] || !gHuff[0][c->td].valid || !gHuff[1][c->ta].valid)
 		return PJPG_UNDEFINED_HUFF_TABLE;
 	s = pj_huff_decode(&gHuff[0][c->td]);
@@ -642,10 +644,17 @@ static unsigned char pj_decode_block(int ci, pj_u8 *out)
 		diff = pj_get_bits(s);
 		if (diff < 0)
 			return PJPG_DECODE_ERROR;
-		coef[gZigZag[k]] = pj_extend(diff, s) * gQuant[c->tq][gZigZag[k]];
+		if (!gReduce)
+			coef[gZigZag[k]] = pj_extend(diff, s) * gQuant[c->tq][gZigZag[k]];
 		k++;
 	}
-	pj_idct_block(coef, out);
+	if (gReduce) {
+		pj_u8 dcval = pj_idct_clamp(pj_idct_descale(coef[0], 3) + 128);
+
+		memset(out, dcval, 64);
+	} else {
+		pj_idct_block(coef, out);
+	}
 	return 0;
 }
 
@@ -764,7 +773,7 @@ unsigned char pjpeg_decode_init(pjpeg_image_info_t *pInfo,
 	unsigned char got;
 	unsigned char status;
 	unsigned long cap = 0;
-	(void)reduce;
+	gReduce = reduce ? 1 : 0;
 	if (!pInfo || !pNeed_bytes_callback)
 		return PJPG_NOT_JPEG;
 	if (gJpegData) {
