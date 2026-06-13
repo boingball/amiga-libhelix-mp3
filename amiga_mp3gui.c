@@ -24,6 +24,7 @@
 #include <libraries/gadtools.h>
 #include <graphics/gfxbase.h>
 #include <graphics/text.h>
+#include <diskfont/diskfont.h>
 #include <devices/timer.h>
 #include <exec/io.h>
 #include <exec/ports.h>
@@ -35,6 +36,7 @@
 #include <proto/dos.h>
 #include <proto/gadtools.h>
 #include <proto/graphics.h>
+#include <proto/diskfont.h>
 #include <proto/timer.h>
 #include "picojpeg.h"
 
@@ -111,6 +113,7 @@ typedef struct Mp3Tags {
 	int  durationSecs;
 	unsigned char *artData;
 	unsigned long artBytes;
+	int artIsPng;
 } Mp3Tags;
 
 typedef struct HelixAmp3Gui {
@@ -133,7 +136,6 @@ typedef struct HelixAmp3Gui {
 	struct MsgPort *donePort;
 	struct timerequest *timerReq;
 	struct TextFont *smallFont;
-	struct TextAttr smallTextAttr;
 	int timerOpen;
 	int timerPending;
 	Mp3Tags tags;
@@ -171,11 +173,37 @@ typedef struct HelixAmp3Player {
 struct IntuitionBase *IntuitionBase;
 struct Library *AslBase;
 struct Library *GadToolsBase;
+struct Library *DiskfontBase;
 struct GfxBase *GfxBase;
 static HelixAmp3Player gGuiPlayer;
 static HelixAmp3Args gGuiArgs;
 static struct Message gDoneMsg;
 static struct MsgPort *gDonePort;
+
+static struct TextAttr gTopaz8Attr = {
+	(STRPTR)"topaz.font", 8, FS_NORMAL, FPF_ROMFONT
+};
+
+static struct TextAttr kFontPrefs[] = {
+	{ (STRPTR)"xen.font",     9, FS_NORMAL, 0 },
+	{ (STRPTR)"courier.font", 9, FS_NORMAL, 0 },
+	{ (STRPTR)"topaz.font",   8, FS_NORMAL, FPF_ROMFONT }
+};
+
+static struct TextFont *OpenBestFont(void)
+{
+	int i;
+	struct TextFont *f;
+
+	if (DiskfontBase) {
+		for (i = 0; i < 3; i++) {
+			f = OpenDiskFont(&kFontPrefs[i]);
+			if (f)
+				return f;
+		}
+	}
+	return OpenFont(&gTopaz8Attr);
+}
 
 static const char * const kRates[] = {
 	"8287",
@@ -234,6 +262,7 @@ static void FreeTags(Mp3Tags *tags)
 		tags->artData = NULL;
 		tags->artBytes = 0;
 	}
+	tags->artIsPng = 0;
 }
 
 static unsigned long ApicImageOffset(const unsigned char *payload,
@@ -297,11 +326,10 @@ static void StripTrailing(char *s)
 	}
 }
 
-static void CopyTagField(char *dst, size_t dstSize, const unsigned char *src,
-	long len)
+static void CopyId3v1TextField(char *dst, size_t dstSize,
+	const unsigned char *src, long len)
 {
 	long i;
-	long start;
 	long out;
 
 	if (!dst || dstSize == 0)
@@ -309,17 +337,95 @@ static void CopyTagField(char *dst, size_t dstSize, const unsigned char *src,
 	dst[0] = '\0';
 	if (!src || len <= 0)
 		return;
-	start = 0;
-	if (src[0] == 0 || src[0] == 3)
-		start = 1;
 	out = 0;
-	for (i = start; i < len && out + 1 < (long)dstSize; i++) {
+	for (i = 0; i < len && out + 1 < (long)dstSize; i++) {
 		unsigned char c = src[i];
-		if (c == '\0')
+		if (c == 0)
 			break;
-		dst[out++] = (char)c;
+		dst[out++] = (c >= 32 && c != 127) ? (char)c : '?';
 	}
 	dst[out] = '\0';
+	StripTrailing(dst);
+}
+
+static void CopyId3v2TextField(char *dst, size_t dstSize,
+	const unsigned char *src, long len)
+{
+	unsigned char enc;
+	long i;
+	long out;
+	int bigEndian;
+
+	if (!dst || dstSize == 0)
+		return;
+	dst[0] = '\0';
+	if (!src || len <= 0)
+		return;
+
+	enc = src[0];
+	src++;
+	len--;
+
+	if (enc == 0) {
+		out = 0;
+		for (i = 0; i < len && out + 1 < (long)dstSize; i++) {
+			unsigned char c = src[i];
+			if (c == 0)
+				break;
+			dst[out++] = (c >= 32 && c != 127) ? (char)c : '?';
+		}
+		dst[out] = '\0';
+	} else if (enc == 1 || enc == 2) {
+		bigEndian = (enc == 2) ? 1 : 0;
+		if (len >= 2) {
+			if (src[0] == 0xFE && src[1] == 0xFF) {
+				bigEndian = 1;
+				src += 2;
+				len -= 2;
+			} else if (src[0] == 0xFF && src[1] == 0xFE) {
+				bigEndian = 0;
+				src += 2;
+				len -= 2;
+			}
+		}
+		out = 0;
+		for (i = 0; i + 1 < len && out + 1 < (long)dstSize; i += 2) {
+			unsigned int hi = bigEndian ? src[i] : src[i + 1];
+			unsigned int lo = bigEndian ? src[i + 1] : src[i];
+			unsigned int cp = (hi << 8) | lo;
+
+			if (cp == 0)
+				break;
+			if (cp < 0x20 || cp == 0x7F) {
+				/* skip control chars */
+			} else if (cp <= 0x00FF) {
+				dst[out++] = (char)(cp & 0xFF);
+			} else {
+				dst[out++] = '?';
+			}
+		}
+		dst[out] = '\0';
+	} else if (enc == 3) {
+		out = 0;
+		for (i = 0; i < len && out + 1 < (long)dstSize; i++) {
+			unsigned char c = src[i];
+			if (c == 0)
+				break;
+			dst[out++] = (char)c;
+		}
+		dst[out] = '\0';
+	} else {
+		out = 0;
+		src--;
+		len++;
+		for (i = 0; i < len && out + 1 < (long)dstSize; i++) {
+			unsigned char c = src[i];
+			if (c == 0)
+				break;
+			dst[out++] = (c >= 32 && c != 127) ? (char)c : '?';
+		}
+		dst[out] = '\0';
+	}
 	StripTrailing(dst);
 }
 
@@ -387,11 +493,66 @@ static void ReadId3v1(FILE *f, Mp3Tags *tags)
 	if (memcmp(buf, "TAG", 3) != 0)
 		return;
 	if (!tags->title[0])
-		CopyTagField(tags->title, sizeof(tags->title), buf + 3, 30);
+		CopyId3v1TextField(tags->title, sizeof(tags->title), buf + 3, 30);
 	if (!tags->artist[0])
-		CopyTagField(tags->artist, sizeof(tags->artist), buf + 33, 30);
+		CopyId3v1TextField(tags->artist, sizeof(tags->artist), buf + 33, 30);
 	if (!tags->album[0])
-		CopyTagField(tags->album, sizeof(tags->album), buf + 63, 30);
+		CopyId3v1TextField(tags->album, sizeof(tags->album), buf + 63, 30);
+}
+
+
+static int ContainsTextNoCase(const char *s, const char *needle)
+{
+	int i;
+	int j;
+
+	if (!s || !needle || !needle[0])
+		return 0;
+	for (i = 0; s[i]; i++) {
+		for (j = 0; needle[j]; j++) {
+			char a = s[i + j];
+			char b = needle[j];
+
+			if (!a)
+				return 0;
+			if (a >= 'A' && a <= 'Z')
+				a = (char)(a - 'A' + 'a');
+			if (b >= 'A' && b <= 'Z')
+				b = (char)(b - 'A' + 'a');
+			if (a != b)
+				break;
+		}
+		if (!needle[j])
+			return 1;
+	}
+	return 0;
+}
+
+static void DetectPictureMime(const unsigned char *payload,
+	unsigned long payloadBytes, int version, int *isJpeg, int *isPng)
+{
+	char mime[40];
+	unsigned long i;
+
+	*isJpeg = 0;
+	*isPng = 0;
+	if (!payload || payloadBytes < 4)
+		return;
+	memset(mime, 0, sizeof(mime));
+	if (version == 2) {
+		for (i = 0; i < 3 && i + 1 < payloadBytes; i++)
+			mime[i] = (char)payload[i + 1];
+	} else {
+		for (i = 1; i < payloadBytes && i < sizeof(mime); i++) {
+			if (!payload[i])
+				break;
+			mime[i - 1] = (char)payload[i];
+		}
+	}
+	if (ContainsTextNoCase(mime, "jpeg") || ContainsTextNoCase(mime, "jpg"))
+		*isJpeg = 1;
+	else if (ContainsTextNoCase(mime, "png"))
+		*isPng = 1;
 }
 
 static void ReadId3v2Frames(FILE *f, Mp3Tags *tags, const unsigned char *hdr)
@@ -442,7 +603,11 @@ static void ReadId3v2Frames(FILE *f, Mp3Tags *tags, const unsigned char *hdr)
 				(size_t)frameSize) {
 				unsigned long imgOff;
 				unsigned long imgBytes;
+				int isJpeg;
+				int isPng;
 
+				DetectPictureMime(payload, (unsigned long)frameSize, version,
+					&isJpeg, &isPng);
 				imgOff = (version == 2) ? PicImageOffset(payload,
 					(unsigned long)frameSize) : ApicImageOffset(payload,
 					(unsigned long)frameSize);
@@ -453,6 +618,7 @@ static void ReadId3v2Frames(FILE *f, Mp3Tags *tags, const unsigned char *hdr)
 					if (tags->artData) {
 						memcpy(tags->artData, payload + imgOff, imgBytes);
 						tags->artBytes = imgBytes;
+						tags->artIsPng = isPng || (!isJpeg && !isPng);
 					}
 				}
 			}
@@ -476,7 +642,7 @@ static void ReadId3v2Frames(FILE *f, Mp3Tags *tags, const unsigned char *hdr)
 			if (n > (long)sizeof(text))
 				n = (long)sizeof(text);
 			if (fread(text, 1, (size_t)n, f) == (size_t)n)
-				CopyTagField(target, 64, text, n);
+				CopyId3v2TextField(target, 64, text, n);
 		} else {
 			if (fseek(f, frameSize, SEEK_CUR) != 0)
 				break;
@@ -678,14 +844,14 @@ static int McuSampleOffset(const pjpeg_image_info_t *info, int x, int y)
 }
 
 static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegBytes,
-	unsigned char *greyOut, int outW, int outH)
+	unsigned char *greyOut, int outW, int outH, int isPng)
 {
 	pjpeg_image_info_t info;
 	PjpegSrc src;
 	unsigned char status;
 	int mcuIndex;
 
-	if (!jpegData || jpegBytes <= 4 || !greyOut)
+	if (isPng || !jpegData || jpegBytes <= 4 || !greyOut)
 		return -1;
 	src.data = jpegData;
 	src.pos = 0;
@@ -846,7 +1012,7 @@ static void UpdateArtDisplay(HelixAmp3Gui *gui)
 	}
 	if (gui->tags.artData && gui->tags.artBytes > 4) {
 		if (DecodeJpegToGrey(gui->tags.artData, gui->tags.artBytes,
-			greyBuf, ART_W, ART_H) == 0) {
+			greyBuf, ART_W, ART_H, gui->tags.artIsPng) == 0) {
 			gui->artBitMap = AllocArtBitMap();
 			if (gui->artBitMap) {
 				GreyToBitMap(greyBuf, gui->artBitMap);
@@ -1027,7 +1193,7 @@ static struct Gadget *MakeGadget(HelixAmp3Gui *gui, struct Gadget *prev,
 	ng.ng_Height = height;
 	ng.ng_GadgetText = (UBYTE *)label;
 	ng.ng_GadgetID = id;
-	ng.ng_TextAttr = &gui->smallTextAttr;
+	ng.ng_TextAttr = &gTopaz8Attr;
 	if (kind == BUTTON_KIND)
 		ng.ng_Flags = PLACETEXT_IN;
 	else if (kind == CHECKBOX_KIND)
@@ -1056,7 +1222,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		GUI_MARGIN_L + 48, ROW_FILE, TEXT_COL_W - 100, 16, "File:",
 		GTTX_Text, (ULONG)gui->fileText,
 		GTTX_Border, TRUE,
-		TAG_IGNORE, 0,
+		GTTX_TextAttr, (ULONG)&gTopaz8Attr,
 		TAG_IGNORE, 0);
 	if (!gad)
 		return -1;
@@ -1074,7 +1240,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		GUI_MARGIN_L + 44, ROW_TITLE, TEXT_COL_W - 44, 16, "Title:",
 		GTTX_Text, (ULONG)"-",
 		GTTX_Border, TRUE,
-		TAG_IGNORE, 0,
+		GTTX_TextAttr, (ULONG)&gTopaz8Attr,
 		TAG_IGNORE, 0);
 	if (!gad)
 		return -1;
@@ -1083,7 +1249,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		GUI_MARGIN_L + 44, ROW_ARTIST, TEXT_COL_W - 44, 16, "Artist:",
 		GTTX_Text, (ULONG)"-",
 		GTTX_Border, TRUE,
-		TAG_IGNORE, 0,
+		GTTX_TextAttr, (ULONG)&gTopaz8Attr,
 		TAG_IGNORE, 0);
 	if (!gad)
 		return -1;
@@ -1092,7 +1258,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		GUI_MARGIN_L + 44, ROW_ALBUM, TEXT_COL_W - 44, 16, "Album:",
 		GTTX_Text, (ULONG)"-",
 		GTTX_Border, TRUE,
-		TAG_IGNORE, 0,
+		GTTX_TextAttr, (ULONG)&gTopaz8Attr,
 		TAG_IGNORE, 0);
 	if (!gad)
 		return -1;
@@ -1174,7 +1340,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		GUI_MARGIN_L + 50, ROW_STATUS, GUI_WIN_W - GUI_MARGIN_L - GUI_MARGIN_R - 70, 16, "Status:",
 		GTTX_Text, (ULONG)gui->statusText,
 		GTTX_Border, TRUE,
-		TAG_IGNORE, 0,
+		GTTX_TextAttr, (ULONG)&gTopaz8Attr,
 		TAG_IGNORE, 0);
 	if (!gad)
 		return -1;
@@ -1182,10 +1348,11 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	return 0;
 }
 
+static void GuiClose(HelixAmp3Gui *gui);
+
 static int GuiOpen(HelixAmp3Gui *gui)
 {
 	struct NewWindow nw;
-	struct Screen *screen;
 
 	memset(gui, 0, sizeof(*gui));
 	gui->fastLowrate = 1;
@@ -1197,11 +1364,6 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	SafeCopy(gui->statusText, sizeof(gui->statusText), "Ready.");
 	SetFileDisplay(gui, NULL);
 
-	gui->smallTextAttr.ta_Name = (STRPTR)"topaz.font";
-	gui->smallTextAttr.ta_YSize = 8;
-	gui->smallTextAttr.ta_Style = FS_NORMAL;
-	gui->smallTextAttr.ta_Flags = 0;
-
 	IntuitionBase = (struct IntuitionBase *)OpenLibrary("intuition.library", 37);
 	if (!IntuitionBase) {
 		fprintf(stderr, "MiniAMP3 requires intuition.library V37 or newer.\n");
@@ -1210,88 +1372,23 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	AslBase = OpenLibrary("asl.library", 37);
 	if (!AslBase) {
 		fprintf(stderr, "MiniAMP3 requires asl.library V37 or newer.\n");
-		CloseLibrary((struct Library *)IntuitionBase);
-		IntuitionBase = NULL;
+		GuiClose(gui);
 		return -1;
 	}
 	GadToolsBase = OpenLibrary("gadtools.library", 37);
 	if (!GadToolsBase) {
 		fprintf(stderr, "MiniAMP3 requires gadtools.library V37 or newer.\n");
-		CloseLibrary(AslBase);
-		AslBase = NULL;
-		CloseLibrary((struct Library *)IntuitionBase);
-		IntuitionBase = NULL;
+		GuiClose(gui);
 		return -1;
 	}
 	GfxBase = (struct GfxBase *)OpenLibrary("graphics.library", 37);
 	if (!GfxBase) {
 		fprintf(stderr, "MiniAMP3 requires graphics.library V37 or newer.\n");
-		CloseLibrary(GadToolsBase);
-		GadToolsBase = NULL;
-		CloseLibrary(AslBase);
-		AslBase = NULL;
-		CloseLibrary((struct Library *)IntuitionBase);
-		IntuitionBase = NULL;
+		GuiClose(gui);
 		return -1;
 	}
-	gui->smallFont = OpenFont(&gui->smallTextAttr);
-
-	screen = LockPubScreen(NULL);
-	if (!screen) {
-		fprintf(stderr, "cannot lock Workbench screen\n");
-		if (gui->smallFont) {
-			CloseFont(gui->smallFont);
-			gui->smallFont = NULL;
-		}
-		CloseLibrary((struct Library *)GfxBase);
-		GfxBase = NULL;
-		CloseLibrary(GadToolsBase);
-		GadToolsBase = NULL;
-		CloseLibrary(AslBase);
-		AslBase = NULL;
-		CloseLibrary((struct Library *)IntuitionBase);
-		IntuitionBase = NULL;
-		return -1;
-	}
-	gui->visualInfo = GetVisualInfo(screen, TAG_DONE);
-	UnlockPubScreen(NULL, screen);
-	if (!gui->visualInfo) {
-		fprintf(stderr, "cannot create GadTools visual info\n");
-		if (gui->smallFont) {
-			CloseFont(gui->smallFont);
-			gui->smallFont = NULL;
-		}
-		CloseLibrary((struct Library *)GfxBase);
-		GfxBase = NULL;
-		CloseLibrary(GadToolsBase);
-		GadToolsBase = NULL;
-		CloseLibrary(AslBase);
-		AslBase = NULL;
-		CloseLibrary((struct Library *)IntuitionBase);
-		IntuitionBase = NULL;
-		return -1;
-	}
-
-	if (GuiCreateGadgets(gui) != 0) {
-		fprintf(stderr, "cannot create MiniAMP3 gadgets\n");
-		FreeGadgets(gui->gadgets);
-		gui->gadgets = NULL;
-		FreeVisualInfo(gui->visualInfo);
-		gui->visualInfo = NULL;
-		if (gui->smallFont) {
-			CloseFont(gui->smallFont);
-			gui->smallFont = NULL;
-		}
-		CloseLibrary((struct Library *)GfxBase);
-		GfxBase = NULL;
-		CloseLibrary(GadToolsBase);
-		GadToolsBase = NULL;
-		CloseLibrary(AslBase);
-		AslBase = NULL;
-		CloseLibrary((struct Library *)IntuitionBase);
-		IntuitionBase = NULL;
-		return -1;
-	}
+	DiskfontBase = OpenLibrary("diskfont.library", 36);
+	gui->smallFont = OpenBestFont();
 
 	memset(&nw, 0, sizeof(nw));
 	nw.LeftEdge = 40;
@@ -1305,7 +1402,7 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	nw.Flags = WFLG_CLOSEGADGET | WFLG_DRAGBAR | WFLG_DEPTHGADGET |
 		WFLG_SIZEGADGET | WFLG_SIZEBBOTTOM | WFLG_ACTIVATE |
 		WFLG_SMART_REFRESH;
-	nw.FirstGadget = gui->gadgets;
+	nw.FirstGadget = NULL;
 	nw.Title = (UBYTE *)"MiniAMP3";
 	nw.MinWidth = GUI_WIN_W;
 	nw.MinHeight = GUI_WIN_H;
@@ -1315,27 +1412,34 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	gui->win = OpenWindowTags(&nw,
 		WA_InnerWidth, GUI_WIN_W,
 		WA_InnerHeight, GUI_WIN_H,
+		WA_Font, (ULONG)&gTopaz8Attr,
 		TAG_DONE);
 	if (!gui->win) {
 		fprintf(stderr, "cannot open MiniAMP3 window\n");
-		FreeGadgets(gui->gadgets);
-		gui->gadgets = NULL;
-		FreeVisualInfo(gui->visualInfo);
-		gui->visualInfo = NULL;
-		if (gui->smallFont) {
-			CloseFont(gui->smallFont);
-			gui->smallFont = NULL;
-		}
-		CloseLibrary((struct Library *)GfxBase);
-		GfxBase = NULL;
-		CloseLibrary(GadToolsBase);
-		GadToolsBase = NULL;
-		CloseLibrary(AslBase);
-		AslBase = NULL;
-		CloseLibrary((struct Library *)IntuitionBase);
-		IntuitionBase = NULL;
+		GuiClose(gui);
 		return -1;
 	}
+	if (gui->smallFont)
+		SetFont(gui->win->RPort, gui->smallFont);
+
+	gui->visualInfo = GetVisualInfo(gui->win->WScreen,
+		GTVI_Default, TRUE,
+		TAG_DONE);
+	if (!gui->visualInfo) {
+		fprintf(stderr, "cannot create GadTools visual info\n");
+		GuiClose(gui);
+		return -1;
+	}
+	if (gui->smallFont)
+		SetFont(gui->win->RPort, gui->smallFont);
+	if (GuiCreateGadgets(gui) != 0) {
+		fprintf(stderr, "cannot create MiniAMP3 gadgets\n");
+		GuiClose(gui);
+		return -1;
+	}
+	AddGList(gui->win, gui->gadgets, (UWORD)-1, -1, NULL);
+	RefreshGList(gui->gadgets, gui->win, NULL, -1);
+
 	gui->menuStrip = CreateMenus(myNewMenus, TAG_DONE);
 	if (gui->menuStrip) {
 		LayoutMenus(gui->menuStrip, gui->visualInfo, TAG_DONE);
@@ -1428,6 +1532,10 @@ static void GuiClose(HelixAmp3Gui *gui)
 	if (gui->smallFont) {
 		CloseFont(gui->smallFont);
 		gui->smallFont = NULL;
+	}
+	if (DiskfontBase) {
+		CloseLibrary(DiskfontBase);
+		DiskfontBase = NULL;
 	}
 	if (GfxBase) {
 		CloseLibrary((struct Library *)GfxBase);
