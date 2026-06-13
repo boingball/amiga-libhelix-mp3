@@ -111,12 +111,17 @@ typedef struct HelixAmp3Gui {
 	int   playbackWasRunning;
 } HelixAmp3Gui;
 
+typedef struct HelixAmp3Args {
+	int argc;
+	char *argv[HELIXAMP3_ARGC_MAX];
+	char argvStorage[HELIXAMP3_ARGC_MAX][HELIXAMP3_MAX_PATH];
+} HelixAmp3Args;
+
 typedef struct HelixAmp3Player {
 	volatile int running;
 	volatile int stopRequested;
 	int argc;
-	char *argv[HELIXAMP3_ARGC_MAX];
-	char argvStorage[HELIXAMP3_ARGC_MAX][HELIXAMP3_MAX_PATH];
+	char **argv;
 	struct Process *process;
 } HelixAmp3Player;
 
@@ -124,6 +129,7 @@ struct IntuitionBase *IntuitionBase;
 struct Library *AslBase;
 struct Library *GadToolsBase;
 static HelixAmp3Player gGuiPlayer;
+static HelixAmp3Args gGuiArgs;
 
 static const char * const kRates[] = {
 	"8287",
@@ -960,49 +966,55 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 	FreeAslRequest(req);
 }
 
-static void AddArg(HelixAmp3Player *player, const char *text)
+static void AddArg(HelixAmp3Args *args, const char *text)
 {
-	if (player->argc >= HELIXAMP3_ARGC_MAX)
+	if (args->argc >= HELIXAMP3_ARGC_MAX)
 		return;
-	SafeCopy(player->argvStorage[player->argc], HELIXAMP3_MAX_PATH, text);
-	player->argv[player->argc] = player->argvStorage[player->argc];
-	player->argc++;
+	SafeCopy(args->argvStorage[args->argc], HELIXAMP3_MAX_PATH, text);
+	args->argv[args->argc] = args->argvStorage[args->argc];
+	args->argc++;
 }
 
-static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Player *player)
+static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Args *args)
 {
 	char num[16];
 
-	memset(player, 0, sizeof(*player));
-	AddArg(player, "amiga_mp3dec");
-	AddArg(player, "--play");
+	memset(args, 0, sizeof(*args));
+	AddArg(args, "amiga_mp3dec");
+	AddArg(args, "--play");
 	if (gui->fastMem || gui->qualityIndex == 0 || gui->qualityIndex == 1)
-		AddArg(player, "--fast-mem");
+		AddArg(args, "--fast-mem");
 	if (gui->fastLowrate)
-		AddArg(player, "--fast-lowrate");
+		AddArg(args, "--fast-lowrate");
 	if (gui->mono)
-		AddArg(player, "--mono");
-	AddArg(player, "--rate");
-	AddArg(player, kRates[gui->rateIndex]);
-	AddArg(player, "--buffer-seconds");
+		AddArg(args, "--mono");
+	AddArg(args, "--rate");
+	AddArg(args, kRates[gui->rateIndex]);
+	AddArg(args, "--buffer-seconds");
 	sprintf(num, "%d", gui->bufferSeconds);
-	AddArg(player, num);
+	AddArg(args, num);
 	if (gui->qualityIndex == 0)
-		AddArg(player, "--play-fast-path");
+		AddArg(args, "--play-fast-path");
 	if (gui->decodeThenPlay)
-		AddArg(player, "--decode-then-play");
+		AddArg(args, "--decode-then-play");
 	if (gui->bench)
-		AddArg(player, "--bench");
-	AddArg(player, gui->inputName);
-	player->argv[player->argc] = NULL;
+		AddArg(args, "--bench");
+	AddArg(args, gui->inputName);
+	args->argv[args->argc] = NULL;
 }
 
 static void PlaybackEntry(void)
 {
+	gVuActive = 0;
+	gVuPeakL = 0;
+	gVuPeakR = 0;
 	gGuiPlayer.running = 1;
 	gGuiPlayer.stopRequested = 0;
 	gPlaybackInterrupted = 0;
 	HelixAmp3CliMain(gGuiPlayer.argc, gGuiPlayer.argv);
+	gVuActive = 0;
+	gVuPeakL = 0;
+	gVuPeakR = 0;
 	gGuiPlayer.running = 0;
 	Forbid();
 	gGuiPlayer.process = NULL;
@@ -1015,14 +1027,16 @@ static void StartPlayback(HelixAmp3Gui *gui)
 		SetStatus(gui, "Browse to an MP3 first.");
 		return;
 	}
-	if (gGuiPlayer.running) {
+	if (gGuiPlayer.running || gGuiPlayer.process != NULL) {
 		SetStatus(gui, "Already playing; press Stop first.");
 		return;
 	}
 	gVuPeakL = 0;
 	gVuPeakR = 0;
 	DrawVuMeter(gui);
-	BuildPlaybackArgs(gui, &gGuiPlayer);
+	BuildPlaybackArgs(gui, &gGuiArgs);
+	gGuiPlayer.argc = gGuiArgs.argc;
+	gGuiPlayer.argv = gGuiArgs.argv;
 	gGuiPlayer.stopRequested = 0;
 	gPlaybackInterrupted = 0;
 	gGuiPlayer.process = CreateNewProcTags(NP_Entry, (ULONG)PlaybackEntry,

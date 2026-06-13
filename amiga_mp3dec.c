@@ -37,6 +37,7 @@ volatile WORD gVuPeakR = 0;
 volatile short gVuPeakL = 0;
 volatile short gVuPeakR = 0;
 #endif
+volatile int gVuActive = 0;
 
 #if defined(AMIGA_M68K)
 /* Tell AmigaOS to provide at least 250 KB of stack for this executable. */
@@ -3236,6 +3237,8 @@ static void UpdateVuPeak(const signed char *buf, int n, int stereo)
 	int peakL = 0;
 	int peakR = 0;
 
+	if (!gVuActive)
+		return;
 	if (!buf || n <= 0)
 		return;
 	if (stereo) {
@@ -3273,6 +3276,8 @@ static void UpdateVuPeakPlanar(const signed char *left, const signed char *right
 	int peakL = 0;
 	int peakR = 0;
 
+	if (!gVuActive)
+		return;
 	if (!left || !right || frames <= 0)
 		return;
 	for (i = 0; i < frames; i++) {
@@ -4629,8 +4634,11 @@ static int AmigaPlayDecodeThenPlay(InputSource *input, HMP3Decoder decoder,
 		goto cleanup;
 	}
 	printf("decode-then-play bytes: %lu\n", used);
+	gVuActive = 1;
 	err = AmigaPlayWholeBuffer(all, used, opt, stats);
+	gVuActive = 0;
 cleanup:
+	gVuActive = 0;
 	free(all);
 	all = NULL;
 	return err;
@@ -4741,6 +4749,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		}
 	}
 	if (err == 0) {
+		gVuActive = 1;
 		if (AmigaAudioCommitPlaybackBuffer(&player, 0) != 0) {
 			fprintf(stderr, "playback buffer A CMD_WRITE byte length is invalid\n");
 			err = -1;
@@ -4867,6 +4876,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		err = -1;
 	}
 cleanup:
+	gVuActive = 0;
 	AmigaAudioClose(&player, &cleanupStatus);
 	if (cleanupStatus.canaryErrors)
 		err = -1;
