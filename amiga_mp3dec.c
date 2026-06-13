@@ -495,8 +495,8 @@ static void PrintUsage(const char *prog)
 	printf("  --info       print MP3/ID3 metadata; alone, inspect without decoding\n");
 	printf("  --play       AmigaOS experimental audio.device Paula playback (mono s8)\n");
 	printf("  --stereo     opt-in experimental --play stereo output (s8 per channel)\n");
-	printf("               stereo rates: 8820, 11025, or experimental high-CPU 22050 Hz\n");
-	printf("               mono rates: 8287 default, 8820, 11025, or experimental 22050 Hz\n");
+	printf("               stereo rates: 8820, 11025, 22050, or PAL-top 28600 Hz\n");
+	printf("               mono rates: 8287 default, 8820, 11025, 22050, or PAL-top 28600 Hz\n");
 	printf("  --play-fast-path accepted alias; --play already uses reduced-overhead playback\n");
 	printf("  --decode-then-play decode whole MP3 to RAM, then play (debug for --play)\n");
 	printf("  --selftest-play-cleanup open/submit/cleanup audio.device five times\n");
@@ -505,8 +505,8 @@ static void PrintUsage(const char *prog)
 	printf("  --fast-mem   preload the compressed MP3 into Fast RAM before decoding/playback\n");
 	printf("  --decode-only decode frames only; skip PCM conversion and output\n");
 	printf("  --no-output  run conversion/compression paths but discard output bytes\n");
-	printf("  --rate HZ    output/downsample rate: 22050, 11025, 8820, or 8287 Hz\n");
-	printf("               22050 playback is experimental/high CPU and may underrun\n");
+	printf("  --rate HZ    output/downsample rate: 28600, 22050, 11025, 8820, or 8287 Hz\n");
+	printf("               28600/22050 playback is experimental/high CPU and may underrun\n");
 	printf("  --fast-lowrate lower-quality Amiga conversion; requires --rate\n");
 	printf("                 22050, 11025, 8820, or 8287 and can skip discarded synthesis samples\n");
 	printf("  --quality N set quality/speed level (0 fastest, 1 fast, 2 balanced, 3 accurate)\n");
@@ -718,8 +718,9 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			if (++i >= argc)
 				return -1;
 			opt->outputRate = atoi(argv[i]);
-			if (opt->outputRate != 22050 && opt->outputRate != 11025 &&
-				opt->outputRate != 8820 && opt->outputRate != 8287)
+			if (opt->outputRate != 28600 && opt->outputRate != 22050 &&
+				opt->outputRate != 11025 && opt->outputRate != 8820 &&
+				opt->outputRate != 8287)
 				return -1;
 		} else if (!strcmp(argv[i], "--debug-fastlowrate")) {
 			opt->debugFastLowrate = 1;
@@ -778,18 +779,20 @@ if (opt->selftestMulshift ||
 		opt->outputRate = opt->stereo ? 8820 : 8287;
 
 	if (opt->play && opt->outputRate != 8287 && opt->outputRate != 8820 &&
-		opt->outputRate != 11025 && opt->outputRate != 22050) {
-		fprintf(stderr, "--play supports --rate 8287, 8820, 11025, or 22050 only\n");
+		opt->outputRate != 11025 && opt->outputRate != 22050 &&
+		opt->outputRate != 28600) {
+		fprintf(stderr, "--play supports --rate 8287, 8820, 11025, 22050, or 28600 only\n");
 		return -1;
 	}
 	if (opt->stereo && opt->outputRate == 8287) {
-		fprintf(stderr, "--stereo supports --rate 8820, 11025, or experimental 22050 only\n");
+		fprintf(stderr, "--stereo supports --rate 8820, 11025, 22050, or PAL-top 28600 only\n");
 		return -1;
 	}
 	if (opt->play) {
 		opt->mono = opt->stereo ? 0 : 1;
 		opt->outFormat = OUT_S8;
-		opt->fastLowrate = 1;
+		if (opt->outputRate != 28600)
+			opt->fastLowrate = 1;
 		opt->noOutput = 1;
 	}
 
@@ -5248,6 +5251,9 @@ int main(int argc, char **argv)
 			"this build still generates full polyphase output before decimation\n");
 #endif
 	}
+	if (opt.play && opt.outputRate == 28600)
+		fprintf(stderr,
+			"28600 PAL-top playback uses normal post-decode decimation and may underrun on 030 systems.\n");
 
 	if (opt.play) {
 		int playErr;

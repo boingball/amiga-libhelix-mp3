@@ -261,7 +261,8 @@ static const char * const kRates[] = {
 	"8287",
 	"8820",
 	"11025",
-	"22050"
+	"22050",
+	"28600"
 };
 
 static const STRPTR kRateLabels[] = {
@@ -269,6 +270,7 @@ static const STRPTR kRateLabels[] = {
 	(STRPTR)"8820",
 	(STRPTR)"11025",
 	(STRPTR)"22050",
+	(STRPTR)"28600",
 	NULL
 };
 
@@ -1792,7 +1794,7 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	gui->fastLowrate = LoadEnvInt("FastLowrate", 1, 0, 1);
 	gui->fastMem = LoadEnvInt("FastMem", 1, 0, 1);
 	gui->mono = LoadEnvInt("Mono", 1, 0, 1);
-	gui->rateIndex = LoadEnvInt("RateIndex", 2, 0, 3);
+	gui->rateIndex = LoadEnvInt("RateIndex", 2, 0, 4);
 	gui->bufferSeconds = LoadEnvInt("BufferSeconds", 10, 1, 30);
 	gui->qualityIndex = LoadEnvInt("QualityIndex", 0, 0, 2);
 	gui->decodeThenPlay = LoadEnvInt("DecodeThenPlay", 0, 0, 1);
@@ -2059,7 +2061,7 @@ static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Args *args)
 	AddArg(args, "--play");
 	if (gui->fastMem || gui->qualityIndex == 0 || gui->qualityIndex == 1)
 		AddArg(args, "--fast-mem");
-	if (gui->fastLowrate)
+	if (gui->fastLowrate && strcmp(kRates[gui->rateIndex], "28600"))
 		AddArg(args, "--fast-lowrate");
 	if (gui->mono)
 		AddArg(args, "--mono");
@@ -2248,7 +2250,7 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code)
 		break;
 	case GID_RATE:
 		gui->rateIndex = code;
-		if (gui->rateIndex < 0 || gui->rateIndex > 3)
+		if (gui->rateIndex < 0 || gui->rateIndex > 4)
 			gui->rateIndex = 2;
 		SetStatus(gui, "Output sample rate updated.");
 		SaveGuiSettings(gui);

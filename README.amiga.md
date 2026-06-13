@@ -129,7 +129,7 @@ The quality cycle maps to the same playback code used by `amiga_mp3dec`:
   input preload.
 
 The buffer slider chooses the `--buffer-seconds` value from 1 to 30 seconds, and
-the rate selector cycles through 8287, 8820, 11025, and 22050 Hz. Playback still
+the rate selector cycles through 8287, 8820, 11025, 22050, and 28600 Hz. Playback still
 uses the Paula streaming implementation inside `amiga_mp3dec`, so Stop requests
 the same interrupt flag used by Shell playback and exits after the streaming
 loop notices the request.
@@ -144,7 +144,7 @@ source while reusing the public decoder and Paula playback implementation.
 ```sh
 amiga_mp3dec [options] infile.mp3 outfile
 amiga_mp3dec --info infile.mp3
-amiga_mp3dec --play [--stereo] [--rate 8287|8820|11025|22050] [--quality 0|1|2|3] [--buffer-seconds N] [--fast-mem] infile.mp3
+amiga_mp3dec --play [--stereo] [--rate 8287|8820|11025|22050|28600] [--quality 0|1|2|3] [--buffer-seconds N] [--fast-mem] infile.mp3
 amiga_mp3dec --selftest-play-cleanup [--debug-cleanup] [--buffer-seconds N]
 ```
 
@@ -175,14 +175,16 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   68030 testing. It opens `audio.device`, decodes to mono signed 8-bit PCM into
   Fast RAM work buffers, and bulk-copies each completed half-buffer into the
   chip-memory buffers submitted to `audio.device`. The default playback rate is
-  8287 Hz for 030 safety; `--rate 8820` and `--rate 11025` are accepted, and `--rate 22050`
-  is also accepted as an experimental/high-CPU mono-first mode that may underrun
-  on 030 systems. Playback rates imply `--fast-lowrate`; 22050 Hz fast-lowrate
+  8287 Hz for 030 safety; `--rate 8820` and `--rate 11025` are accepted,
+  `--rate 22050` is accepted as an experimental/high-CPU mono-first mode that
+  may underrun on 030 systems, and `--rate 28600` selects the PAL-top Paula
+  mode. Playback rates up to 22050 Hz imply `--fast-lowrate`; 28600 Hz uses normal
+  post-decode decimation because it is not an integer fast-lowrate stride. 22050 Hz fast-lowrate
   playback prints `22050 requires significantly more CPU and may underrun on
   030 systems.`
   Playback prints the requested and actual output rates when fixed stride output
   differs, and calculates the PAL audio period from the actual output rate using
-  rounded `3546895 / actual_output_rate` ticks, so 22050 Hz uses period 161.
+  rounded `3546895 / actual_output_rate` ticks, so 22050 Hz uses period 161 and 28600 Hz uses period 124.
   Playback automatically uses the reduced-
   overhead fast path: checksums run only with `--checksum`, timing buckets and
   decode-core profiling run only with `--bench`, and export/8SVX/Fibonacci state
@@ -196,7 +198,8 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   8-bit Fast RAM work buffers, and uses one bulk copy per channel into the
   Paula chip-memory submission buffers when each half-buffer is submitted. Stereo
   supports `--rate 8820` and `--rate 11025` first; `--rate 22050` is allowed
-  only as an experimental/high-CPU stereo mode. `--rate 8287` is mono-only.
+  as an experimental/high-CPU stereo mode, and `--rate 28600` is available as
+  the PAL-top Paula mode. `--rate 8287` is mono-only.
   Enabling stereo prints `Stereo playback needs significantly more CPU and may
   underrun on 030.`
 - `--play-fast-path` is accepted as an explicit alias for `--play`; the normal
@@ -258,7 +261,7 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
 - `--no-output` runs PCM conversion/downsampling and 8SVX/Fibonacci compression
   paths but discards bytes instead of touching an output file.  The output path
   argument is optional in this mode.
-- `--rate 22050`, `--rate 11025`, `--rate 8820`, or `--rate 8287` post-decode downsamples the
+- `--rate 28600`, `--rate 22050`, `--rate 11025`, `--rate 8820`, or `--rate 8287` post-decode downsamples the
   output with a lightweight nearest-sample decimator when the MP3 sample rate is
   higher than the requested output rate.
 - `--fast-lowrate` is a lower-quality Amiga conversion mode for speed-oriented
