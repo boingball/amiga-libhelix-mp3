@@ -108,6 +108,7 @@ typedef struct HelixAmp3Gui {
 	int   decodeThenPlay;
 	int   bench;
 	int   closeRequested;
+	int   playbackWasRunning;
 } HelixAmp3Gui;
 
 typedef struct HelixAmp3Player {
@@ -505,13 +506,32 @@ static void SendTimerRequest(HelixAmp3Gui *gui, ULONG micros)
 
 static void HandleTimerSignal(HelixAmp3Gui *gui)
 {
+	int wasRunning;
+	int stoppedByUser;
+
 	if (!gui->timerReq)
 		return;
 	while (GetMsg(gui->timerPort))
 		;
 	gui->timerPending = 0;
-	DrawVuMeter(gui);
-	DecayVuMeter();
+
+	wasRunning = gui->playbackWasRunning;
+	gui->playbackWasRunning = gGuiPlayer.running;
+	if (wasRunning && !gGuiPlayer.running) {
+		stoppedByUser = gGuiPlayer.stopRequested;
+		gVuPeakL = 0;
+		gVuPeakR = 0;
+		DrawVuMeter(gui);
+		SetStatus(gui, stoppedByUser ?
+			"Stopped." : "Playback finished.");
+		if (stoppedByUser)
+			gGuiPlayer.stopRequested = 0;
+	}
+
+	if (gGuiPlayer.running) {
+		DrawVuMeter(gui);
+		DecayVuMeter();
+	}
 	SendTimerRequest(gui, 100000UL);
 }
 
@@ -1003,6 +1023,8 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	gVuPeakR = 0;
 	DrawVuMeter(gui);
 	BuildPlaybackArgs(gui, &gGuiPlayer);
+	gGuiPlayer.stopRequested = 0;
+	gPlaybackInterrupted = 0;
 	gGuiPlayer.process = CreateNewProcTags(NP_Entry, (ULONG)PlaybackEntry,
 		NP_Name, (ULONG)"MiniAMP3 playback",
 		NP_StackSize, 262144,
@@ -1011,7 +1033,7 @@ static void StartPlayback(HelixAmp3Gui *gui)
 		SetStatus(gui, "Cannot start playback process.");
 		return;
 	}
-	gGuiPlayer.running = 1;
+	gui->playbackWasRunning = 1;
 	SetStatus(gui, gui->decodeThenPlay ?
 		"Decoding to RAM, then playing..." :
 		"Streaming playback started.");
@@ -1022,8 +1044,9 @@ static void StopPlayback(HelixAmp3Gui *gui)
 	gVuPeakL = 0;
 	gVuPeakR = 0;
 	DrawVuMeter(gui);
-	if (!gGuiPlayer.running) {
-		SetStatus(gui, "Nothing is playing.");
+	if (!gGuiPlayer.running || gGuiPlayer.stopRequested) {
+		SetStatus(gui, gGuiPlayer.stopRequested ?
+			"Stopping..." : "Nothing is playing.");
 		return;
 	}
 	gGuiPlayer.stopRequested = 1;
