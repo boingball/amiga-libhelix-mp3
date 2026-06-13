@@ -44,6 +44,7 @@
 #define HELIXAMP3_MAX_PATH 256
 #define HELIXAMP3_ARGC_MAX 18
 #define HELIXAMP3_SIGMASK(gui) (1UL << (gui)->win->UserPort->mp_SigBit)
+#define GUI_ENV_PREFIX  "ENVARC:MiniAMP3"
 
 #define GUI_WIN_W       560    /* inner width; wide enough for all controls */
 #define GUI_WIN_H       260    /* inner height */
@@ -154,6 +155,7 @@ typedef struct HelixAmp3Gui {
 	struct Gadget  *gadStop;
 	struct VisualInfo *visualInfo;
 	struct Menu *menuStrip;
+	int artEnabled;
 	int artValid;
 	int artLoading;
 	unsigned char artGreyBuf[ART_W * ART_H];
