@@ -116,6 +116,21 @@ int MP3ExperimentalFDCT32QuarterEnabled(void)
 	return 0;
 #endif
 }
+
+void AmigaResetPolyphaseStatics(void)
+{
+	/* The synthesis FIFO lives in SubbandInfo and is freshly allocated by
+	 * MP3InitDecoder().  Reset the file-scope runtime controls too so an
+	 * in-process GUI playback starts from the same polyphase state each time.
+	 */
+	gExperimentalPolyphaseEnabled = 0;
+#if defined(AMIGA_FAST_REDUCED_TAPS)
+	gExperimentalReducedTapsEnabled = 0;
+#endif
+#if defined(AMIGA_FAST_FDCT32_QUARTER)
+	gExperimentalFDCT32QuarterEnabled = 0;
+#endif
+}
 #else
 void MP3SetExperimentalPolyphase(int enabled)
 {
@@ -145,6 +160,10 @@ void MP3SetExperimentalFDCT32Quarter(int enabled)
 int MP3ExperimentalFDCT32QuarterEnabled(void)
 {
 	return 0;
+}
+
+void AmigaResetPolyphaseStatics(void)
+{
 }
 #endif
 

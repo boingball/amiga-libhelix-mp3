@@ -3664,6 +3664,24 @@ static void PlaybackSignalHandler(int signum)
 }
 #endif
 
+int MP3ResetStatics(void)
+{
+	extern void AmigaResetPolyphaseStatics(void);
+
+	/* MiniAMP3 calls the CLI main() repeatedly in one GUI process.  Clear
+	 * frontend globals and decoder file-scope controls so each playback starts
+	 * from the same state as a fresh command-line process.
+	 *
+	 * The current Helix synthesis and IMDCT overlap buffers are allocated inside
+	 * MP3DecInfo by MP3InitDecoder(), so they are already fresh per decode.
+	 */
+	gPlaybackInterrupted = 0;
+	gTiming = NULL;
+	MP3SetExperimentalHuffman(0);
+	AmigaResetPolyphaseStatics();
+	return 0;
+}
+
 typedef struct PlaybackCleanupStatus {
 	unsigned long ioCompleted;
 	unsigned long ioAborted;

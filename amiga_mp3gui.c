@@ -1003,11 +1003,19 @@ static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Args *args)
 	args->argv[args->argc] = NULL;
 }
 
+static void ResetDecoderStatics(void)
+{
+	extern int MP3ResetStatics(void);
+
+	MP3ResetStatics();
+}
+
 static void PlaybackEntry(void)
 {
 	gVuActive = 0;
 	gVuPeakL = 0;
 	gVuPeakR = 0;
+	ResetDecoderStatics();
 	gGuiPlayer.running = 1;
 	gGuiPlayer.stopRequested = 0;
 	gPlaybackInterrupted = 0;
@@ -1023,6 +1031,10 @@ static void PlaybackEntry(void)
 
 static void StartPlayback(HelixAmp3Gui *gui)
 {
+	BPTR dirLock;
+	BPTR nilOut;
+	struct Process *thisProc;
+
 	if (!gui->inputName[0]) {
 		SetStatus(gui, "Browse to an MP3 first.");
 		return;
@@ -1039,11 +1051,37 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	gGuiPlayer.argv = gGuiArgs.argv;
 	gGuiPlayer.stopRequested = 0;
 	gPlaybackInterrupted = 0;
-	gGuiPlayer.process = CreateNewProcTags(NP_Entry, (ULONG)PlaybackEntry,
-		NP_Name, (ULONG)"MiniAMP3 playback",
-		NP_StackSize, 262144,
-		TAG_DONE);
+
+	/* Give each playback process its own current-directory lock so relative
+	 * paths remain resolvable across Stop/Play cycles.  DupLock(NULL) is safe
+	 * and keeps the child behavior unchanged when no current directory exists.
+	 */
+	thisProc = (struct Process *)FindTask(NULL);
+	dirLock = DupLock(thisProc ? thisProc->pr_CurrentDir : (BPTR)0);
+	nilOut = Open((STRPTR)"NIL:", MODE_NEWFILE);
+
+	if (nilOut) {
+		gGuiPlayer.process = CreateNewProcTags(NP_Entry, (ULONG)PlaybackEntry,
+			NP_Name, (ULONG)"MiniAMP3 playback",
+			NP_StackSize, 262144,
+			NP_CurrentDir, dirLock,
+			NP_Output, nilOut,
+			NP_CloseOutput, TRUE,
+			NP_CopyVars, FALSE,
+			TAG_DONE);
+	} else {
+		gGuiPlayer.process = CreateNewProcTags(NP_Entry, (ULONG)PlaybackEntry,
+			NP_Name, (ULONG)"MiniAMP3 playback",
+			NP_StackSize, 262144,
+			NP_CurrentDir, dirLock,
+			NP_CopyVars, FALSE,
+			TAG_DONE);
+	}
 	if (!gGuiPlayer.process) {
+		if (nilOut)
+			Close(nilOut);
+		if (dirLock)
+			UnLock(dirLock);
 		SetStatus(gui, "Cannot start playback process.");
 		return;
 	}
