@@ -204,6 +204,7 @@ typedef struct HelixAmp3Gui {
 	int   elapsedSecs;
 	int   launchBufferSecs;
 	unsigned long lastUnderrunCount;   /* last underrun count seen from IPC */
+	long          lastDisplayedSpareMs; /* spare ms last shown in status bar */
 } HelixAmp3Gui;
 
 typedef struct HelixAmp3Args {
@@ -1463,20 +1464,25 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 			}
 			break;
 		case GUIPLAY_PHASE_PLAYING: {
-			char buf[64];
-			if (gui->lastUnderrunCount > 0)
-				sprintf(buf, "Playing (%lu underruns, %ldms spare)",
-					underruns, spareMs);
-			else
-				sprintf(buf, "Playing (%ldms spare)", spareMs);
-			SetStatus(gui, buf);
+			long delta = spareMs - gui->lastDisplayedSpareMs;
+			if (delta < 0)
+				delta = -delta;
+			if (delta > 50 || gui->lastUnderrunCount != underruns) {
+				char buf[64];
+				gui->lastDisplayedSpareMs = spareMs;
+				if (gui->lastUnderrunCount > 0)
+					sprintf(buf, "Playing (%lu underruns, %ldms spare)",
+						underruns, spareMs);
+				else
+					sprintf(buf, "Playing (%ldms spare)", spareMs);
+				SetStatus(gui, buf);
+			}
 			break;
 		}
 		default:
 			break;
 		}
 
-		DrawProgress(gui);
 	}
 	PumpArtDecode(gui);
 	SendTimerRequest(gui, gui->artDecode.active ? ART_TIMER_MICROS :
@@ -2107,6 +2113,7 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	DrawArtPanel(gui);
 	gui->elapsedSecs = 0;
 	gui->lastUnderrunCount = 0;
+	gui->lastDisplayedSpareMs = 0;
 	/* Zero the IPC block so stale data from a previous run is not visible
 	 * before the new subprocess writes its first update. */
 	memset((void *)&gGuiPlaybackStatus, 0, sizeof(gGuiPlaybackStatus));
