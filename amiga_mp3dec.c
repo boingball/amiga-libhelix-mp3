@@ -20,7 +20,9 @@
 #include <exec/io.h>
 #include <exec/ports.h>
 #include <devices/audio.h>
+#include <dos/dos.h>
 #include <proto/exec.h>
+#include <proto/dos.h>
 #ifndef AUDIONAME
 #define AUDIONAME "audio.device"
 #endif
@@ -191,6 +193,10 @@ typedef struct Mp3InputInfo {
 
 typedef struct InputSource {
 	FILE *file;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	BPTR amigaFile;
+	int useAmigaDos;
+#endif
 	unsigned char *memory;
 	unsigned long memorySize;
 	unsigned long memoryPos;
@@ -198,6 +204,9 @@ typedef struct InputSource {
 } InputSource;
 
 static void InputSourceInit(InputSource *input, FILE *file);
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+static void InputSourceInitAmigaDos(InputSource *input, BPTR amigaFile);
+#endif
 static int InputSourcePrepareMp3(InputSource *input);
 
 typedef struct DecodeStats {
@@ -1166,12 +1175,28 @@ static void InputSourceInit(InputSource *input, FILE *file)
 	input->file = file;
 }
 
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+static void InputSourceInitAmigaDos(InputSource *input, BPTR amigaFile)
+{
+	memset(input, 0, sizeof(*input));
+	input->amigaFile = amigaFile;
+	input->useAmigaDos = amigaFile ? 1 : 0;
+}
+#endif
+
 static void InputSourceClose(InputSource *input)
 {
 	FreeFastInputMemory(input->memory, input->memorySize);
 	input->memory = NULL;
 	input->memorySize = 0;
 	input->memoryPos = 0;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	if (input->useAmigaDos && input->amigaFile) {
+		Close(input->amigaFile);
+		input->amigaFile = (BPTR)0;
+	}
+	input->useAmigaDos = 0;
+#endif
 }
 
 static void CloseInputFile(FILE **file, int debugCleanup)
@@ -1198,6 +1223,18 @@ static size_t InputSourceRead(InputSource *input, void *dest, size_t bytes)
 		}
 		return bytes;
 	}
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	if (input->useAmigaDos) {
+		LONG nRead;
+
+		if (!input->amigaFile || bytes == 0)
+			return 0;
+		if (bytes > (size_t)2147483647L)
+			bytes = (size_t)2147483647L;
+		nRead = Read(input->amigaFile, dest, (LONG)bytes);
+		return nRead < 0 ? 0 : (size_t)nRead;
+	}
+#endif
 	return fread(dest, 1, bytes, input->file);
 }
 
@@ -1205,6 +1242,12 @@ static unsigned long InputSourceTell(const InputSource *input)
 {
 	if (input->memory)
 		return input->memoryPos;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	if (input->useAmigaDos) {
+		LONG pos = input->amigaFile ? Seek(input->amigaFile, 0, OFFSET_CURRENT) : -1;
+		return pos < 0 ? 0UL : (unsigned long)pos;
+	}
+#endif
 	{
 		long pos = ftell(input->file);
 		return pos < 0 ? 0UL : (unsigned long)pos;
@@ -1216,7 +1259,15 @@ static void InputSourceSeek(InputSource *input, unsigned long pos)
 	if (input->memory) {
 		input->memoryPos = pos <= input->memorySize ? pos : input->memorySize;
 	} else {
-		fseek(input->file, (long)pos, SEEK_SET);
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+		if (input->useAmigaDos) {
+			if (input->amigaFile)
+				Seek(input->amigaFile, (LONG)pos, OFFSET_BEGINNING);
+		} else
+#endif
+		{
+			fseek(input->file, (long)pos, SEEK_SET);
+		}
 	}
 }
 
@@ -1225,7 +1276,36 @@ static int InputSourcePreloadFastMemory(InputSource *input)
 	long fileSize;
 	unsigned char *memory;
 	size_t nRead;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	if (input->useAmigaDos) {
+		LONG endPos;
 
+		if (!input->amigaFile)
+			return -1;
+		endPos = Seek(input->amigaFile, 0, OFFSET_END);
+		if (endPos <= 0 || (unsigned long)endPos > (unsigned long)(size_t)-1) {
+			Seek(input->amigaFile, 0, OFFSET_BEGINNING);
+			return -1;
+		}
+		fileSize = endPos;
+		if (Seek(input->amigaFile, 0, OFFSET_BEGINNING) < 0)
+			return -1;
+		memory = (unsigned char *)AllocFastInputMemory((unsigned long)fileSize);
+		if (!memory)
+			return -1;
+		nRead = InputSourceRead(input, memory, (size_t)fileSize);
+		if (nRead != (size_t)fileSize) {
+			FreeFastInputMemory(memory, (unsigned long)fileSize);
+			Seek(input->amigaFile, 0, OFFSET_BEGINNING);
+			return -1;
+		}
+		input->memory = memory;
+		input->memorySize = (unsigned long)fileSize;
+		input->memoryPos = 0;
+		printf("fast-mem input preload: %lu bytes\n", input->memorySize);
+		return 0;
+	}
+#endif
 	if (fseek(input->file, 0, SEEK_END) != 0)
 		return -1;
 	fileSize = ftell(input->file);
@@ -3624,6 +3704,8 @@ typedef struct GuiPlaybackStatus {
 #define GUISTART_CHILD_ENTERED         10
 #define GUISTART_ARGS_READY            20
 #define GUISTART_INPUT_OPEN            30
+#define GUISTART_INPUT_FOPEN_BEFORE    31
+#define GUISTART_INPUT_FOPEN_AFTER     32
 #define GUISTART_INPUT_PREPARE         40
 #define GUISTART_DECODER_ALLOC         50
 #define GUISTART_DECODER_CONFIG        60
@@ -3658,6 +3740,8 @@ const char *GuiStartupStageName(int stage)
 	case GUISTART_CHILD_ENTERED: return "child entered";
 	case GUISTART_ARGS_READY: return "args ready";
 	case GUISTART_INPUT_OPEN: return "input open";
+	case GUISTART_INPUT_FOPEN_BEFORE: return "input fopen before";
+	case GUISTART_INPUT_FOPEN_AFTER: return "input fopen after";
 	case GUISTART_INPUT_PREPARE: return "input prepare";
 	case GUISTART_DECODER_ALLOC: return "decoder alloc";
 	case GUISTART_DECODER_CONFIG: return "decoder config";
@@ -3692,28 +3776,37 @@ GuiPlaybackStatus gGuiPlaybackStatus;
 
 static void GuiPublishStartupStage(int stage)
 {
-	FILE *log;
 	gGuiPlaybackStatus.startupStage = stage;
-	log = fopen("T:MiniAMP3-startup.log", "a");
-	if (!log)
-		log = fopen("MiniAMP3-startup.log", "a");
-	if (log) {
-		fprintf(log,
+#if defined(AMIGA_M68K) && defined(HAVE_AMIGA_AUDIO_DEVICE)
+	{
+		BPTR log;
+		char line[320];
+		int len;
+
+		len = sprintf(line,
 			"runId=%lu stage=%d name=%s requestedRate=%d effectiveRate=%d period=%u requestedBytes=%lu tryBytes=%lu openDeviceResult=%d interrupted=%d task=%p process=%p\n",
 			gGuiPlaybackStatus.runId, stage, GuiStartupStageName(stage),
 			gGuiPlaybackStatus.requestedRate, gGuiPlaybackStatus.effectiveRate,
 			gGuiPlaybackStatus.paulaPeriod, gGuiPlaybackStatus.requestedBytes,
 			gGuiPlaybackStatus.tryBytes, gGuiPlaybackStatus.openDeviceResult,
-			gPlaybackInterrupted,
-#if defined(AMIGA_M68K) && defined(HAVE_AMIGA_AUDIO_DEVICE)
-			(void *)FindTask(NULL), (void *)FindTask(NULL)
-#else
-			(void *)0, (void *)0
-#endif
-		);
-		fflush(log);
-		fclose(log);
+			gPlaybackInterrupted, (void *)FindTask(NULL), (void *)FindTask(NULL));
+		log = Open((STRPTR)"T:MiniAMP3-startup.log", MODE_READWRITE);
+		if (log) {
+			Seek(log, 0, OFFSET_END);
+			Write(log, line, len);
+			Close(log);
+		}
 	}
+#else
+	{
+		FILE *log = fopen("MiniAMP3-startup.log", "a");
+		if (log) {
+			fprintf(log, "runId=%lu stage=%d name=%s\n",
+				gGuiPlaybackStatus.runId, stage, GuiStartupStageName(stage));
+			fclose(log);
+		}
+	}
+#endif
 }
 
 #if !defined(AMIGA_M68K)
@@ -5187,6 +5280,9 @@ int main(int argc, char **argv)
 	short writeBuf[OUTBUF_SAMPS];
 	short rateBuf[OUTBUF_SAMPS];
 	FILE *infile;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	BPTR amigaInputFile;
+#endif
 	InputSource input;
 	FILE *outfile;
 	HMP3Decoder decoder;
@@ -5207,6 +5303,11 @@ int main(int argc, char **argv)
 	char *resolvedOutName;
 
 	resolvedOutName = NULL;
+	infile = NULL;
+	outfile = NULL;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	amigaInputFile = (BPTR)0;
+#endif
 
 	if (AmigaNormalizeArgs(argc, argv, &normalized) != 0) {
 		fprintf(stderr, "cannot normalize command arguments\n");
@@ -5374,15 +5475,34 @@ int main(int argc, char **argv)
 
 	GuiPublishStartupStage(GUISTART_INPUT_OPEN);
 	gGuiPlaybackStatus.requestedRate = opt.outputRate;
-	infile = fopen(opt.inName, "rb");
-	if (!infile) {
-		fprintf(stderr, "cannot open input: %s\n", opt.inName);
-		free(resolvedOutName);
-		AmigaFreeNormalizedArgs(&normalized);
-		return 1;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	if (opt.play) {
+		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_BEFORE);
+		amigaInputFile = Open((STRPTR)opt.inName, MODE_OLDFILE);
+		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_AFTER);
+		if (!amigaInputFile) {
+			fprintf(stderr, "cannot open input: %s\n", opt.inName);
+			free(resolvedOutName);
+			AmigaFreeNormalizedArgs(&normalized);
+			return 1;
+		}
+		InputSourceInitAmigaDos(&input, amigaInputFile);
+		amigaInputFile = (BPTR)0;
+	} else
+#endif
+	{
+		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_BEFORE);
+		infile = fopen(opt.inName, "rb");
+		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_AFTER);
+		if (!infile) {
+			fprintf(stderr, "cannot open input: %s\n", opt.inName);
+			free(resolvedOutName);
+			AmigaFreeNormalizedArgs(&normalized);
+			return 1;
+		}
+		InputSourceInit(&input, infile);
 	}
-	InputSourceInit(&input, infile);
-	if (opt.info) {
+	if (opt.info && infile) {
 		PrintMp3Info(infile, opt.inName);
 		if (!opt.play && !opt.outName) {
 			CloseInputFile(&infile, opt.debugCleanup);
@@ -5393,6 +5513,7 @@ int main(int argc, char **argv)
 	}
 	if (opt.fastMem && InputSourcePreloadFastMemory(&input) != 0) {
 		fprintf(stderr, "cannot preload input into Fast RAM: %s\n", opt.inName);
+		InputSourceClose(&input);
 		CloseInputFile(&infile, opt.debugCleanup);
 		free(resolvedOutName);
 		AmigaFreeNormalizedArgs(&normalized);
