@@ -228,6 +228,8 @@ typedef struct HelixAmp3Gui {
 	int   bench;
 	int   closeRequested;
 	int   playbackActive;
+	int   playbackDonePending;
+	int   playbackStoppedByUser;
 	int   totalSecs;
 	int   elapsedSecs;
 	int   launchBufferSecs;
@@ -1688,6 +1690,34 @@ static void SendTimerRequest(HelixAmp3Gui *gui, ULONG micros)
 	gui->timerIsArt = (micros == ART_TIMER_MICROS);
 }
 
+static int PlaybackProcessStillExists(void)
+{
+	struct Task *task;
+
+	/* The child posts its done message just before returning from PlaybackEntry.
+	 * Do not launch another decoder until DOS has actually removed that task. */
+	Forbid();
+	task = FindTask((STRPTR)"MiniAMP3 playback");
+	Permit();
+	return task != NULL;
+}
+
+static void FinalizePlayback(HelixAmp3Gui *gui)
+{
+	int stoppedByUser = gui->playbackStoppedByUser;
+
+	gui->playbackDonePending = 0;
+	gui->playbackStoppedByUser = 0;
+	gui->playbackActive = 0;
+	gGuiPlayer.process = NULL;
+	gDonePort = NULL;
+	if (gui->totalSecs > 0 && !stoppedByUser)
+		gui->elapsedSecs = gui->totalSecs + gui->launchBufferSecs;
+	DrawProgress(gui);
+	SetStatus(gui, stoppedByUser ? "Stopped." : "Playback finished.");
+	gGuiPlayer.stopRequested = 0;
+}
+
 static void HandleTimerSignal(HelixAmp3Gui *gui)
 {
 	int expiredWasArt;
@@ -1700,14 +1730,10 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 	gui->timerPending = 0;
 	gui->timerIsArt = 0;
 
-	if (gui->playbackActive && !gGuiPlayer.process) {
-		/* The playback task can finish between GUI waits; recover the UI state
-		 * on the next timer tick even if the done signal was missed or coalesced.
-		 */
-		HandleDoneSignal(gui);
-	}
+	if (gui->playbackDonePending && !PlaybackProcessStillExists())
+		FinalizePlayback(gui);
 
-	if (gui->playbackActive && !expiredWasArt) {
+	if (gui->playbackActive && !gui->playbackDonePending && !expiredWasArt) {
 		int phase = gGuiPlaybackStatus.phase;
 		unsigned long frames = gGuiPlaybackStatus.decodedFrames;
 		int rate = gGuiPlaybackStatus.sampleRate;
@@ -1781,23 +1807,27 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 static void HandleDoneSignal(HelixAmp3Gui *gui)
 {
 	struct Message *msg;
-	int stoppedByUser;
+	int gotDone;
 
 	if (!gui->donePort)
 		return;
-	while ((msg = GetMsg(gui->donePort)) != NULL)
-		;
 
-	stoppedByUser = gGuiPlayer.stopRequested;
-	gui->playbackActive = 0;
-	gGuiPlayer.process = NULL;
-	gDonePort = NULL;
-	if (gui->totalSecs > 0)
-		gui->elapsedSecs = gui->totalSecs + gui->launchBufferSecs;
-	DrawProgress(gui);
-	SetStatus(gui, stoppedByUser ? "Stopped." : "Playback finished.");
-	if (stoppedByUser)
-		gGuiPlayer.stopRequested = 0;
+	gotDone = 0;
+	while ((msg = GetMsg(gui->donePort)) != NULL)
+		gotDone = 1;
+	if (!gotDone)
+		return;
+
+	/* HelixAmp3CliMain() has returned, but the child has not necessarily
+	 * finished its DOS/runtime teardown yet.  Keep Play locked until the
+	 * playback task itself has disappeared. */
+	gui->playbackStoppedByUser = gGuiPlayer.stopRequested ? 1 : 0;
+	gui->playbackDonePending = 1;
+	SetStatus(gui, gui->playbackStoppedByUser ?
+		"Stopping playback process..." : "Finishing playback process...");
+
+	if (!PlaybackProcessStillExists())
+		FinalizePlayback(gui);
 }
 
 static void GuiRefresh(HelixAmp3Gui *gui)
@@ -1944,7 +1974,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gad = MakeGadget(gui, gad, TEXT_KIND, GID_RATING_LABEL,
-		GUI_MARGIN_L + 54, ROW_RATING, 1, 16, "Rating:",
+		GUI_MARGIN_L + 60, ROW_RATING, 1, 16, "Rating:",
 		GTTX_Text, (ULONG)"",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -2441,6 +2471,25 @@ static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Args *args)
 	args->argv[args->argc] = NULL;
 }
 
+/* HelixAmp3CliMain() is a renamed command-line main() and is invoked more
+ * than once by the GUI.  The C runtime getopt parser is process-global, so
+ * after the first invocation optind normally points at argc.  Without
+ * resetting it, the second invocation can skip all options and the filename,
+ * leaving the GUI believing that a playback child is alive while no audio is
+ * actually started. */
+extern int optind;
+extern int opterr;
+extern int optopt;
+extern char *optarg;
+
+static void ResetCliParser(void)
+{
+	optind = 1;
+	opterr = 0;
+	optopt = 0;
+	optarg = NULL;
+}
+
 static void ResetDecoderStatics(void)
 {
 	extern int MP3ResetStatics(void);
@@ -2461,14 +2510,30 @@ static void PlaybackEntry(void)
 	 * run while the GUI is stuck in "Stopping...".
 	 */
 	stopBeforeStart = gGuiPlayer.stopRequested;
+
+	/* A freshly-created Process can inherit a pending Ctrl-C condition from
+	 * DOS startup/runtime handling.  Clear only our playback interrupt bit
+	 * before entering the decoder; StopPlayback() can set it again afterwards. */
+	SetSignal(0, SIGBREAKF_CTRL_C);
+	ResetCliParser();
 	ResetDecoderStatics();
-	if (stopBeforeStart)
+
+	/* MP3ResetStatics() may also touch command-line/playback globals in some
+	 * decoder revisions, so establish the parser's initial state immediately
+	 * before calling the renamed main() as well. */
+	ResetCliParser();
+
+	/* Stop may arrive while ResetDecoderStatics() is running.  Re-check the
+	 * shared request afterwards so the reset cannot erase an early Stop. */
+	if (stopBeforeStart || gGuiPlayer.stopRequested)
 		gPlaybackInterrupted = 1;
 	else
 		HelixAmp3CliMain(gGuiPlayer.argc, gGuiPlayer.argv);
+
+	/* Only the GUI task owns the public process/lifecycle fields.  Publish a
+	 * completion message and let HandleDoneSignal() clear them after it has
+	 * actually received that message. */
 	donePort = gDonePort;
-	gDonePort = NULL;
-	gGuiPlayer.process = NULL;
 	if (donePort)
 		PutMsg(donePort, &gDoneMsg);
 }
@@ -2483,8 +2548,10 @@ static void StartPlayback(HelixAmp3Gui *gui)
 		SetStatus(gui, "Browse to an MP3 first.");
 		return;
 	}
-	if (gui->playbackActive) {
-		SetStatus(gui, "Already playing; press Stop first.");
+	if (gui->playbackActive || gui->playbackDonePending) {
+		SetStatus(gui, gui->playbackDonePending ?
+			"Previous playback process is still exiting." :
+			"Already playing; press Stop first.");
 		return;
 	}
 	if (!gui->donePort) {
@@ -2551,6 +2618,8 @@ static void StartPlayback(HelixAmp3Gui *gui)
 		SetStatus(gui, "Cannot start playback process.");
 		return;
 	}
+	gui->playbackDonePending = 0;
+	gui->playbackStoppedByUser = 0;
 	gui->playbackActive = 1;
 	SetStatus(gui, gui->decodeThenPlay ?
 		"Decoding to RAM, then playing..." :
@@ -2749,7 +2818,9 @@ int main(int argc, char **argv)
 		StopPlayback(&gui);
 		while (gui.playbackActive && gui.donePort) {
 			ULONG doneMask = 1UL << gui.donePort->mp_SigBit;
-			ULONG sigs = Wait(doneMask | SIGBREAKF_CTRL_C);
+			ULONG timerMask = gui.timerPort ?
+				(1UL << gui.timerPort->mp_SigBit) : 0;
+			ULONG sigs = Wait(doneMask | timerMask | SIGBREAKF_CTRL_C);
 
 			if (sigs & SIGBREAKF_CTRL_C) {
 				/* Do not tear down the done port while the playback process can
@@ -2763,6 +2834,8 @@ int main(int argc, char **argv)
 			}
 			if (sigs & doneMask)
 				HandleDoneSignal(&gui);
+			if (timerMask && (sigs & timerMask))
+				HandleTimerSignal(&gui);
 		}
 	}
 	SaveGuiSettings(&gui);
