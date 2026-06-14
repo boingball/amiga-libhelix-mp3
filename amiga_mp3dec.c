@@ -3816,6 +3816,7 @@ typedef struct GuiPlaybackStatus {
 #define GUISTART_FAILED                900
 #define GUISTART_CLEANUP               910
 
+#ifdef MINIAMP3_DEBUG
 const char *GuiStartupStageName(int stage)
 {
 	switch (stage) {
@@ -3857,11 +3858,8 @@ const char *GuiStartupStageName(int stage)
 	}
 }
 
-GuiPlaybackStatus gGuiPlaybackStatus;
-
-static void GuiPublishStartupStage(int stage)
+static void GuiWriteDetailedStartupLog(int stage)
 {
-	gGuiPlaybackStatus.startupStage = stage;
 #if defined(AMIGA_M68K) && defined(HAVE_AMIGA_AUDIO_DEVICE)
 	{
 		BPTR log;
@@ -3891,6 +3889,17 @@ static void GuiPublishStartupStage(int stage)
 			fclose(log);
 		}
 	}
+#endif
+}
+#endif /* MINIAMP3_DEBUG */
+
+GuiPlaybackStatus gGuiPlaybackStatus;
+
+static void GuiPublishStartupStage(int stage)
+{
+	gGuiPlaybackStatus.startupStage = stage;
+#ifdef MINIAMP3_DEBUG
+	GuiWriteDetailedStartupLog(stage);
 #endif
 }
 
@@ -4157,12 +4166,22 @@ static int AmigaAudioOpenOne(AmigaAudioPlayer *player, int ch,
 	player->req[0][ch]->ioa_Request.io_Message.mn_Node.ln_Pri = ADALLOC_MINPREC;
 	player->req[0][ch]->ioa_Data = (UBYTE *)channels;
 	player->req[0][ch]->ioa_Length = channelCount;
-	GuiPublishStartupStage(GUISTART_OPEN_DEVICE);
-	gGuiPlaybackStatus.openDeviceResult = OpenDevice(AUDIONAME, 0,
-		(struct IORequest *)player->req[0][ch], 0);
-	GuiPublishStartupStage(GUISTART_OPEN_DEVICE_DONE);
-	if (gGuiPlaybackStatus.openDeviceResult != 0)
-		return -1;
+	{
+		int openDeviceResult;
+
+		GuiPublishStartupStage(GUISTART_OPEN_DEVICE);
+		openDeviceResult = OpenDevice(AUDIONAME, 0,
+			(struct IORequest *)player->req[0][ch], 0);
+#ifdef MINIAMP3_DEBUG
+		gGuiPlaybackStatus.openDeviceResult = openDeviceResult;
+#else
+		if (!gMiniAmp3EmbeddedPlayback)
+			gGuiPlaybackStatus.openDeviceResult = openDeviceResult;
+#endif
+		GuiPublishStartupStage(GUISTART_OPEN_DEVICE_DONE);
+		if (openDeviceResult != 0)
+			return -1;
+	}
 	player->deviceOpen[ch] = 1;
 	{
 		struct Message secondMessage;

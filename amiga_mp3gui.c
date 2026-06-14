@@ -88,6 +88,7 @@ typedef struct GuiPlaybackStatus {
 #define GUISTART_PLAYING               270
 #define GUISTART_FAILED                900
 #define GUISTART_CLEANUP               910
+#ifdef MINIAMP3_DEBUG
 static const char *GuiStartupStageName(int stage)
 {
 	switch (stage) {
@@ -114,6 +115,7 @@ static const char *GuiStartupStageName(int stage)
 	default: return "starting";
 	}
 }
+#endif /* MINIAMP3_DEBUG */
 #endif
 /* Shared status written by the playback subprocess (amiga_mp3dec.c). */
 extern GuiPlaybackStatus gGuiPlaybackStatus;
@@ -1809,7 +1811,7 @@ static int PlaybackCanFinalize(HelixAmp3Gui *gui)
 }
 
 
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && defined(MINIAMP3_DEBUG)
 static int GuiAmigaDosInputOpenReadClose(const char *path)
 {
 	BPTR handle;
@@ -1858,7 +1860,7 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 	gGuiPlayer.stopRequested = 0;
 	gPlaybackInterrupted = 0;
 	gui->lastCleanupStage = GUIPLAY_CLEANUP_NONE;
-#ifdef AMIGA_M68K
+#if defined(AMIGA_M68K) && defined(MINIAMP3_DEBUG)
 	GuiRunAmigaDosInputRegression(gui, stoppedByUser);
 #else
 	SetStatus(gui, stoppedByUser ? "Stopped - ready." : "Playback finished - ready.");
@@ -1889,7 +1891,7 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 			gui->playbackDonePending = 1;
 			gui->playbackStoppedByUser = gGuiPlayer.stopRequested ? 1 : 0;
 			SetStatus(gui, gui->playbackStoppedByUser ?
-				"Stopping playback process..." : "Finishing playback process...");
+				"Stopping..." : "Playback finished - ready.");
 		}
 	}
 	if (gui->playbackDonePending && PlaybackCanFinalize(gui))
@@ -1922,7 +1924,6 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 
 		switch (phase) {
 		case GUIPLAY_PHASE_BUFFERING: {
-			char buf[128];
 			int stage = gGuiPlaybackStatus.startupStage;
 			if (stage != gui->lastStartupStage) {
 				gui->lastStartupStage = stage;
@@ -1931,20 +1932,33 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 			} else if (stage != GUISTART_PLAYING) {
 				gui->startupStageStableTicks++;
 			}
+#ifdef MINIAMP3_DEBUG
+			{
+				char buf[128];
+				if (gui->startupStageStableTicks >= 5 && !gui->startupStallShown) {
+					sprintf(buf, "Startup stalled at: %s r%d/%d run%lu st%d",
+						GuiStartupStageName(stage), gGuiPlaybackStatus.requestedRate,
+						gGuiPlaybackStatus.effectiveRate, gGuiPlaybackStatus.runId, stage);
+					gui->startupStallShown = 1;
+				} else if (stage > GUISTART_NONE) {
+					sprintf(buf, "Starting: %s r%d/%d run%lu st%d",
+						GuiStartupStageName(stage), gGuiPlaybackStatus.requestedRate,
+						gGuiPlaybackStatus.effectiveRate, gGuiPlaybackStatus.runId, stage);
+				} else if (halfBufferMs)
+					sprintf(buf, "Buffering... (%lums half-buffer)", halfBufferMs);
+				else
+					sprintf(buf, "Buffering... (%ds requested)", gui->bufferSeconds);
+				SetStatus(gui, buf);
+			}
+#else
 			if (gui->startupStageStableTicks >= 5 && !gui->startupStallShown) {
-				sprintf(buf, "Startup stalled at: %s r%d/%d run%lu st%d",
-					GuiStartupStageName(stage), gGuiPlaybackStatus.requestedRate,
-					gGuiPlaybackStatus.effectiveRate, gGuiPlaybackStatus.runId, stage);
+				SetStatus(gui, "Playback startup is taking longer than expected.");
 				gui->startupStallShown = 1;
-			} else if (stage > GUISTART_NONE) {
-				sprintf(buf, "Starting: %s r%d/%d run%lu st%d",
-					GuiStartupStageName(stage), gGuiPlaybackStatus.requestedRate,
-					gGuiPlaybackStatus.effectiveRate, gGuiPlaybackStatus.runId, stage);
-			} else if (halfBufferMs)
-				sprintf(buf, "Buffering... (%lums half-buffer)", halfBufferMs);
+			} else if (stage >= GUISTART_AUDIO_SETUP)
+				SetStatus(gui, "Buffering...");
 			else
-				sprintf(buf, "Buffering... (%ds requested)", gui->bufferSeconds);
-			SetStatus(gui, buf);
+				SetStatus(gui, "Starting playback...");
+#endif
 			break;
 		}
 		case GUIPLAY_PHASE_UNDERRUN:
@@ -1958,6 +1972,7 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 		case GUIPLAY_PHASE_STOPPING:
 			if (gGuiPlaybackStatus.cleanupStage != gui->lastCleanupStage) {
 				gui->lastCleanupStage = gGuiPlaybackStatus.cleanupStage;
+#ifdef MINIAMP3_DEBUG
 				switch (gui->lastCleanupStage) {
 				case GUIPLAY_CLEANUP_ABORT_REAP: SetStatus(gui, "Stopping: aborting/reaping audio IO..."); break;
 				case GUIPLAY_CLEANUP_DEVICE_CLOSED: SetStatus(gui, "Stopping: audio.device closed..."); break;
@@ -1965,9 +1980,13 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 				case GUIPLAY_CLEANUP_COMPLETE: SetStatus(gui, "Stopping: cleanup complete..."); break;
 				default: SetStatus(gui, "Stopping: cleanup started..."); break;
 				}
+#else
+				SetStatus(gui, "Stopping...");
+#endif
 			}
 			break;
 		case GUIPLAY_PHASE_PLAYING: {
+#ifdef MINIAMP3_DEBUG
 			long delta = spareMs - gui->lastDisplayedSpareMs;
 			if (delta < 0)
 				delta = -delta;
@@ -1981,6 +2000,10 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 					sprintf(buf, "Playing (%ldms spare)", spareMs);
 				SetStatus(gui, buf);
 			}
+#else
+			gui->lastDisplayedSpareMs = spareMs;
+			SetStatus(gui, "Playing");
+#endif
 			break;
 		}
 		default:
@@ -2026,7 +2049,7 @@ static void HandleDoneSignal(HelixAmp3Gui *gui)
 		gui->playbackStoppedByUser = gGuiPlayer.stopRequested ? 1 : 0;
 		gui->playbackDonePending = 1;
 		SetStatus(gui, gui->playbackStoppedByUser ?
-			"Stopping playback process..." : "Finishing playback process...");
+			"Stopping..." : "Playback finished - ready.");
 	}
 
 	if (PlaybackCanFinalize(gui))
@@ -2885,8 +2908,8 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	gui->playbackStoppedByUser = 0;
 	gui->playbackActive = 1;
 	SetStatus(gui, gui->decodeThenPlay ?
-		"Decoding to RAM, then playing..." :
-		"Streaming playback started.");
+		"Buffering..." :
+		"Starting playback...");
 }
 
 static void StopPlayback(HelixAmp3Gui *gui)
@@ -2903,7 +2926,7 @@ static void StopPlayback(HelixAmp3Gui *gui)
 		return;
 	}
 	if (gGuiPlayer.stopRequested) {
-		SetStatus(gui, "Stop requested; waiting for audio cleanup...");
+		SetStatus(gui, "Stopping...");
 		return;
 	}
 	/* Before signalling, poll the done port: the child may have already exited
@@ -2917,7 +2940,7 @@ static void StopPlayback(HelixAmp3Gui *gui)
 		if (gotDone) {
 			gui->playbackDonePending = 1;
 			gui->playbackStoppedByUser = 1;
-			SetStatus(gui, "Stopping playback process...");
+			SetStatus(gui, "Stopping...");
 			if (!PlaybackProcessStillExists())
 				FinalizePlayback(gui);
 			return;
@@ -2929,7 +2952,7 @@ static void StopPlayback(HelixAmp3Gui *gui)
 	 * for the remainder of a multi-second audio buffer. */
 	if (gGuiPlayer.process)
 		Signal((struct Task *)gGuiPlayer.process, SIGBREAKF_CTRL_C);
-	SetStatus(gui, "Stop requested; waiting for audio cleanup...");
+	SetStatus(gui, "Stopping...");
 }
 
 static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code)

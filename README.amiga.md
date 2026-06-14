@@ -235,6 +235,11 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   CPU-limited 68030 could still steal decode time at unpredictable points.
   For slow disks, start with `--play --fast-mem`; if decode-time spikes can still
   exhaust the queued audio, also increase `--buffer-seconds` toward 10.
+- MiniAMP3 GUI startup diagnostics are compiled out by default so release builds
+  do not write `T:MiniAMP3-startup.log` or show internal startup stages. Developers
+  can enable the detailed GUI startup log, watchdog text, task/process pointers,
+  and embedded audio-open diagnostics by building with `-DMINIAMP3_DEBUG`, for
+  example `make -f Makefile.amiga gui EXTRA_CFLAGS=-DMINIAMP3_DEBUG`.
 - `--debug-play` prints startup diagnostics for Paula streaming, including the
   actual output rate, PAL period, requested buffer depth, selected half-buffer
   samples/bytes, chip submission buffer addresses/sizes, optional stereo work
