@@ -3588,6 +3588,9 @@ typedef struct GuiPlaybackStatus {
 	volatile unsigned long decodedFrames;    /* MP3 frames decoded so far */
 	volatile int           sampleRate;       /* effective output sample rate (Hz) */
 	volatile unsigned long halfBufferMs;     /* selected playback half-buffer duration */
+	volatile unsigned long runId;          /* playback generation that owns this status */
+	volatile int           cleanupComplete;/* audio.device and buffers fully released */
+	volatile int           cleanupStage;   /* GUIPLAY_CLEANUP_* diagnostic stage */
 } GuiPlaybackStatus;
 
 #define GUIPLAY_PHASE_IDLE      0   /* not playing */
@@ -3595,6 +3598,13 @@ typedef struct GuiPlaybackStatus {
 #define GUIPLAY_PHASE_PLAYING   2   /* steady-state streaming */
 #define GUIPLAY_PHASE_UNDERRUN  3   /* underrun just occurred */
 #define GUIPLAY_PHASE_DONE      4   /* playback finished normally */
+#define GUIPLAY_PHASE_STOPPING  5   /* Stop/EOF cleanup is releasing audio */
+
+#define GUIPLAY_CLEANUP_NONE          0
+#define GUIPLAY_CLEANUP_ABORT_REAP    1
+#define GUIPLAY_CLEANUP_DEVICE_CLOSED 2
+#define GUIPLAY_CLEANUP_BUFFERS_FREED 3
+#define GUIPLAY_CLEANUP_COMPLETE      4
 
 GuiPlaybackStatus gGuiPlaybackStatus;
 
@@ -3762,6 +3772,7 @@ static void AmigaAudioClose(AmigaAudioPlayer *player,
 
 	if (!player)
 		return;
+	gGuiPlaybackStatus.cleanupStage = GUIPLAY_CLEANUP_ABORT_REAP;
 	/* No request, device, port, or DMA buffer is destroyed until every write
 	 * has either completed or has been aborted and reaped with WaitIO. */
 	for (i = 0; i < 2; i++) {
@@ -3793,6 +3804,7 @@ static void AmigaAudioClose(AmigaAudioPlayer *player,
 				status->devicesClosed++;
 		}
 	}
+	gGuiPlaybackStatus.cleanupStage = GUIPLAY_CLEANUP_DEVICE_CLOSED;
 	for (i = 0; i < 2; i++) {
 		for (ch = 0; ch < 2; ch++) {
 			if (player->req[i][ch]) {
@@ -3828,6 +3840,7 @@ static void AmigaAudioClose(AmigaAudioPlayer *player,
 			}
 		}
 	}
+	gGuiPlaybackStatus.cleanupStage = GUIPLAY_CLEANUP_BUFFERS_FREED;
 	if (player->port) {
 		DeleteMsgPort(player->port);
 		player->port = NULL;
@@ -3840,6 +3853,8 @@ static void AmigaAudioClose(AmigaAudioPlayer *player,
 	player->splitWorkBytes = 0;
 	player->workBytes = 0;
 	player->workChip = 0;
+	gGuiPlaybackStatus.cleanupStage = GUIPLAY_CLEANUP_COMPLETE;
+	gGuiPlaybackStatus.cleanupComplete = 1;
 }
 
 static int AmigaAudioOpenOne(AmigaAudioPlayer *player, int ch,
@@ -4090,6 +4105,7 @@ static void AmigaAudioClose(AmigaAudioPlayer *player,
 	PlaybackCleanupStatus *status)
 {
 	int i;
+	gGuiPlaybackStatus.cleanupStage = GUIPLAY_CLEANUP_ABORT_REAP;
 	for (i = 0; i < 2; i++) {
 		if (player->workBuf[i]) {
 			free(player->workBuf[i]);
@@ -4098,6 +4114,8 @@ static void AmigaAudioClose(AmigaAudioPlayer *player,
 				status->workBuffersFreed++;
 		}
 	}
+	gGuiPlaybackStatus.cleanupStage = GUIPLAY_CLEANUP_COMPLETE;
+	gGuiPlaybackStatus.cleanupComplete = 1;
 }
 static int AmigaAudioOpen(AmigaAudioPlayer *player, unsigned int period,
 	int stereo, unsigned long maxBytes)
@@ -4586,7 +4604,10 @@ static int AmigaPlayWholeBuffer(const signed char *pcm, unsigned long totalBytes
 	}
 	err = 0;
 cleanup:
+	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_STOPPING;
+	gGuiPlaybackStatus.cleanupComplete = 0;
 	AmigaAudioClose(&player, &cleanupStatus);
+	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_DONE;
 	if (cleanupStatus.canaryErrors)
 		err = -1;
 	PrintPlaybackCleanupStatus(opt, &cleanupStatus);
@@ -4639,6 +4660,12 @@ static int AmigaPlayDecodeThenPlay(InputSource *input, HMP3Decoder decoder,
 cleanup:
 	free(all);
 	all = NULL;
+	if (!gGuiPlaybackStatus.cleanupComplete) {
+		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_STOPPING;
+		gGuiPlaybackStatus.cleanupStage = GUIPLAY_CLEANUP_COMPLETE;
+		gGuiPlaybackStatus.cleanupComplete = 1;
+		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_DONE;
+	}
 	return err;
 }
 
@@ -4895,8 +4922,10 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		err = -1;
 	}
 cleanup:
-	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_DONE;
+	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_STOPPING;
+	gGuiPlaybackStatus.cleanupComplete = 0;
 	AmigaAudioClose(&player, &cleanupStatus);
+	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_DONE;
 	if (cleanupStatus.canaryErrors)
 		err = -1;
 	PrintPlaybackCleanupStatus(opt, &cleanupStatus);

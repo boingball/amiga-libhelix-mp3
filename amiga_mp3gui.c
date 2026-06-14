@@ -24,12 +24,21 @@ typedef struct GuiPlaybackStatus {
 	volatile unsigned long decodedFrames;
 	volatile int           sampleRate;
 	volatile unsigned long halfBufferMs;
+	volatile unsigned long runId;
+	volatile int           cleanupComplete;
+	volatile int           cleanupStage;
 } GuiPlaybackStatus;
 #define GUIPLAY_PHASE_IDLE      0
 #define GUIPLAY_PHASE_BUFFERING 1
 #define GUIPLAY_PHASE_PLAYING   2
 #define GUIPLAY_PHASE_UNDERRUN  3
 #define GUIPLAY_PHASE_DONE      4
+#define GUIPLAY_PHASE_STOPPING  5
+#define GUIPLAY_CLEANUP_NONE          0
+#define GUIPLAY_CLEANUP_ABORT_REAP    1
+#define GUIPLAY_CLEANUP_DEVICE_CLOSED 2
+#define GUIPLAY_CLEANUP_BUFFERS_FREED 3
+#define GUIPLAY_CLEANUP_COMPLETE      4
 #endif
 /* Shared status written by the playback subprocess (amiga_mp3dec.c). */
 extern GuiPlaybackStatus gGuiPlaybackStatus;
@@ -230,6 +239,9 @@ typedef struct HelixAmp3Gui {
 	int   playbackActive;
 	int   playbackDonePending;
 	int   playbackStoppedByUser;
+	unsigned long playbackRunId;
+	unsigned long playbackDoneRunId;
+	int lastCleanupStage;
 	int   totalSecs;
 	int   elapsedSecs;
 	int   launchBufferSecs;
@@ -260,6 +272,9 @@ static HelixAmp3Player gGuiPlayer;
 static HelixAmp3Args gGuiArgs;
 static struct Message gDoneMsg;
 static struct MsgPort *gDonePort;
+static volatile unsigned long gPlaybackRunCounter;
+static volatile unsigned long gDoneRunId;
+static volatile unsigned long gPlaybackEntryRunId;
 
 static struct TextAttr gTopaz8Attr = {
 	(STRPTR)"topaz.font", 8, FS_NORMAL, FPF_ROMFONT
@@ -1690,6 +1705,9 @@ static void SendTimerRequest(HelixAmp3Gui *gui, ULONG micros)
 	gui->timerIsArt = (micros == ART_TIMER_MICROS);
 }
 
+static void ResetCliParser(void);
+static void ResetDecoderStatics(void);
+
 static int PlaybackProcessStillExists(void)
 {
 	struct Task *task;
@@ -1700,6 +1718,15 @@ static int PlaybackProcessStillExists(void)
 	task = FindTask((STRPTR)"MiniAMP3 playback");
 	Permit();
 	return task != NULL;
+}
+
+static int PlaybackCanFinalize(HelixAmp3Gui *gui)
+{
+	return gui->playbackDonePending &&
+		gDoneRunId == gui->playbackRunId &&
+		gGuiPlaybackStatus.runId == gui->playbackRunId &&
+		gGuiPlaybackStatus.cleanupComplete &&
+		!PlaybackProcessStillExists();
 }
 
 static void FinalizePlayback(HelixAmp3Gui *gui)
@@ -1714,8 +1741,12 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 	if (gui->totalSecs > 0 && !stoppedByUser)
 		gui->elapsedSecs = gui->totalSecs + gui->launchBufferSecs;
 	DrawProgress(gui);
-	SetStatus(gui, stoppedByUser ? "Stopped." : "Playback finished.");
+	ResetCliParser();
+	ResetDecoderStatics();
 	gGuiPlayer.stopRequested = 0;
+	gPlaybackInterrupted = 0;
+	gui->lastCleanupStage = GUIPLAY_CLEANUP_NONE;
+	SetStatus(gui, stoppedByUser ? "Stopped - ready." : "Playback finished - ready.");
 }
 
 static void HandleTimerSignal(HelixAmp3Gui *gui)
@@ -1745,7 +1776,7 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 				"Stopping playback process..." : "Finishing playback process...");
 		}
 	}
-	if (gui->playbackDonePending && !PlaybackProcessStillExists())
+	if (gui->playbackDonePending && PlaybackCanFinalize(gui))
 		FinalizePlayback(gui);
 
 	if (gui->playbackActive && !gui->playbackDonePending && !expiredWasArt) {
@@ -1791,6 +1822,18 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 				SetStatus(gui, buf);
 			}
 			break;
+		case GUIPLAY_PHASE_STOPPING:
+			if (gGuiPlaybackStatus.cleanupStage != gui->lastCleanupStage) {
+				gui->lastCleanupStage = gGuiPlaybackStatus.cleanupStage;
+				switch (gui->lastCleanupStage) {
+				case GUIPLAY_CLEANUP_ABORT_REAP: SetStatus(gui, "Stopping: aborting/reaping audio IO..."); break;
+				case GUIPLAY_CLEANUP_DEVICE_CLOSED: SetStatus(gui, "Stopping: audio.device closed..."); break;
+				case GUIPLAY_CLEANUP_BUFFERS_FREED: SetStatus(gui, "Stopping: buffers freed..."); break;
+				case GUIPLAY_CLEANUP_COMPLETE: SetStatus(gui, "Stopping: cleanup complete..."); break;
+				default: SetStatus(gui, "Stopping: cleanup started..."); break;
+				}
+			}
+			break;
 		case GUIPLAY_PHASE_PLAYING: {
 			long delta = spareMs - gui->lastDisplayedSpareMs;
 			if (delta < 0)
@@ -1833,7 +1876,7 @@ static void HandleDoneSignal(HelixAmp3Gui *gui)
 	if (!gotDone) {
 		/* No message on the port — but if playbackDonePending is already set
 		 * (polled ahead by HandleTimerSignal), still check if we can finalize. */
-		if (gui->playbackDonePending && !PlaybackProcessStillExists())
+		if (gui->playbackDonePending && PlaybackCanFinalize(gui))
 			FinalizePlayback(gui);
 		return;
 	}
@@ -1841,6 +1884,11 @@ static void HandleDoneSignal(HelixAmp3Gui *gui)
 	/* HelixAmp3CliMain() has returned, but the child has not necessarily
 	 * finished its DOS/runtime teardown yet.  Keep Play locked until the
 	 * playback task itself has disappeared. */
+	if (gDoneRunId != gui->playbackRunId) {
+		SetStatus(gui, "Ignoring stale playback completion.");
+		return;
+	}
+
 	if (!gui->playbackDonePending) {
 		gui->playbackStoppedByUser = gGuiPlayer.stopRequested ? 1 : 0;
 		gui->playbackDonePending = 1;
@@ -1848,7 +1896,7 @@ static void HandleDoneSignal(HelixAmp3Gui *gui)
 			"Stopping playback process..." : "Finishing playback process...");
 	}
 
-	if (!PlaybackProcessStillExists())
+	if (PlaybackCanFinalize(gui))
 		FinalizePlayback(gui);
 }
 
@@ -2523,6 +2571,7 @@ static void PlaybackEntry(void)
 {
 	struct MsgPort *donePort;
 	int stopBeforeStart;
+	int ranDecoder;
 
 	/* StartPlayback() already clears the stop flags before CreateNewProcTags().
 	 * Do not clear them again here: Stop can be pressed after the GUI marks
@@ -2532,6 +2581,7 @@ static void PlaybackEntry(void)
 	 * run while the GUI is stuck in "Stopping...".
 	 */
 	stopBeforeStart = gGuiPlayer.stopRequested;
+	ranDecoder = 0;
 
 	/* A freshly-created Process can inherit a pending Ctrl-C condition from
 	 * DOS startup/runtime handling.  Clear only our playback interrupt bit
@@ -2544,13 +2594,21 @@ static void PlaybackEntry(void)
 	 * decoder revisions, so establish the parser's initial state immediately
 	 * before calling the renamed main() as well. */
 	ResetCliParser();
+	gGuiPlaybackStatus.runId = gPlaybackEntryRunId;
 
 	/* Stop may arrive while ResetDecoderStatics() is running.  Re-check the
 	 * shared request afterwards so the reset cannot erase an early Stop. */
 	if (stopBeforeStart || gGuiPlayer.stopRequested)
 		gPlaybackInterrupted = 1;
-	else
+	else {
+		ranDecoder = 1;
 		HelixAmp3CliMain(gGuiPlayer.argc, gGuiPlayer.argv);
+	}
+	if (!ranDecoder) {
+		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_DONE;
+		gGuiPlaybackStatus.cleanupStage = GUIPLAY_CLEANUP_COMPLETE;
+		gGuiPlaybackStatus.cleanupComplete = 1;
+	}
 
 	/* Only the GUI task owns the public process/lifecycle fields.  Publish a
 	 * completion message and let HandleDoneSignal() clear them after it has
@@ -2558,6 +2616,7 @@ static void PlaybackEntry(void)
 	 * Re-assert the node type immediately before PutMsg: StartPlayback()
 	 * reinitialises gDoneMsg before launching, but guard here as well in case
 	 * any future code path reaches PutMsg without going through StartPlayback. */
+	gDoneRunId = gGuiPlaybackStatus.runId;
 	donePort = gDonePort;
 	if (donePort) {
 		gDoneMsg.mn_Node.ln_Type = NT_MESSAGE;
@@ -2621,6 +2680,11 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	/* Zero the IPC block so stale data from a previous run is not visible
 	 * before the new subprocess writes its first update. */
 	memset((void *)&gGuiPlaybackStatus, 0, sizeof(gGuiPlaybackStatus));
+	gui->playbackRunId = ++gPlaybackRunCounter;
+	gui->playbackDoneRunId = 0;
+	gui->lastCleanupStage = GUIPLAY_CLEANUP_NONE;
+	gGuiPlaybackStatus.runId = gui->playbackRunId;
+	gPlaybackEntryRunId = gui->playbackRunId;
 	gui->launchBufferSecs = gui->decodeThenPlay ? 0 : gui->bufferSeconds;
 	DrawProgress(gui);
 	BuildPlaybackArgs(gui, &gGuiArgs);
@@ -2629,6 +2693,7 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	gGuiPlayer.stopRequested = 0;
 	gPlaybackInterrupted = 0;
 	gDonePort = gui->donePort;
+	gDoneRunId = 0;
 
 	/* Give each playback process its own current-directory lock so relative
 	 * paths remain resolvable across Stop/Play cycles.  DupLock(NULL) is safe
@@ -2686,7 +2751,7 @@ static void StopPlayback(HelixAmp3Gui *gui)
 		return;
 	}
 	if (gGuiPlayer.stopRequested) {
-		SetStatus(gui, "Stopping...");
+		SetStatus(gui, "Stop requested; waiting for audio cleanup...");
 		return;
 	}
 	/* Before signalling, poll the done port: the child may have already exited
@@ -2712,7 +2777,7 @@ static void StopPlayback(HelixAmp3Gui *gui)
 	 * for the remainder of a multi-second audio buffer. */
 	if (gGuiPlayer.process)
 		Signal((struct Task *)gGuiPlayer.process, SIGBREAKF_CTRL_C);
-	SetStatus(gui, "Stopping...");
+	SetStatus(gui, "Stop requested; waiting for audio cleanup...");
 }
 
 static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code)
@@ -2736,6 +2801,12 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code)
 		SaveGuiSettings(gui);
 		break;
 	case GID_FAST_MEM:
+		if (gui->playbackActive || gui->playbackDonePending) {
+			GT_SetGadgetAttrs(gad, gui->win, NULL,
+				GTCB_Checked, gui->fastMem, TAG_DONE);
+			SetStatus(gui, "Stop playback before changing memory mode.");
+			break;
+		}
 		gui->fastMem = !gui->fastMem;
 		GT_SetGadgetAttrs(gad, gui->win, NULL, GTCB_Checked, gui->fastMem, TAG_DONE);
 		SetStatus(gui, gui->fastMem ? "Fast memory path enabled." : "Fast memory path disabled.");
@@ -2767,6 +2838,12 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code)
 		SaveGuiSettings(gui);
 		break;
 	case GID_BUFFER:
+		if (gui->playbackActive || gui->playbackDonePending) {
+			GT_SetGadgetAttrs(gui->gadBuffer, gui->win, NULL,
+				GTSL_Level, gui->bufferSeconds, TAG_DONE);
+			SetStatus(gui, "Stop playback before changing buffer depth.");
+			break;
+		}
 		gui->bufferSeconds = code;
 		if (gui->bufferSeconds < 1)
 			gui->bufferSeconds = 1;
@@ -2790,6 +2867,12 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code)
 			SetStatus(gui, "Rating updated; no writable ID3v2 rating frame/padding.");
 		break;
 	case GID_QUALITY:
+		if (gui->playbackActive || gui->playbackDonePending) {
+			GT_SetGadgetAttrs(gad, gui->win, NULL,
+				GTCY_Active, gui->qualityIndex, TAG_DONE);
+			SetStatus(gui, "Stop playback before changing quality.");
+			break;
+		}
 		gui->qualityIndex = code;
 		if (gui->qualityIndex < 0 || gui->qualityIndex > 2)
 			gui->qualityIndex = 0;
