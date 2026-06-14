@@ -131,9 +131,9 @@ static __inline unsigned int HuffmanLoadBE16_AMIGA_M68K_ASM(unsigned char **buf,
 #endif
 
 #if HUFFMAN_PAIRS_HAS_AMIGA_M68K_ASM && MULSHIFT32_HAS_AMIGA_M68K_ASM
-#define HUFFMAN_PAIRS_FAST_NOTE "m68k inline move.l refill + m68k MULSHIFT32 available"
+#define HUFFMAN_PAIRS_FAST_NOTE "m68k inline move.l pair/quad refill + m68k MULSHIFT32 available"
 #elif HUFFMAN_PAIRS_HAS_AMIGA_M68K_ASM
-#define HUFFMAN_PAIRS_FAST_NOTE "m68k inline move.l refill available"
+#define HUFFMAN_PAIRS_FAST_NOTE "m68k inline move.l pair/quad refill available"
 #else
 #define HUFFMAN_PAIRS_FAST_NOTE "no (C reference path only in this build)"
 #endif
