@@ -51,6 +51,8 @@ typedef struct GuiPlaybackStatus {
 #define GUISTART_CHILD_ENTERED         10
 #define GUISTART_ARGS_READY            20
 #define GUISTART_INPUT_OPEN            30
+#define GUISTART_INPUT_FOPEN_BEFORE    31
+#define GUISTART_INPUT_FOPEN_AFTER     32
 #define GUISTART_INPUT_PREPARE         40
 #define GUISTART_DECODER_ALLOC         50
 #define GUISTART_DECODER_CONFIG        60
@@ -80,6 +82,8 @@ typedef struct GuiPlaybackStatus {
 static const char *GuiStartupStageName(int stage)
 {
 	switch (stage) {
+	case GUISTART_INPUT_FOPEN_BEFORE: return "input fopen before";
+	case GUISTART_INPUT_FOPEN_AFTER: return "input fopen after";
 	case GUISTART_PROBE_RATE: return "probing input rate";
 	case GUISTART_PREFILL: return "prefill decode";
 	case GUISTART_AUDIO_SETUP: return "audio setup";
@@ -1792,6 +1796,39 @@ static int PlaybackCanFinalize(HelixAmp3Gui *gui)
 		!PlaybackProcessStillExists();
 }
 
+
+#ifdef AMIGA_M68K
+static int GuiAmigaDosInputOpenReadClose(const char *path)
+{
+	BPTR handle;
+	unsigned char bytes[16];
+	LONG nRead;
+
+	if (!path || !path[0])
+		return -1;
+	handle = Open((STRPTR)path, MODE_OLDFILE);
+	if (!handle)
+		return -1;
+	nRead = Read(handle, bytes, sizeof(bytes));
+	Close(handle);
+	return nRead == (LONG)sizeof(bytes) ? 0 : -1;
+}
+
+static void GuiRunAmigaDosInputRegression(HelixAmp3Gui *gui, int afterInterrupted)
+{
+	int child1;
+	int child2;
+	char msg[128];
+
+	child1 = GuiAmigaDosInputOpenReadClose(gui->inputName);
+	child2 = GuiAmigaDosInputOpenReadClose(gui->inputName);
+	sprintf(msg, "DOS input self-test after %s: child1=%s child2=%s",
+		afterInterrupted ? "stop" : "finish",
+		child1 == 0 ? "ok" : "fail", child2 == 0 ? "ok" : "fail");
+	SetStatus(gui, msg);
+}
+#endif
+
 static void FinalizePlayback(HelixAmp3Gui *gui)
 {
 	int stoppedByUser = gui->playbackStoppedByUser;
@@ -1809,7 +1846,11 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 	gGuiPlayer.stopRequested = 0;
 	gPlaybackInterrupted = 0;
 	gui->lastCleanupStage = GUIPLAY_CLEANUP_NONE;
+#ifdef AMIGA_M68K
+	GuiRunAmigaDosInputRegression(gui, stoppedByUser);
+#else
 	SetStatus(gui, stoppedByUser ? "Stopped - ready." : "Playback finished - ready.");
+#endif
 }
 
 static void HandleTimerSignal(HelixAmp3Gui *gui)
