@@ -3978,7 +3978,7 @@ static unsigned int AmigaPalAudioPeriod(int outputRate)
 		(unsigned long)outputRate);
 }
 
-#define AMIGA_AUDIO_PLAYBACK_SLOTS 2
+#define AMIGA_AUDIO_PLAYBACK_SLOTS 3
 
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
 #ifndef NDEBUG
@@ -4816,13 +4816,16 @@ static void PrintPlaybackDebugStartup(const DecodeOptions *opt,
 		printf("debug-play: fast planar work B left/right: %p/%p size %lu\n",
 			(void *)player->splitWorkBuf[1][0],
 			(void *)player->splitWorkBuf[1][1], player->splitWorkBytes);
+		printf("debug-play: fast planar work C left/right: %p/%p size %lu\n",
+			(void *)player->splitWorkBuf[2][0],
+			(void *)player->splitWorkBuf[2][1], player->splitWorkBytes);
 	} else {
 		printf("debug-play: chip submit buffer A: %p size %lu\n",
 			(void *)player->splitBuf[0][0], player->splitBytes);
 		printf("debug-play: chip submit buffer B: %p size %lu\n",
 			(void *)player->splitBuf[1][0], player->splitBytes);
-		printf("debug-play: fast conversion buffer A/B: %p/%p size %lu\n",
-			(void *)buf[0], (void *)buf[1], chunkBytes);
+		printf("debug-play: fast conversion buffer A/B/C: %p/%p/%p size %lu\n",
+			(void *)buf[0], (void *)buf[1], (void *)buf[2], chunkBytes);
 	}
 }
 
@@ -4857,11 +4860,13 @@ static int AmigaSetupPlaybackBuffers(AmigaAudioPlayer *player,
 				if (opt->stereo) {
 					workReady =
 						player->splitWorkBuf[0][0] && player->splitWorkBuf[0][1] &&
-						player->splitWorkBuf[1][0] && player->splitWorkBuf[1][1];
+						player->splitWorkBuf[1][0] && player->splitWorkBuf[1][1] &&
+						player->splitWorkBuf[2][0] && player->splitWorkBuf[2][1];
 				} else {
 					buf[0] = player->workBuf[0];
 					buf[1] = player->workBuf[1];
-					workReady = buf[0] && buf[1];
+					buf[2] = player->workBuf[2];
+					workReady = buf[0] && buf[1] && buf[2];
 				}
 			}
 			if (directPlanar || workReady) {
@@ -5181,75 +5186,68 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 	PrintPlaybackDebugStartup(opt, playbackRate, period, requestedBytes,
 		bufBytes, &player, buf);
 
-	/* Fill both halves before the first CMD_WRITE starts playback. */
+	/* Fill the whole playback ring before the first CMD_WRITE starts playback.
+	 * Keeping a third decoded buffer queued gives the decoder one full extra
+	 * half-buffer of headroom, which is especially important for high-bitrate
+	 * stereo streams where occasional expensive frames can otherwise starve the
+	 * two-buffer ping-pong path. */
 	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_BUFFERING;
 	playbackChannels = opt->stereo ? 2UL : 1UL;
-	GuiPublishStartupStage(GUISTART_FILL_BUFFER_A);
-	if (opt->stereo) {
-		len[0] = DecodeStreamFillPlaybackBuffer(&stream, opt, &player, 0,
-			buf[0], bufBytes);
-	} else {
-		memcpy(buf[0], startupBuf, (size_t)startupLen);
-		len[0] = startupLen;
-		if (len[0] < bufBytes)
-			len[0] += (unsigned long)DecodeStreamFillS8(&stream, opt,
-				buf[0] + len[0], (int)(bufBytes - len[0]));
-	}
-	GuiPublishStartupStage(GUISTART_FILL_BUFFER_A_DONE);
-	PrintPlaybackFillDebug(opt, 0, len[0]);
-	if (stream.decodeError) {
-		goto cleanup;
-	}
-	if (len[0] > 0 && opt->debugPlay &&
-		PlaybackBufferPeak(opt, &player, 0, buf[0], len[0]) == 0)
-		printf("first playback buffer is silent/near-silent\n");
-	if (len[0] == 0 || len[0] / playbackChannels == 0) {
-		fprintf(stderr, "first playback buffer fill produced zero CMD_WRITE bytes\n");
-		goto cleanup;
-	}
-	GuiPublishStartupStage(GUISTART_FILL_BUFFER_B);
-	len[1] = DecodeStreamFillPlaybackBuffer(&stream, opt, &player, 1,
-		buf[1], bufBytes);
-	GuiPublishStartupStage(GUISTART_FILL_BUFFER_B_DONE);
-	PrintPlaybackFillDebug(opt, 1, len[1]);
-	if (stream.decodeError) {
-		goto cleanup;
+	for (active = 0; active < AMIGA_AUDIO_PLAYBACK_SLOTS; active++) {
+		GuiPublishStartupStage(active == 0 ? GUISTART_FILL_BUFFER_A :
+			(active == 1 ? GUISTART_FILL_BUFFER_B : GUISTART_FILL_BUFFER_B));
+		if (active == 0 && !opt->stereo) {
+			memcpy(buf[0], startupBuf, (size_t)startupLen);
+			len[0] = startupLen;
+			if (len[0] < bufBytes)
+				len[0] += (unsigned long)DecodeStreamFillS8(&stream, opt,
+					buf[0] + len[0], (int)(bufBytes - len[0]));
+		} else {
+			len[active] = DecodeStreamFillPlaybackBuffer(&stream, opt, &player,
+				active, buf[active], bufBytes);
+		}
+		GuiPublishStartupStage(active == 0 ? GUISTART_FILL_BUFFER_A_DONE :
+			(active == 1 ? GUISTART_FILL_BUFFER_B_DONE : GUISTART_FILL_BUFFER_B_DONE));
+		PrintPlaybackFillDebug(opt, active, len[active]);
+		if (stream.decodeError)
+			goto cleanup;
+		if (active == 0 && len[0] > 0 && opt->debugPlay &&
+			PlaybackBufferPeak(opt, &player, 0, buf[0], len[0]) == 0)
+			printf("first playback buffer is silent/near-silent\n");
+		if (active == 0 && (len[0] == 0 || len[0] / playbackChannels == 0)) {
+			fprintf(stderr, "first playback buffer fill produced zero CMD_WRITE bytes\n");
+			goto cleanup;
+		}
+		if (len[active] == 0)
+			break;
+		GuiPublishStartupStage(active == 0 ? GUISTART_PREPARE_A :
+			(active == 1 ? GUISTART_PREPARE_B : GUISTART_PREPARE_B));
+		if (AmigaAudioPreparePlaybackBuffer(&player, active, buf[active],
+			len[active]) != 0) {
+			fprintf(stderr, "playback buffer %s CMD_WRITE byte length is invalid\n",
+				PlaybackBufferName(active));
+			goto cleanup;
+		}
 	}
 
-	/* Temporarily keep the proven two-buffer path while Stop cleanup is
-	 * validated on real hardware.  Do not queue/decode a third slot here. */
-	GuiPublishStartupStage(GUISTART_PREPARE_A);
-	if (AmigaAudioPreparePlaybackBuffer(&player, 0, buf[0], len[0]) != 0) {
-		fprintf(stderr, "playback buffer A CMD_WRITE byte length is invalid\n");
-		err = -1;
-	} else {
-		err = 0;
-	}
-	if (err == 0 && len[1] > 0) {
-		GuiPublishStartupStage(GUISTART_PREPARE_B);
-		if (AmigaAudioPreparePlaybackBuffer(&player, 1, buf[1], len[1]) != 0) {
-			fprintf(stderr, "playback buffer B CMD_WRITE byte length is invalid\n");
-			err = -1;
+	if (active == 0)
+		goto cleanup;
+	for (refill = 0; refill < active; refill++) {
+		if (refill == 0)
+			GuiPublishStartupStage(GUISTART_COMMIT_A);
+		if (AmigaAudioCommitPlaybackBuffer(&player, refill) != 0) {
+			fprintf(stderr, "playback buffer %s CMD_WRITE byte length is invalid\n",
+				PlaybackBufferName(refill));
+			goto cleanup;
 		}
 	}
-	if (err == 0) {
-		GuiPublishStartupStage(GUISTART_COMMIT_A);
-		if (AmigaAudioCommitPlaybackBuffer(&player, 0) != 0) {
-			fprintf(stderr, "playback buffer A CMD_WRITE byte length is invalid\n");
-			err = -1;
-		} else if (len[1] > 0 && AmigaAudioCommitPlaybackBuffer(&player, 1) != 0) {
-			fprintf(stderr, "playback buffer B CMD_WRITE byte length is invalid\n");
-			err = -1;
-		} else {
-			GuiPublishStartupStage(GUISTART_PLAYING);
-			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
-			if (opt->debugPlay)
-				printf("debug-play: CMD_WRITE queued A/B: %lu/%lu bytes, ring depth 2\n", len[0], len[1]);
-		}
-	}
+	GuiPublishStartupStage(GUISTART_PLAYING);
+	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
+	if (opt->debugPlay)
+		printf("debug-play: CMD_WRITE queued initial ring depth %d\n", active);
+	err = 0;
 
 	active = 0;
-	refill = 0;
 	while (err == 0 && !gPlaybackInterrupted &&
 		player.sent[active][0]) {
 		clock_t submittedAt;
@@ -5268,8 +5266,6 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		}
 #endif
 
-		/* Detect whether the playing buffer has already run dry before WaitIO
-		 * reaps it; after WaitIO the buffer is always done. */
 		underrun = AmigaAudioDone(&player, active);
 		if (AmigaAudioWait(&player, active) != 0) {
 			fprintf(stderr, "audio.device write failed\n");
@@ -5277,7 +5273,6 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 			break;
 		}
 #if defined(AMIGA_M68K)
-		/* Check for GUI Stop signal without blocking before decoding more data. */
 		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C) {
 			gPlaybackInterrupted = 1;
 			break;
@@ -5288,51 +5283,30 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 				PlaybackBufferName(active));
 
 		completed = active;
-		if (!player.prepared[refill])
-			break;
-		if (AmigaAudioCommitPlaybackBuffer(&player, refill) != 0) {
-			fprintf(stderr, "playback buffer %s CMD_WRITE byte length is invalid\n",
-				PlaybackBufferName(refill));
-			err = -1;
-			break;
-		}
 		submittedAt = clock();
-		if (opt->debugPlay)
-			printf("debug-play: CMD_WRITE submitted %s: %lu bytes\n",
-				PlaybackBufferName(refill), len[refill]);
-
-		active = (active + 1) % AMIGA_AUDIO_PLAYBACK_SLOTS;
-		refill = completed;
-
-		/* Decode into Fast RAM and copy into the completed chip RAM buffer while
-		 * audio.device is already playing the freshly committed buffer. */
-		len[refill] = DecodeStreamFillPlaybackBuffer(&stream, opt, &player, refill,
-			buf[refill], bufBytes);
-		PrintPlaybackFillDebug(opt, refill, len[refill]);
+		len[completed] = DecodeStreamFillPlaybackBuffer(&stream, opt, &player,
+			completed, buf[completed], bufBytes);
+		PrintPlaybackFillDebug(opt, completed, len[completed]);
 		if (stream.decodeError) {
 			err = -1;
 			break;
 		}
-		if (len[refill] == 0) {
-			if (AmigaAudioWait(&player, active) != 0) {
-				fprintf(stderr, "audio.device write failed\n");
-				err = -1;
-				break;
-			}
-			if (opt->debugPlay)
-				printf("debug-play: CMD_WRITE completed %s\n",
-					PlaybackBufferName(active));
+		if (len[completed] == 0)
 			break;
-		}
-		if (AmigaAudioPreparePlaybackBuffer(&player, refill, buf[refill],
-			len[refill]) != 0) {
+		if (AmigaAudioPreparePlaybackBuffer(&player, completed, buf[completed],
+			len[completed]) != 0 ||
+			AmigaAudioCommitPlaybackBuffer(&player, completed) != 0) {
 			fprintf(stderr, "playback buffer %s CMD_WRITE byte length is invalid\n",
-				PlaybackBufferName(refill));
+				PlaybackBufferName(completed));
 			err = -1;
 			break;
 		}
-
 		preparedAt = clock();
+		if (opt->debugPlay)
+			printf("debug-play: CMD_WRITE resubmitted %s: %lu bytes\n",
+				PlaybackBufferName(completed), len[completed]);
+
+		active = (active + 1) % AMIGA_AUDIO_PLAYBACK_SLOTS;
 		elapsedMilliseconds = PlaybackElapsedMilliseconds(submittedAt, preparedAt);
 		activeMilliseconds = PlaybackBufferDurationMilliseconds(opt, len[active],
 			playbackRate);
