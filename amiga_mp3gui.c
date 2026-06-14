@@ -328,6 +328,9 @@ typedef struct HelixAmp3Gui {
 	int   launchBufferSecs;
 	unsigned long lastUnderrunCount;   /* last underrun count seen from IPC */
 	long          lastDisplayedSpareMs; /* spare ms last shown in status bar */
+	int           lastDisplayedPhase;   /* GUIPLAY_PHASE_* last shown in status bar */
+	int           lastDrawnElapsedSecs; /* elapsed value last drawn in progress area */
+	int           lastDrawnTotalSecs;   /* total value last drawn in progress area */
 	int           progressEnabled;     /* 1 = redraw progress bar during playback */
 } HelixAmp3Gui;
 
@@ -1215,6 +1218,10 @@ static void FormatReadyStatus(const Mp3Tags *tags, char *buf, size_t bufSize)
 
 static void SetStatus(HelixAmp3Gui *gui, const char *text)
 {
+	if (!text)
+		text = "";
+	if (strcmp(gui->statusText, text) == 0)
+		return;
 	SafeCopy(gui->statusText, sizeof(gui->statusText), text);
 	if (gui->win && gui->gadStatus) {
 		GT_SetGadgetAttrs(gui->gadStatus, gui->win, NULL,
@@ -1769,6 +1776,17 @@ static void DrawProgress(HelixAmp3Gui *gui)
 	Text(rp, timeBuf, strlen(timeBuf));
 }
 
+
+static void DrawProgressIfChanged(HelixAmp3Gui *gui)
+{
+	if (gui->elapsedSecs == gui->lastDrawnElapsedSecs &&
+		gui->totalSecs == gui->lastDrawnTotalSecs)
+		return;
+	DrawProgress(gui);
+	gui->lastDrawnElapsedSecs = gui->elapsedSecs;
+	gui->lastDrawnTotalSecs = gui->totalSecs;
+}
+
 static void SendTimerRequest(HelixAmp3Gui *gui, ULONG micros)
 {
 	if (!gui->timerReq)
@@ -1860,6 +1878,7 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 	gGuiPlayer.stopRequested = 0;
 	gPlaybackInterrupted = 0;
 	gui->lastCleanupStage = GUIPLAY_CLEANUP_NONE;
+	gui->lastDisplayedPhase = GUIPLAY_PHASE_IDLE;
 #if defined(AMIGA_M68K) && defined(MINIAMP3_DEBUG)
 	GuiRunAmigaDosInputRegression(gui, stoppedByUser);
 #else
@@ -1904,6 +1923,10 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 		unsigned long underruns = gGuiPlaybackStatus.underruns;
 		long spareMs = gGuiPlaybackStatus.spareMs;
 		unsigned long halfBufferMs = gGuiPlaybackStatus.halfBufferMs;
+		int phaseChanged = (phase != gui->lastDisplayedPhase);
+
+		if (phaseChanged)
+			gui->lastDisplayedPhase = phase;
 
 		/* Derive audio position from decoded frames rather than wall-clock ticks.
 		 * Each MP3 frame = 1152 samples.  Subtract the selected half-buffer
@@ -1925,7 +1948,8 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 		switch (phase) {
 		case GUIPLAY_PHASE_BUFFERING: {
 			int stage = gGuiPlaybackStatus.startupStage;
-			if (stage != gui->lastStartupStage) {
+			int stageChanged = (stage != gui->lastStartupStage);
+			if (stageChanged) {
 				gui->lastStartupStage = stage;
 				gui->startupStageStableTicks = 0;
 				gui->startupStallShown = 0;
@@ -1954,10 +1978,12 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 			if (gui->startupStageStableTicks >= 5 && !gui->startupStallShown) {
 				SetStatus(gui, "Playback startup is taking longer than expected.");
 				gui->startupStallShown = 1;
-			} else if (stage >= GUISTART_AUDIO_SETUP)
-				SetStatus(gui, "Buffering...");
-			else
-				SetStatus(gui, "Starting playback...");
+			} else if (phaseChanged || stageChanged) {
+				if (stage >= GUISTART_AUDIO_SETUP)
+					SetStatus(gui, "Buffering...");
+				else
+					SetStatus(gui, "Starting playback...");
+			}
 #endif
 			break;
 		}
@@ -2001,8 +2027,10 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 				SetStatus(gui, buf);
 			}
 #else
-			gui->lastDisplayedSpareMs = spareMs;
-			SetStatus(gui, "Playing");
+			if (phaseChanged) {
+				gui->lastDisplayedSpareMs = spareMs;
+				SetStatus(gui, "Playing");
+			}
 #endif
 			break;
 		}
@@ -2011,7 +2039,7 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 		}
 
 		if (gui->progressEnabled)
-			DrawProgress(gui);
+			DrawProgressIfChanged(gui);
 	}
 	PumpArtDecode(gui);
 	SendTimerRequest(gui, gui->artDecode.active ? ART_TIMER_MICROS :
@@ -2403,6 +2431,9 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	gui->progressEnabled = LoadEnvInt("ProgressBar", 0, 0, 1);
 	LoadEnvString("LastDrawer", gui->lastDrawer, sizeof(gui->lastDrawer));
 	SafeCopy(gui->statusText, sizeof(gui->statusText), "Ready.");
+	gui->lastDisplayedPhase = GUIPLAY_PHASE_IDLE;
+	gui->lastDrawnElapsedSecs = -1;
+	gui->lastDrawnTotalSecs = -1;
 	SafeCopy(gui->fileInfoText, sizeof(gui->fileInfoText), "-");
 	FormatRatingText(gui);
 	SetFileDisplay(gui, NULL);
@@ -2845,6 +2876,9 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	gui->elapsedSecs = 0;
 	gui->lastUnderrunCount = 0;
 	gui->lastDisplayedSpareMs = 0;
+	gui->lastDisplayedPhase = GUIPLAY_PHASE_IDLE;
+	gui->lastDrawnElapsedSecs = -1;
+	gui->lastDrawnTotalSecs = -1;
 	/* Zero the IPC block so stale data from a previous run is not visible
 	 * before the new subprocess writes its first update. */
 	memset((void *)&gGuiPlaybackStatus, 0, sizeof(gGuiPlaybackStatus));
@@ -2881,6 +2915,7 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	if (nilOut) {
 		gGuiPlayer.process = CreateNewProcTags(NP_Entry, (ULONG)PlaybackEntry,
 			NP_Name, (ULONG)"MiniAMP3 playback",
+			NP_Priority, 5,
 			NP_StackSize, 262144,
 			NP_CurrentDir, dirLock,
 			NP_Output, nilOut,
@@ -2890,6 +2925,7 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	} else {
 		gGuiPlayer.process = CreateNewProcTags(NP_Entry, (ULONG)PlaybackEntry,
 			NP_Name, (ULONG)"MiniAMP3 playback",
+			NP_Priority, 5,
 			NP_StackSize, 262144,
 			NP_CurrentDir, dirLock,
 			NP_CopyVars, FALSE,
