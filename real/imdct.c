@@ -306,7 +306,7 @@ static int IMDCTApplySubbandCap(const MP3DecInfo *mp3DecInfo, BlockCount *bc)
 	if (activeSubbands <= 0) activeSubbands = NBANDS;
 	if (activeSubbands > NBANDS) activeSubbands = NBANDS;
 
-	if (mp3DecInfo->superfastLowrate && mp3DecInfo->fastLowrateStride == 4) {
+	if (mp3DecInfo->superfastLowrate && mp3DecInfo->fastLowrateStride > 1) {
 		if (bc->nBlocksTotal > activeSubbands) bc->nBlocksTotal = activeSubbands;
 		if (bc->nBlocksLong  > activeSubbands) bc->nBlocksLong  = activeSubbands;
 		if (bc->nBlocksPrev  > activeSubbands) bc->nBlocksPrev  = activeSubbands;
@@ -325,6 +325,21 @@ static int IMDCTApplySubbandCap(const MP3DecInfo *mp3DecInfo, BlockCount *bc)
 	}
 #endif
 	return 0;
+}
+
+
+static void IMDCTClearDiscardedSubbands(IMDCTInfo *mi, int ch, int activeSubbands)
+{
+	int row, band, i;
+
+	if (!mi || activeSubbands >= NBANDS)
+		return;
+	for (row = 0; row < BLOCK_SIZE; row++)
+		for (band = activeSubbands; band < NBANDS; band++)
+			mi->outBuf[ch][row][band] = 0;
+	for (band = activeSubbands; band < NBANDS; band++)
+		for (i = 0; i < 9; i++)
+			mi->overBuf[ch][band * 9 + i] = 0;
 }
 
 static int IMDCTThinOutputCanActivate(const MP3DecInfo *mp3DecInfo)
@@ -1353,6 +1368,33 @@ int IMDCTSubbandCapSelftest(void)
 		failures++;
 	}
 
+	decInfo.superfastLowrate = 1;
+	decInfo.fastLowrateStride = 2;
+	decInfo.fastLowrateActiveSubbands = 16;
+	helperBc = baseBc;
+	helperApplied = IMDCTApplySubbandCap(&decInfo, &helperBc);
+	if (!helperApplied || helperBc.nBlocksTotal != 16 || helperBc.nBlocksLong != 16 ||
+		helperBc.nBlocksPrev != 16 || helperBc.activeSubbands != 16 || !helperBc.subbandCapActive) {
+		printf("subband cap selftest superfast stride-2 helper failed: applied=%d total=%d long=%d prev=%d activeBands=%d active=%d\n",
+			helperApplied, helperBc.nBlocksTotal, helperBc.nBlocksLong, helperBc.nBlocksPrev,
+			helperBc.activeSubbands, helperBc.subbandCapActive);
+		failures++;
+	}
+
+	decInfo.fastLowrateStride = 4;
+	decInfo.fastLowrateActiveSubbands = 8;
+	decInfo.outputMono = 1;
+	helperBc = baseBc;
+	helperApplied = IMDCTApplySubbandCap(&decInfo, &helperBc);
+	if (!helperApplied || helperBc.nBlocksTotal != 8 || helperBc.nBlocksLong != 8 ||
+		helperBc.nBlocksPrev != 8 || helperBc.activeSubbands != 8 || !helperBc.subbandCapActive) {
+		printf("subband cap selftest superfast stride-4 helper failed: applied=%d total=%d long=%d prev=%d activeBands=%d active=%d\n",
+			helperApplied, helperBc.nBlocksTotal, helperBc.nBlocksLong, helperBc.nBlocksPrev,
+			helperBc.activeSubbands, helperBc.subbandCapActive);
+		failures++;
+	}
+
+	memset(&decInfo, 0, sizeof(decInfo));
 	decInfo.fastLowrateStride = 4;
 	decInfo.outputMono = 1;
 	helperBc = baseBc;
@@ -1569,6 +1611,11 @@ int IMDCT(MP3DecInfo *mp3DecInfo, int gr, int ch)
 	mp3DecInfo->imdctThinActive = bc.imdctThinActive;
 
 	mi->numPrevIMDCT[ch] = HybridTransform(hi->huffDecBuf[ch], mi->overBuf[ch], mi->outBuf[ch], &si->sis[gr][ch], &bc);
+	if (bc.subbandCapActive) {
+		IMDCTClearDiscardedSubbands(mi, ch, bc.activeSubbands);
+		if (mi->numPrevIMDCT[ch] > bc.activeSubbands)
+			mi->numPrevIMDCT[ch] = bc.activeSubbands;
+	}
 	mi->prevType[ch] = si->sis[gr][ch].blockType;
 	mi->prevWinSwitch[ch] = bc.currWinSwitch;		/* 0 means not a mixed block (either all short or all long) */
 	mi->gb[ch] = bc.gbOut;
