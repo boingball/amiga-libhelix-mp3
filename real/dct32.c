@@ -263,6 +263,15 @@ static __inline void FDCT32_AMIGA_M68K_SECOND_PASS(int *buf, const int *cptr)
 		: "d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "cc", "memory");
 }
 #endif
+static __inline void FDCT32_AMIGA_M68K_SECOND_PASS_HALF(int *buf, const int *cptr)
+{
+	__asm__ volatile (
+		FDCT32_M68K_SECOND_GROUP("",   "4",  "8",  "12", "16", "20", "24", "28")
+		FDCT32_M68K_SECOND_GROUP("32", "36", "40", "44", "48", "52", "56", "60")
+		: "+a" (buf), "+a" (cptr)
+		: "a" (&dct4)
+		: "d0", "d1", "d2", "d3", "d4", "d5", "d6", "cc", "memory");
+}
 #undef FDCT32_M68K_SECOND_GROUP
 
 #define FDCT32_M68K_PAIR_STORE \
@@ -295,6 +304,38 @@ static __inline void FDCT32_AMIGA_M68K_OUTPUT_HIGH(const int *buf, int *d)
 		: "+a" (buf), "+a" (d)
 		:
 		: "d0", "d1", "cc", "memory");
+}
+
+static __inline void FDCT32_AMIGA_M68K_OUTPUT_HALF_HIGH(const int *buf, int *d)
+{
+	__asm__ volatile (
+		"\tmove.l 4(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 36(%0),%%d0\n\tadd.l 52(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 20(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 52(%0),%%d0\n\tadd.l 44(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 12(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 44(%0),%%d0\n\tadd.l 60(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 28(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 60(%0),%%d0\n\tmove.l %%d0,(%1)\n\tmove.l %%d0,32(%1)\n"
+		: "+a" (buf), "+a" (d)
+		:
+		: "d0", "cc", "memory");
+}
+
+static __inline void FDCT32_AMIGA_M68K_OUTPUT_HALF_LOW(const int *buf, int *d)
+{
+	__asm__ volatile (
+		"\tmove.l 4(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 56(%0),%%d0\n\tadd.l 36(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 24(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 40(%0),%%d0\n\tadd.l 56(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 8(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 48(%0),%%d0\n\tadd.l 40(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 16(%0),%%d0\n" FDCT32_M68K_PAIR_STORE
+		"\tmove.l 32(%0),%%d0\n\tadd.l 48(%0),%%d0\n\tmove.l %%d0,(%1)\n\tmove.l %%d0,32(%1)\n"
+		: "+a" (buf), "+a" (d)
+		:
+		: "d0", "cc", "memory");
 }
 
 static __inline void FDCT32_AMIGA_M68K_OUTPUT_LOW(const int *buf, int *d)
@@ -533,7 +574,7 @@ void FDCT32_C_REFERENCE(int *buf, int *dest, int offset, int oddBlock, int gb)
 #define FDCT32_HALF_MULSHIFT32(x, y) FDCT32_MULSHIFT32((x), (y))
 #endif
 
-void FDCT32Half(int *buf, int *dest, int offset, int oddBlock, int gb)
+static void FDCT32Half_C_REFERENCE(int *buf, int *dest, int offset, int oddBlock, int gb)
 {
 	int i, s, es, oddBase, evenBase, delayOff, clipBits;
 	const int *cptr = dcttab;
@@ -625,6 +666,44 @@ void FDCT32Half(int *buf, int *dest, int offset, int oddBlock, int gb)
 	FDCT32_HALF_STORE(buf[8] + buf[12]);
 
 #undef FDCT32_HALF_STORE
+}
+
+#if FDCT32_HAS_AMIGA_M68K_ASM
+static void FDCT32Half_AMIGA_M68K_ASM(int *buf, int *dest, int offset, int oddBlock, int gb)
+{
+	int oddBase, evenBase, delayOff;
+	const int *cptr = dcttab;
+	int *d;
+
+	(void)gb;
+
+	cptr = FDCT32_AMIGA_M68K_FIRST_PASS(buf, cptr);
+	FDCT32_AMIGA_M68K_SECOND_PASS_HALF(buf, cptr);
+
+	oddBase = oddBlock ? VBUF_LENGTH : 0;
+	evenBase = oddBlock ? 0 : VBUF_LENGTH;
+	delayOff = (offset - oddBlock) & 7;
+
+	d = dest + 64 * 16 + delayOff + evenBase;
+	d[0] = d[8] = buf[0];
+
+	d = dest + offset + oddBase;
+	FDCT32_AMIGA_M68K_OUTPUT_HALF_HIGH(buf, d);
+
+	d = dest + 16 + delayOff + evenBase;
+	FDCT32_AMIGA_M68K_OUTPUT_HALF_LOW(buf, d);
+}
+#endif
+
+void FDCT32Half(int *buf, int *dest, int offset, int oddBlock, int gb)
+{
+#if FDCT32_HAS_AMIGA_M68K_ASM
+	if (gb >= 6) {
+		FDCT32Half_AMIGA_M68K_ASM(buf, dest, offset, oddBlock, gb);
+		return;
+	}
+#endif
+	FDCT32Half_C_REFERENCE(buf, dest, offset, oddBlock, gb);
 }
 
 
