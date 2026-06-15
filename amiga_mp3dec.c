@@ -2392,7 +2392,7 @@ static int SelftestImdct(void)
 	int btPrev;
 	int blockIdx;
 	int gb;
-
+	
 	failures = 0;
 	fallbackCases = 0;
 	seed = 0x27182818UL;
@@ -2811,6 +2811,7 @@ static int SelftestFdct32Quarter(void)
 		int offset;
 		int oddBlock;
 		int gb;
+		int phase;
 		int oddBase;
 		int evenBase;
 		int delayOff;
@@ -2819,6 +2820,7 @@ static int SelftestFdct32Quarter(void)
 		offset = (int)(i & 7UL);
 		oddBlock = (int)((i >> 3) & 1UL);
 		gb = (int)((i >> 4) & 7UL);
+		phase = (int)((i >> 7) & 3UL);
 		for (j = 0; j < 32; j++) {
 			seed = seed * 1664525UL + 1013904223UL;
 			if (j < 8)
@@ -2846,7 +2848,7 @@ static int SelftestFdct32Quarter(void)
 		active[8] = 16 + delayOff + evenBase + 64 * 12;
 
 		AMIGA_FDCT32_HALF(hbuf, hdest, offset, oddBlock, gb);
-		AMIGA_FDCT32_QUARTER(qbuf, qdest, offset, oddBlock, gb);
+		AMIGA_FDCT32_QUARTER(qbuf, qdest, offset, oddBlock, gb, phase, 4);
 
 		for (j = 0; j < ACTIVE; j++) {
 			int idx = active[j];
@@ -6315,3 +6317,4 @@ int main(int argc, char **argv)
 
 	return verifyError ? 1 : 0;
 }
+
