@@ -268,6 +268,8 @@ typedef struct Mp3Tags {
 	int  bitrateKbps;
 	int  sampleRate;
 	int  channels;
+	int  channelMode;
+	int  modeExtension;
 	unsigned long fileSize;
 	int  durationSecs;
 	unsigned char *artData;
@@ -803,7 +805,9 @@ static void ReadMpegInfo(FILE *f, Mp3Tags *tags, long *firstFrameOffset)
 			tags->bitrateKbps = bitrateTab[idx];
 			idx = (h[2] >> 2) & 0x03;
 			tags->sampleRate = samplerateTab[idx];
-			tags->channels = (((h[3] >> 6) & 0x03) == 3) ? 1 : 2;
+			tags->channelMode = (h[3] >> 6) & 0x03;
+			tags->modeExtension = (h[3] >> 4) & 0x03;
+			tags->channels = (tags->channelMode == 3) ? 1 : 2;
 			return;
 		}
 	}
@@ -1299,10 +1303,25 @@ static void FormatRatingText(HelixAmp3Gui *gui)
 	sprintf(gui->ratingText + 5, " %d/5", gui->tags.rating);
 }
 
+static const char *MpegChannelModeName(const Mp3Tags *tags)
+{
+	if (!tags || tags->channels <= 0)
+		return "?";
+	if (tags->channelMode == 3 || tags->channels == 1)
+		return "mono";
+	if (tags->channelMode == 1) {
+		/* In MPEG Layer III joint-stereo, mode-extension bit 1 denotes
+		 * mid/side stereo.  Bit 0 denotes intensity stereo. */
+		if (tags->modeExtension & 0x02)
+			return "M/S";
+		return "joint-stereo";
+	}
+	return "stereo";
+}
+
 static void FormatFileInfo(HelixAmp3Gui *gui)
 {
-	const char *ch = gui->tags.channels == 1 ? "mono" :
-		(gui->tags.channels == 2 ? "stereo" : "?");
+	const char *ch = MpegChannelModeName(&gui->tags);
 	unsigned long kb = (gui->tags.fileSize + 1023UL) / 1024UL;
 
 	if (gui->tags.bitrateKbps > 0 || gui->tags.sampleRate > 0 ||
@@ -1504,28 +1523,30 @@ static void SaveArtworkCache(HelixAmp3Gui *gui);
 
 static int JpegGreySample(const pjpeg_image_info_t *info, int off)
 {
+	unsigned long r;
+	unsigned long g;
+	unsigned long b;
+
 	if (info->m_comps == 1)
 		return info->m_pMCUBufR[off];
+	r = info->m_pMCUBufR[off];
+	g = info->m_pMCUBufG[off];
+	b = info->m_pMCUBufB[off];
 #if defined(AMIGA_M68K) && defined(AMIGA_M68K_ASM_JPEG_GREY)
-	{
-		unsigned long r = info->m_pMCUBufR[off];
-		unsigned long g = info->m_pMCUBufG[off];
-		unsigned long b = info->m_pMCUBufB[off];
-		__asm__ volatile (
-			"mulu.w #30,%0\n\t"
-			"mulu.w #59,%1\n\t"
-			"mulu.w #11,%2\n\t"
-			"add.l %1,%0\n\t"
-			"add.l %2,%0\n\t"
-			"divu.w #100,%0\n\t"
-			"andi.l #65535,%0"
-			: "+d" (r), "+d" (g), "+d" (b));
-		return (int)r;
-	}
+	/* Approximate Rec.601 luma as (77R + 150G + 29B + 128) >> 8.
+	 * This removes the previous DIVU-by-100 from the per-pixel artwork hot path. */
+	__asm__ volatile (
+		"mulu.w #77,%0\n\t"
+		"mulu.w #150,%1\n\t"
+		"mulu.w #29,%2\n\t"
+		"add.l %1,%0\n\t"
+		"add.l %2,%0\n\t"
+		"add.l #128,%0\n\t"
+		"lsr.l #8,%0"
+		: "+d" (r), "+d" (g), "+d" (b));
+	return (int)r;
 #else
-	return ((int)info->m_pMCUBufR[off] * 30 +
-		(int)info->m_pMCUBufG[off] * 59 +
-		(int)info->m_pMCUBufB[off] * 11) / 100;
+	return (int)((77UL * r + 150UL * g + 29UL * b + 128UL) >> 8);
 #endif
 }
 

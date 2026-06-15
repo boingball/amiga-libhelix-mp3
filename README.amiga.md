@@ -141,7 +141,11 @@ used by Shell playback, signal the child,
 and the audio wait path can abort/reap outstanding writes so the GUI remains
 responsive. During playback the status bar keeps the change-only
 `Playing - underruns: N` text visible instead of redrawing generic `Playing` on
-each timer tick.
+each timer tick. The GUI file-info row reports the first MPEG frame channel mode
+as `mono`, `stereo`, `joint-stereo`, or `M/S` when the Layer III joint-stereo
+mode-extension bit marks mid/side stereo. Artwork greyscale conversion uses a
+68030-friendly m68k inline path in fast builds that replaces the previous
+per-pixel divide with an 8-bit luma approximation.
 
 A separate library can still be added later if multiple frontends need to share
 higher-level application code. For now, `amiga_mp3gui.c` includes the existing
