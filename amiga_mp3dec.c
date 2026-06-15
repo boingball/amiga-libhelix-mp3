@@ -214,6 +214,7 @@ typedef struct DecodeOptions {
 	int selftestMulshift;
 	int selftestClz;
 	int selftestFdct32;
+	int selftestFdct32Half;
 	int selftestImdct;
 	int selftestImdctThin;
 	int selftestSubbandCap;
@@ -608,6 +609,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-mulshift compare C and optional asm MULSHIFT32 helpers\n");
 	printf("  --selftest-clz compare C and optional m68k bfffo CLZ helpers\n");
 	printf("  --selftest-fdct32 compare C reference and optional m68k asm FDCT32 path\n");
+	printf("  --selftest-fdct32half compare FDCT32Half even-row stores against full FDCT32\n");
 	printf("  --selftest-imdct compare C reference and optional m68k asm long IMDCT path\n");
 	printf("  --selftest-imdct-thin compare full and requested thinned IMDCT output paths\n");
 	printf("  --selftest-subband-cap verify low-rate mono IMDCT subband cap behavior\n");
@@ -750,6 +752,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->selftestClz = 1;
 		} else if (!strcmp(argv[i], "--selftest-fdct32")) {
 			opt->selftestFdct32 = 1;
+		} else if (!strcmp(argv[i], "--selftest-fdct32half")) {
+			opt->selftestFdct32Half = 1;
 		} else if (!strcmp(argv[i], "--selftest-imdct")) {
 			opt->selftestImdct = 1;
 		} else if (!strcmp(argv[i], "--selftest-imdct-thin")) {
@@ -846,6 +850,7 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 if (opt->selftestMulshift ||
     opt->selftestClz ||
     opt->selftestFdct32 ||
+    opt->selftestFdct32Half ||
     opt->selftestImdct ||
     opt->selftestImdctThin ||
     opt->selftestSubbandCap ||
@@ -2220,6 +2225,8 @@ static int TestFdct32Case(unsigned long index, unsigned long seed, int offset,
 	return 0;
 }
 
+static int SelftestFdct32Half(void);
+
 static int SelftestFdct32(void)
 {
 	unsigned long i;
@@ -2245,6 +2252,35 @@ static int SelftestFdct32(void)
 	printf("FDCT32 asm active: %s\n", AMIGA_FDCT32_HAS_ASM() ? "yes" : "no");
 	printf("FDCT32 selftest cases: %lu\n", i);
 	printf("FDCT32 selftest failures: %lu\n", failures);
+	return failures ? 1 : 0;
+}
+
+
+static int SelftestFdct32Half(void)
+{
+	unsigned long i;
+	unsigned long failures;
+	unsigned long seed;
+
+	failures = 0;
+	seed = 0x32483248UL;
+	for (i = 0; i < 4096UL; i++) {
+		seed = seed * 1664525UL + 1013904223UL;
+		if (TestFdct32Case(i, seed, (int)(seed & 7), (int)((seed >> 3) & 1),
+			(int)((seed >> 4) % 8)) != 0)
+			failures++;
+	}
+
+	printf("FDCT32Half asm requested: %s\n",
+#ifdef AMIGA_M68K_ASM_FDCT32
+		"yes"
+#else
+		"no"
+#endif
+	);
+	printf("FDCT32Half asm active: %s\n", AMIGA_FDCT32_HAS_ASM() ? "yes" : "no");
+	printf("FDCT32Half selftest cases: %lu\n", i);
+	printf("FDCT32Half selftest failures: %lu\n", failures);
 	return failures ? 1 : 0;
 }
 
@@ -5659,6 +5695,11 @@ int main(int argc, char **argv)
 	}
 	if (opt.selftestFdct32) {
 		int selftestErr = SelftestFdct32();
+		AmigaFreeNormalizedArgs(&normalized);
+		return selftestErr;
+	}
+	if (opt.selftestFdct32Half) {
+		int selftestErr = SelftestFdct32Half();
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}

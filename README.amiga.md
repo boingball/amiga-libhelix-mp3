@@ -347,6 +347,10 @@ amiga_mp3dec --quality 0 --play --fast-mem --fast-lowrate --rate 11025 --mono so
 - `--selftest-fdct32` compares `FDCT32_C_REFERENCE` against the normal `FDCT32`
   entry point, so `AMIGA_M68K_ASM_FDCT32` builds can prove the optional asm
   multiply path preserves the C operation order and fixed-point outputs.
+- `--selftest-fdct32half` compares `FDCT32Half`'s stride-2 even-row stores
+  against the full `FDCT32` output, so `AMIGA_M68K_ASM_FDCT32` builds can prove
+  the optional half-rate asm path preserves the C operation order and fixed-point
+  outputs.
 - `--selftest-imdct` compares the C IMDCT36 reference with the active IMDCT
   entry point over zero, random, edge-value, common long-window, and fallback
   window cases.
