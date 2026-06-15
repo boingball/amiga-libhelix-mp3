@@ -121,14 +121,20 @@ int Dequantize(MP3DecInfo *mp3DecInfo, int gr)
 	 * same 1/sqrt(2) scale already applied by DequantChannel().  The decoder can
 	 * advance over the known-length side-channel Huffman payload, and the side
 	 * channel does not affect mono PCM or dequant/IMDCT/synthesis. */
-	ch = (mp3DecInfo->outputMono && mp3DecInfo->nChans == 2 &&
-		fh->modeExt == 0x02) ? 1 : mp3DecInfo->nChans;
+	ch = (gr >= 0 && gr < mp3DecInfo->nGrans &&
+		mp3DecInfo->monoMSSideSkipGranule[gr]) ? 1 : mp3DecInfo->nChans;
 
 	/* dequantize all samples needed by the synthesis path */
 	AMIGA_PROFILE_START(amigaProfileStart);
 	while (ch-- > 0) {
 		hi->gb[ch] = DequantChannel(hi->huffDecBuf[ch], di->workBuf, &hi->nonZeroBound[ch], fh,
 			&si->sis[gr][ch], &sfi->sfis[gr][ch], &cbi[ch]);
+	}
+	if (gr >= 0 && gr < mp3DecInfo->nGrans &&
+		mp3DecInfo->monoMSSideSkipGranule[gr]) {
+		hi->nonZeroBound[1] = 0;
+		hi->gb[1] = hi->gb[0];
+		MP3AddDecodeCoreMonoMSSideSkip(2);
 	}
 	AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_DEQUANT, amigaProfileStart);
 
@@ -139,7 +145,8 @@ int Dequantize(MP3DecInfo *mp3DecInfo, int gr)
 	 *   just make a pass over the data and clip to [-2^30+1, 2^30-1]
 	 * in practice this may never happen
 	 */
-	if (!(mp3DecInfo->outputMono && mp3DecInfo->nChans == 2 && fh->modeExt == 0x02) &&
+	if (!(gr >= 0 && gr < mp3DecInfo->nGrans &&
+		mp3DecInfo->monoMSSideSkipGranule[gr]) &&
 		fh->modeExt && (hi->gb[0] < 1 || hi->gb[1] < 1)) {
 		for (i = 0; i < hi->nonZeroBound[0]; i++) {
 			if (hi->huffDecBuf[0][i] < -0x3fffffff)	 hi->huffDecBuf[0][i] = -0x3fffffff;
@@ -151,12 +158,13 @@ int Dequantize(MP3DecInfo *mp3DecInfo, int gr)
 		}
 	}
 
-	if (mp3DecInfo->outputMono && mp3DecInfo->nChans == 2 &&
-		fh->modeExt == 0x02) {
+	if (gr >= 0 && gr < mp3DecInfo->nGrans &&
+		mp3DecInfo->monoMSSideSkipGranule[gr]) {
 		/* Mid/side without intensity is cheap for mono: after MPEG MS
 		 * reconstruction, (L + R) / 2 is the coded mid channel.  Keep
 		 * channel 0 and skip right-channel IMDCT/subband synthesis. */
-		nSamps = MAX(hi->nonZeroBound[0], hi->nonZeroBound[1]);
+		/* Side was not decoded; keep the coded mid channel as mono. */
+		nSamps = hi->nonZeroBound[0];
 		hi->nonZeroBound[0] = nSamps;
 	} else {
 		/* do mid-side stereo processing, if enabled */

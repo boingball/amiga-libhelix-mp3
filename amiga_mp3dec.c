@@ -261,6 +261,7 @@ typedef struct DecodeOptions {
 	int bufferSeconds;
 	int fastMem;
 	int info;
+	int noMonoMSSideSkip;
 } DecodeOptions;
 
 typedef struct Mp3InputInfo {
@@ -635,6 +636,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-mono-fastlowrate-stereo verify stereo-to-mono low-rate accounting\n");
 	printf("  --selftest-quality verify --quality flag mapping and auto-default selection\n");
 	printf("  --checksum  print a 32-bit checksum of decoded PCM samples\n");
+	printf("  --no-ms-mono-skip force full two-channel M/S decode before mono regression checks\n");
 	printf("  --debug-fastlowrate print per-frame/granule fast-lowrate placement\n");
 	printf("  --debug-play print audio.device playback startup diagnostics\n");
 	printf("  --debug-cleanup print playback resource cleanup diagnostics\n");
@@ -812,6 +814,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->expHuff = 1;
 		} else if (!strcmp(argv[i], "--exp-imdct-thin")) {
 			opt->expImdctThin = 1;
+		} else if (!strcmp(argv[i], "--no-ms-mono-skip")) {
+			opt->noMonoMSSideSkip = 1;
 		} else if (!strcmp(argv[i], "--exp-reduced-taps")) {
 			opt->expReducedTaps = 1;
 		} else if (!strcmp(argv[i], "--exp-fdct32-quarter")) {
@@ -6020,7 +6024,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Stereo playback needs significantly more CPU and may underrun on 030.\n");
 	GuiPublishStartupStage(GUISTART_DECODER_CONFIG);
 
-	MP3SetOutputMono(decoder, opt.mono && !opt.stereo);
+	MP3SetOutputMono(decoder, opt.mono && !opt.stereo && !opt.noMonoMSSideSkip);
+	MP3SetMonoMSSideSkip(decoder, !opt.noMonoMSSideSkip);
 	if (opt.expPoly) {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
 		fprintf(stderr, "warning: --exp-poly enables experimental 68030 asm "
@@ -6451,6 +6456,20 @@ int main(int argc, char **argv)
 					ClocksToSeconds(coreProfile.polyphase));
 				printf("core IMDCT subbands: executed=%lu skipped=%lu\n",
 					coreProfile.imdctSubbandsExecuted, coreProfile.imdctSubbandsSkipped);
+				printf("mono M/S side-channel skip: eligible=%lu huffman=%lu dequant=%lu imdct=%lu synthesis=%lu\n",
+					coreProfile.monoMSSideSkipEligible,
+					coreProfile.monoMSSideHuffmanSkipped,
+					coreProfile.monoMSSideDequantSkipped,
+					coreProfile.monoMSSideIMDCTSkipped,
+					coreProfile.monoMSSideSynthesisSkipped);
+				printf("mono M/S fallback: not-stereo-source=%lu output-stereo=%lu not-joint=%lu no-ms=%lu intensity=%lu disabled=%lu malformed=%lu\n",
+					coreProfile.monoMSSideFallbackNotStereoSource,
+					coreProfile.monoMSSideFallbackOutputStereo,
+					coreProfile.monoMSSideFallbackNotJointStereo,
+					coreProfile.monoMSSideFallbackNoMS,
+					coreProfile.monoMSSideFallbackIntensity,
+					coreProfile.monoMSSideFallbackDisabled,
+					coreProfile.monoMSSideFallbackMalformed);
 				if (opt.fastLowrate)
 					printf("sparse low-rate: stride=%d active-subbands=%d fdct=%s\n",
 						FastLowrateStrideForOutputRate(opt.outputRate),
@@ -6480,4 +6499,3 @@ int main(int argc, char **argv)
 
 	return verifyError ? 1 : 0;
 }
-

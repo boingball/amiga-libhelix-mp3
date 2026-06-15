@@ -102,6 +102,8 @@ typedef struct _MP3DecInfo {
 	int superfastLowrate;
 	int fastLowrateDebugCount;
 	int outputMono;
+	int monoMSSideSkipEnabled;
+	int monoMSSideSkipGranule[MAX_NGRAN];
 	int expImdctThin;
 	int imdctThinActive;
 	MP3FastLowrateGranuleDebug fastLowrateDebug[MAX_NGRAN];
