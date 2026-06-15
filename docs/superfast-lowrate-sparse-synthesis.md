@@ -14,9 +14,7 @@ The explicit low-pass model is derived from fast-lowrate stride:
 | 2 | 16 | 16-31 |
 | 4 | 8 | 8-31 |
 
-For the initial target (`44100 Hz -> 11025 Hz`, stride 4), playback starts with
-only subbands 0-7 active.  Coefficients, IMDCT output, and overlap state for
-subbands 8-31 must be zeroed and must not be consumed by sparse synthesis.
+For `44100 Hz -> 22050 Hz` (stride 2), playback retains subbands 0-15 and permanently discards subbands 16-31.  For `44100 Hz -> 11025 Hz` (stride 4), playback retains subbands 0-7 and permanently discards subbands 8-31.  Coefficients, IMDCT output, and overlap state for discarded subbands must be zeroed and must not be consumed by sparse synthesis.
 
 ## IMDCT safety rule
 
@@ -27,6 +25,38 @@ run the normal long/short kernels, while discarded bands have no stale overlap
 because their exposed IMDCT output is explicitly zeroed each granule.
 Unsupported granules should fall back to the full path instead of reusing stale
 `xPrev` data.
+
+## Stride-2 polyphase rows
+
+Stride 2 is the only sparse mode supported for 22,050 Hz output. It must use
+`FDCT32Half`; it must never call the stride-4 phase model or `FDCT32Quarter`,
+because doing so would expose the wrong FIFO rows and label half the required
+sample count as 22,050 Hz audio.
+
+| fastLowratePhase at entry | consumed rows |
+| ---: | --- |
+| 0 | 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30 |
+| 1 | 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31 |
+
+`oddBlock`, `offset`, and `vindex` still select the visible synthesis FIFO half.
+A stride-2 sparse FDCT must preserve the same FIFO rows as the existing
+half-rate FDCT path for every `vindex` and both `oddBlock` states.
+
+## Supported sparse output rates
+
+`--superfast-lowrate` currently supports only 11,025 Hz and 22,050 Hz.  If no
+rate is specified, the command-line default remains 11,025 Hz for compatibility.
+The GUI must not silently change a selected rate when Superfast is enabled; the
+user-visible status/debug output should report the active stride, active subband
+count, and FDCT choice.  Unsupported rates such as 8,820 Hz, 8,287 Hz, 28,600 Hz,
+or arbitrary values must be rejected instead of falling through to sparse mode.
+
+## Performance trade-off
+
+Stride 2 executes up to 16 IMDCT subbands per granule and uses `FDCT32Half`, so
+it saves less work than stride 4 but preserves the exact 22,050 Hz duration and
+pitch.  Stride 4 executes up to 8 IMDCT subbands and may use `FDCT32Quarter`,
+which gives the largest 11,025 Hz saving but is not valid for 22,050 Hz.
 
 ## Stride-4 polyphase rows
 

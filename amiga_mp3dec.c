@@ -594,8 +594,8 @@ static void PrintUsage(const char *prog)
 	printf("  --rate HZ    output/downsample rate: 28600, 22050, 11025, 8820, or 8287 Hz\n");
 	printf("               28600/22050 playback is experimental/high CPU and may underrun\n");
 	printf("  --fast-lowrate lower-quality Amiga conversion; requires --rate\n");
-	printf("  --superfast-lowrate experimental sparse stride-4/8-subband 11025 Hz mode\n");
-	printf("                 22050, 11025, 8820, or 8287 and can skip discarded synthesis samples\n");
+	printf("  --superfast-lowrate sparse low-rate mode; use --rate 11025 or --rate 22050\n");
+	printf("                 defaults to 11025 if no --rate is specified\n");
 	printf("  --quality N set quality/speed level (0 fastest, 1 fast, 2 balanced, 3 accurate)\n");
 	printf("               default: 1 for --fast-lowrate --rate 11025, otherwise 3\n");
 	printf("               0 enables all fast paths including Huffman; 3 is original behavior\n");
@@ -789,7 +789,6 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 		} else if (!strcmp(argv[i], "--superfast-lowrate")) {
 			opt->fastLowrate = 1;
 			opt->superfastLowrate = 1;
-			opt->outputRate = 11025;
 		} else if (!strcmp(argv[i], "--exp-poly")) {
 			opt->expPoly = 1;
 		} else if (!strcmp(argv[i], "--exp-huff")) {
@@ -870,6 +869,9 @@ if (opt->selftestMulshift ||
 		return -1;
 	}
 
+	if (opt->superfastLowrate && !opt->outputRate)
+		opt->outputRate = 11025;
+
 	if (opt->play && !opt->outputRate)
 		opt->outputRate = opt->stereo ? 8820 : 8287;
 
@@ -891,6 +893,10 @@ if (opt->selftestMulshift ||
 		opt->noOutput = 1;
 	}
 
+	if (opt->superfastLowrate && opt->outputRate != 11025 && opt->outputRate != 22050) {
+		fprintf(stderr, "--superfast-lowrate supports only --rate 11025 or --rate 22050\n");
+		return -1;
+	}
 	if (opt->fastLowrate && (opt->outputRate != 22050 &&
 		opt->outputRate != 11025 && opt->outputRate != 8820 &&
 		opt->outputRate != 8287)) {
@@ -5878,15 +5884,14 @@ int main(int argc, char **argv)
 	MP3SetExperimentalHuffman(opt.expHuff);
 	MP3SetExperimentalIMDCTThin(decoder, opt.expImdctThin);
 	MP3SetExperimentalReducedTaps(opt.expReducedTaps);
-	MP3SetExperimentalFDCT32Quarter(opt.expFdct32Quarter || opt.superfastLowrate);
+	MP3SetExperimentalFDCT32Quarter(opt.expFdct32Quarter ||
+		(opt.superfastLowrate && opt.outputRate == 11025));
 	if (opt.fastLowrate) {
 		int stride = FastLowrateStrideForOutputRate(opt.outputRate);
 		if (opt.expReducedTaps && stride != 4)
 			fprintf(stderr, "warning: --exp-reduced-taps only affects 11025 Hz stride-4 fast-lowrate output\n");
 		if (opt.expFdct32Quarter && stride != 4)
 			fprintf(stderr, "warning: --exp-fdct32-quarter only affects 11025 Hz stride-4 fast-lowrate output\n");
-		if (opt.superfastLowrate && stride != 4)
-			fprintf(stderr, "warning: --superfast-lowrate requires 11025 Hz stride-4 output; forcing sparse setup may be unsafe for other rates\n");
 		MP3SetFastLowrate(decoder, stride);
 		if (opt.superfastLowrate)
 			MP3SetSuperfastLowrate(decoder, 1);
@@ -6296,6 +6301,14 @@ int main(int argc, char **argv)
 					ClocksToSeconds(coreProfile.polyphase));
 				printf("core IMDCT subbands: executed=%lu skipped=%lu\n",
 					coreProfile.imdctSubbandsExecuted, coreProfile.imdctSubbandsSkipped);
+				if (opt.fastLowrate)
+					printf("sparse low-rate: stride=%d active-subbands=%d fdct=%s\n",
+						FastLowrateStrideForOutputRate(opt.outputRate),
+						FastLowrateStrideForOutputRate(opt.outputRate) == 2 ? 16 :
+						(FastLowrateStrideForOutputRate(opt.outputRate) == 4 ? 8 : 32),
+						FastLowrateStrideForOutputRate(opt.outputRate) == 4 && opt.superfastLowrate ?
+						"FDCT32Quarter" : (FastLowrateStrideForOutputRate(opt.outputRate) == 2 ?
+						"FDCT32Half" : "FDCT32"));
 			}
 		}
 		printf("timing frame decode: %.3f s\n", ClocksToSeconds(timing.frameDecode));

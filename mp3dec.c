@@ -238,10 +238,9 @@ void MP3SetSuperfastLowrate(HMP3Decoder hMP3Decoder, int enabled)
 	if (!mp3DecInfo)
 		return;
 	mp3DecInfo->superfastLowrate = enabled ? 1 : 0;
-	if (mp3DecInfo->superfastLowrate) {
-		MP3SetFastLowrate(hMP3Decoder, 4);
-		mp3DecInfo->fastLowrateActiveSubbands = 8;
-	}
+	if (mp3DecInfo->superfastLowrate)
+		mp3DecInfo->fastLowrateActiveSubbands =
+			MP3FastLowrateActiveSubbandsForStride(mp3DecInfo->fastLowrateStride);
 }
 
 int MP3SuperfastLowrateEnabled(HMP3Decoder hMP3Decoder)

@@ -2963,7 +2963,7 @@ static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Args *args)
 	if (gui->mono)
 		AddArg(args, "--mono");
 	AddArg(args, "--rate");
-	AddArg(args, gui->superfastLowrate ? "11025" : kRates[gui->rateIndex]);
+	AddArg(args, kRates[gui->rateIndex]);
 	AddArg(args, "--buffer-seconds");
 	sprintf(num, "%d", gui->bufferSeconds);
 	AddArg(args, num);
@@ -3313,12 +3313,14 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code)
 			break;
 		}
 		gui->superfastLowrate = !gui->superfastLowrate;
-		if (gui->superfastLowrate)
-			gui->rateIndex = 2;
 		GT_SetGadgetAttrs(gad, gui->win, NULL,
 			GTCB_Checked, gui->superfastLowrate, TAG_DONE);
 		SetStatus(gui, gui->superfastLowrate ?
-			"Superfast enabled; playback will use 11025 Hz." :
+			(strcmp(kRates[gui->rateIndex], "22050") == 0 ?
+			"Superfast enabled: 22050 Hz stride-2, 16 bands, FDCT32Half." :
+			(strcmp(kRates[gui->rateIndex], "11025") == 0 ?
+			"Superfast enabled: 11025 Hz stride-4, 8 bands, FDCT32Quarter." :
+			"Superfast enabled, but choose 11025 or 22050 Hz before playback.")) :
 			"Superfast disabled.");
 		SaveGuiSettings(gui);
 		break;
@@ -3357,7 +3359,10 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code)
 		gui->rateIndex = code;
 		if (gui->rateIndex < 0 || gui->rateIndex > 4)
 			gui->rateIndex = 2;
-		SetStatus(gui, "Output sample rate updated.");
+		if (gui->superfastLowrate && strcmp(kRates[gui->rateIndex], "11025") && strcmp(kRates[gui->rateIndex], "22050"))
+			SetStatus(gui, "Superfast supports only 11025 or 22050 Hz; choose one before playback.");
+		else
+			SetStatus(gui, "Output sample rate updated.");
 		SaveGuiSettings(gui);
 		break;
 	case GID_BUFFER:
