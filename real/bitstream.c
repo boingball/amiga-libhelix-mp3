@@ -459,6 +459,7 @@ int UnpackSideInfo(MP3DecInfo *mp3DecInfo, unsigned char *buf)
 			sis->preFlag =           (fh->ver == MPEG1 ? GetBits(bsi, 1) : 0);
 			sis->sfactScale =        GetBits(bsi, 1);
 			sis->count1TableSelect = GetBits(bsi, 1);
+			mp3DecInfo->part23Length[gr][ch] = sis->part23Length;
 		}
 	}
 	mp3DecInfo->mainDataBegin = si->mainDataBegin;	/* needed by main decode loop */
@@ -467,4 +468,3 @@ int UnpackSideInfo(MP3DecInfo *mp3DecInfo, unsigned char *buf)
 
 	return nBytes;	
 }
-

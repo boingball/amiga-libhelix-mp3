@@ -131,6 +131,18 @@ typedef struct _MP3DecodeCoreProfile {
 	clock_t polyphase;
 	unsigned long imdctSubbandsExecuted;
 	unsigned long imdctSubbandsSkipped;
+	unsigned long monoMSSideSkipEligible;
+	unsigned long monoMSSideHuffmanSkipped;
+	unsigned long monoMSSideDequantSkipped;
+	unsigned long monoMSSideIMDCTSkipped;
+	unsigned long monoMSSideSynthesisSkipped;
+	unsigned long monoMSSideFallbackNotStereoSource;
+	unsigned long monoMSSideFallbackOutputStereo;
+	unsigned long monoMSSideFallbackNotJointStereo;
+	unsigned long monoMSSideFallbackNoMS;
+	unsigned long monoMSSideFallbackIntensity;
+	unsigned long monoMSSideFallbackDisabled;
+	unsigned long monoMSSideFallbackMalformed;
 } MP3DecodeCoreProfile;
 
 typedef struct _MP3FastLowrateGranuleDebug {
@@ -178,6 +190,7 @@ int MP3ExperimentalFDCT32QuarterEnabled(void);
 void MP3SetExperimentalHuffman(int enabled);
 int MP3ExperimentalHuffmanEnabled(void);
 void MP3SetOutputMono(HMP3Decoder hMP3Decoder, int enabled);
+void MP3SetMonoMSSideSkip(HMP3Decoder hMP3Decoder, int enabled);
 int MP3GetOutputChannels(HMP3Decoder hMP3Decoder);
 int MP3GetFastLowrateDebug(HMP3Decoder hMP3Decoder,
 	MP3FastLowrateGranuleDebug *debug, int maxDebug);
@@ -188,6 +201,7 @@ void MP3GetDecodeCoreProfile(MP3DecodeCoreProfile *profile);
 int MP3DecodeCoreProfileIsEnabled(void);
 void MP3AddDecodeCoreProfile(int bucket, clock_t elapsed);
 void MP3AddDecodeCoreIMDCTSubbands(unsigned long executed, unsigned long skipped);
+void MP3AddDecodeCoreMonoMSSideSkip(int bucket);
 
 #ifdef __cplusplus
 }

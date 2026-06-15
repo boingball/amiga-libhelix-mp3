@@ -44,6 +44,7 @@
 #include "string.h"
 //#include "hlxclib/string.h"		/* for memmove, memcpy (can replace with different implementations if desired) */
 #include "mp3common.h"	/* includes mp3dec.h (public API) and internal, platform-independent API */
+#include "real/coder.h"
 #include "amiga_profile_decode.h"
 
 
@@ -131,6 +132,33 @@ void MP3AddDecodeCoreIMDCTSubbands(unsigned long executed, unsigned long skipped
 #endif
 }
 
+void MP3AddDecodeCoreMonoMSSideSkip(int bucket)
+{
+#ifdef AMIGA_PROFILE_DECODE
+	unsigned long *counter = 0;
+
+	switch (bucket) {
+	case 0: counter = &gDecodeCoreProfile.monoMSSideSkipEligible; break;
+	case 1: counter = &gDecodeCoreProfile.monoMSSideHuffmanSkipped; break;
+	case 2: counter = &gDecodeCoreProfile.monoMSSideDequantSkipped; break;
+	case 3: counter = &gDecodeCoreProfile.monoMSSideIMDCTSkipped; break;
+	case 4: counter = &gDecodeCoreProfile.monoMSSideSynthesisSkipped; break;
+	case 5: counter = &gDecodeCoreProfile.monoMSSideFallbackNotStereoSource; break;
+	case 6: counter = &gDecodeCoreProfile.monoMSSideFallbackOutputStereo; break;
+	case 7: counter = &gDecodeCoreProfile.monoMSSideFallbackNotJointStereo; break;
+	case 8: counter = &gDecodeCoreProfile.monoMSSideFallbackNoMS; break;
+	case 9: counter = &gDecodeCoreProfile.monoMSSideFallbackIntensity; break;
+	case 10: counter = &gDecodeCoreProfile.monoMSSideFallbackDisabled; break;
+	case 11: counter = &gDecodeCoreProfile.monoMSSideFallbackMalformed; break;
+	default: break;
+	}
+	if (counter)
+		(*counter)++;
+#else
+	(void)bucket;
+#endif
+}
+
 /**************************************************************************************
  * Function:    MP3InitDecoder
  *
@@ -148,6 +176,8 @@ HMP3Decoder MP3InitDecoder(void)
 	MP3DecInfo *mp3DecInfo;
 
 	mp3DecInfo = AllocateBuffers();
+	if (mp3DecInfo)
+		mp3DecInfo->monoMSSideSkipEnabled = 1;
 
 	return (HMP3Decoder)mp3DecInfo;
 }
@@ -305,6 +335,56 @@ void MP3SetOutputMono(HMP3Decoder hMP3Decoder, int enabled)
 	if (!mp3DecInfo)
 		return;
 	mp3DecInfo->outputMono = enabled ? 1 : 0;
+}
+
+void MP3SetMonoMSSideSkip(HMP3Decoder hMP3Decoder, int enabled)
+{
+	MP3DecInfo *mp3DecInfo = (MP3DecInfo *)hMP3Decoder;
+
+	if (!mp3DecInfo)
+		return;
+	mp3DecInfo->monoMSSideSkipEnabled = enabled ? 1 : 0;
+}
+
+static int MP3MonoMSSideSkipEligible(MP3DecInfo *mp3DecInfo, int gr, int mainBits)
+{
+	FrameHeader *fh;
+
+	if (!mp3DecInfo || !mp3DecInfo->FrameHeaderPS)
+		return 11;
+	fh = (FrameHeader *)mp3DecInfo->FrameHeaderPS;
+	if (!mp3DecInfo->monoMSSideSkipEnabled)
+		return 10;
+	if (mp3DecInfo->nChans != 2)
+		return 5;
+	if (!mp3DecInfo->outputMono)
+		return 6;
+	if (fh->sMode != Joint)
+		return 7;
+	if (!(fh->modeExt & 0x02))
+		return 8;
+	if (fh->modeExt & 0x01)
+		return 9;
+	if (gr < 0 || gr >= mp3DecInfo->nGrans ||
+		mp3DecInfo->part23Length[gr][1] < 0 ||
+		mainBits < mp3DecInfo->part23Length[gr][1])
+		return 11;
+	return 0;
+}
+
+static int MP3SkipMainDataBits(unsigned char **mainPtr, int *bitOffset, int *mainBits, int nBits)
+{
+	int totalBits;
+	int offset;
+
+	if (!mainPtr || !*mainPtr || !bitOffset || !mainBits || nBits < 0 || *mainBits < nBits)
+		return -1;
+	totalBits = *bitOffset + nBits;
+	offset = totalBits >> 3;
+	*bitOffset = totalBits & 7;
+	*mainPtr += offset;
+	*mainBits -= nBits;
+	return 0;
 }
 
 int MP3GetOutputChannels(HMP3Decoder hMP3Decoder)
@@ -624,7 +704,23 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 
 	/* decode one complete frame */
 	for (gr = 0; gr < mp3DecInfo->nGrans; gr++) {
+		int msSideSkipReason = MP3MonoMSSideSkipEligible(mp3DecInfo, gr, mainBits);
+		mp3DecInfo->monoMSSideSkipGranule[gr] = (msSideSkipReason == 0);
+		if (msSideSkipReason == 0)
+			MP3AddDecodeCoreMonoMSSideSkip(0);
+		else
+			MP3AddDecodeCoreMonoMSSideSkip(msSideSkipReason);
 		for (ch = 0; ch < mp3DecInfo->nChans; ch++) {
+			if (ch == 1 && mp3DecInfo->monoMSSideSkipGranule[gr]) {
+				if (MP3SkipMainDataBits(&mainPtr, &bitOffset, &mainBits,
+					mp3DecInfo->part23Length[gr][ch]) < 0) {
+					MP3AddDecodeCoreMonoMSSideSkip(11);
+					MP3ClearBadFrame(mp3DecInfo, outbuf);
+					return ERR_MP3_INVALID_SCALEFACT;
+				}
+				MP3AddDecodeCoreMonoMSSideSkip(1);
+				continue;
+			}
 			
 			#ifdef PROFILE
 				time = systime_get();
@@ -688,6 +784,9 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 			int synthChans;
 
 			synthChans = (mp3DecInfo->outputMono && mp3DecInfo->nChans > 1) ? 1 : mp3DecInfo->nChans;
+			if (synthChans == 1 && mp3DecInfo->nChans > 1 &&
+				mp3DecInfo->monoMSSideSkipGranule[gr])
+				MP3AddDecodeCoreMonoMSSideSkip(3);
 			for (ch = 0; ch < synthChans; ch++)
 			{
 		#ifdef PROFILE
@@ -728,6 +827,8 @@ int MP3Decode(HMP3Decoder hMP3Decoder, unsigned char **inbuf, int *bytesLeft, sh
 				MP3ClearBadFrame(mp3DecInfo, outbuf);
 				return ERR_MP3_INVALID_SUBBAND;
 			}
+			if (mp3DecInfo->monoMSSideSkipGranule[gr])
+				MP3AddDecodeCoreMonoMSSideSkip(4);
 
 			if (mp3DecInfo->fastLowrateStride > 1) {
 				int expectedLowrateSamps;
