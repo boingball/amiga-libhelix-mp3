@@ -124,6 +124,16 @@ static const char *GuiStartupStageName(int stage)
 extern GuiPlaybackStatus gGuiPlaybackStatus;
 extern volatile int gMiniAmp3EmbeddedPlayback;
 
+#ifdef MINIAMP3_DEBUG
+#ifndef MINIAMP3_DEBUG_FMT_PTR
+#if defined(AMIGA_M68K)
+#define MINIAMP3_DEBUG_FMT_PTR(p) ((ULONG)(p))
+#else
+#define MINIAMP3_DEBUG_FMT_PTR(p) (p)
+#endif
+#endif
+#endif
+
 #ifdef AMIGA_M68K
 #include <exec/types.h>
 #include <exec/tasks.h>
@@ -1682,8 +1692,8 @@ static void FinishArtDecode(HelixAmp3Gui *gui, int ok)
 #ifdef MINIAMP3_DEBUG
 		unsigned long totalMicros = ArtElapsedMicros(st->startSecs, st->startMicros);
 		Printf("artwork done: reduce=%s pumps=%lu decode_us=%lu process_us=%lu total_us=%lu cache=miss\n",
-			st->reduce ? "yes" : "no", st->pumpCount, st->decodeMicros,
-			st->processMicros, totalMicros);
+			MINIAMP3_DEBUG_FMT_PTR(st->reduce ? "yes" : "no"),
+			st->pumpCount, st->decodeMicros, st->processMicros, totalMicros);
 #endif
 		for (i = 0; i < ART_W * ART_H; i++) {
 			if (st->greyCount[i])
@@ -1958,8 +1968,10 @@ static void StartArtDecode(HelixAmp3Gui *gui)
 #ifdef MINIAMP3_DEBUG
 	Printf("artwork JPEG: %dx%d bytes=%lu sampling=%s mcu=%dx%d total_mcus=%d reduce=%s cache=miss pump_limit=%d source_pixels=%lu reduced_blocks=%lu\n",
 		st->info.m_width, st->info.m_height, gui->tags.artBytes,
-		JpegScanTypeName(st->info.m_scanType), st->info.m_MCUWidth,
-		st->info.m_MCUHeight, st->totalMcus, st->reduce ? "yes" : "no",
+		MINIAMP3_DEBUG_FMT_PTR(JpegScanTypeName(st->info.m_scanType)),
+		st->info.m_MCUWidth,
+		st->info.m_MCUHeight, st->totalMcus,
+		MINIAMP3_DEBUG_FMT_PTR(st->reduce ? "yes" : "no"),
 		ART_MCUS_PER_PUMP, (unsigned long)st->info.m_width *
 		(unsigned long)st->info.m_height, (unsigned long)st->totalMcus *
 		(unsigned long)(st->info.m_MCUWidth / 8) *
@@ -3645,7 +3657,7 @@ static void SetGuiVolume(HelixAmp3Gui *gui, int percent, int persist,
 		(unsigned long)classValue, (unsigned long)code, (long)gui->volumePercent,
 		(unsigned long)gMiniAmp3RequestedVolume,
 		(unsigned long)gMiniAmp3VolumeSequence,
-		gui->playbackActive ? "yes" : "no");
+		MINIAMP3_DEBUG_FMT_PTR(gui->playbackActive ? "yes" : "no"));
 #endif
 	if (persist)
 		SaveGuiSettings(gui);
