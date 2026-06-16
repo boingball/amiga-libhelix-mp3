@@ -614,7 +614,7 @@ static void PrintUsage(const char *prog)
 	printf("                 defaults to 11025 if no --rate is specified\n");
 	printf("  --quality N set quality/speed level (0 fastest, 1 fast, 2 balanced, 3 accurate)\n");
 	printf("               default: 1 for --fast-lowrate --rate 11025, otherwise 3\n");
-	printf("               0 enables all fast paths including Huffman; 3 is original behavior\n");
+	printf("               0 enables Superfast FDCT32 quarter + Huffman; 1 keeps IMDCT thin opt-in; 3 is original behavior\n");
 	printf("               individual --exp-* flags may still be enabled independently\n");
 	printf("  --exp-poly  use experimental 68030 asm mono polyphase when compiled in\n");
 	printf("  --exp-huff  use experimental 68030 inline-asm Huffman pair refill when compiled in\n");
@@ -628,7 +628,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-fdct32half-debug print first FDCT32Half mismatch dependencies\n");
 	printf("  --selftest-verbose print every selftest mismatch instead of the first only\n");
 	printf("  --selftest-imdct compare C reference and optional m68k asm long IMDCT path\n");
-	printf("  --selftest-imdct-thin compare full and requested thinned IMDCT output paths\n");
+	printf("  --selftest-imdct-thin verify exact selected IMDCT bands and deterministic sparse output\n");
 	printf("  --selftest-subband-cap verify low-rate mono IMDCT subband cap behavior\n");
 	printf("  --selftest-antialias compare C reference and optional m68k asm antialias path\n");
 	printf("  --selftest-polyphase compare C fast mono polyphase and optional m68k asm path\n");
@@ -2120,7 +2120,7 @@ static int SelftestQuality(void)
 	memset(&opt, 0, sizeof(opt));
 	opt.fastLowrate = 1;
 	opt.outputRate = 11025;
-	failures += QualitySelftestExpect("auto-fast-lowrate-11025", opt, 1, 0, 1, 1, 0, 1) != 0;
+	failures += QualitySelftestExpect("auto-fast-lowrate-11025", opt, 1, 0, 0, 1, 0, 1) != 0;
 
 	memset(&opt, 0, sizeof(opt));
 	opt.fastLowrate = 1;
@@ -3334,7 +3334,7 @@ static unsigned long NextRand32(unsigned long *state)
 	return *state;
 }
 
-static int SelftestHuffman(void)
+static int SelftestHuffman(const DecodeOptions *opt)
 {
 	enum { HUFFMAN_SELFTEST_CASES = 1000, HUFFMAN_PAIR_TABS = 32 };
 	static unsigned char buf[128];
@@ -3389,6 +3389,10 @@ static int SelftestHuffman(void)
 		}
 	}
 
+	printf("Huffman asm compiled: %s\n", AMIGA_HUFFMAN_PAIRS_HAS_ASM() ? "yes" : "no");
+	printf("Huffman runtime default: C\n");
+	printf("Huffman selftest candidate: %s\n", AMIGA_HUFFMAN_PAIRS_HAS_ASM() ? "asm" : "C");
+	printf("Huffman forced by --exp-huff: %s\n", (opt && opt->expHuff) ? "yes" : "no");
 	printf("Huffman asm active: %s\n", AMIGA_HUFFMAN_PAIRS_ASM_NOTE());
 	printf("Huffman selftest cases: %lu\n", i);
 	printf("Huffman selftest failures: %lu\n", failures);
@@ -6030,6 +6034,11 @@ int main(int argc, char **argv)
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}
+	if (opt.selftestPolyphaseStride2Stereo) {
+		int selftestErr = SelftestPolyphaseStride2Stereo();
+		AmigaFreeNormalizedArgs(&normalized);
+		return selftestErr;
+	}
 	if (opt.selftestFastLowrate) {
 		int selftestErr = SelftestFastLowrate();
 		AmigaFreeNormalizedArgs(&normalized);
@@ -6046,7 +6055,7 @@ int main(int argc, char **argv)
 		return selftestErr;
 	}
 	if (opt.selftestHuffman) {
-		int selftestErr = SelftestHuffman();
+		int selftestErr = SelftestHuffman(&opt);
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}
