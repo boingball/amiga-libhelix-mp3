@@ -4129,6 +4129,8 @@ typedef struct GuiPlaybackStatus {
 	volatile int           openDeviceResult;
 } GuiPlaybackStatus;
 
+GuiPlaybackStatus gGuiPlaybackStatus;
+
 #define GUIPLAY_PHASE_IDLE      0   /* not playing */
 #define GUIPLAY_PHASE_BUFFERING 1   /* filling initial buffers */
 #define GUIPLAY_PHASE_PLAYING   2   /* steady-state streaming */
@@ -4179,6 +4181,14 @@ typedef struct GuiPlaybackStatus {
 #define GUISTART_CLEANUP               910
 
 #ifdef MINIAMP3_DEBUG
+#ifndef MINIAMP3_DEBUG_FMT_PTR
+#if defined(AMIGA_M68K)
+#define MINIAMP3_DEBUG_FMT_PTR(p) ((ULONG)(p))
+#else
+#define MINIAMP3_DEBUG_FMT_PTR(p) (p)
+#endif
+#endif
+
 const char *GuiStartupStageName(int stage)
 {
 	switch (stage) {
@@ -4231,11 +4241,14 @@ static void GuiWriteDetailedStartupLog(int stage)
 
 		len = sprintf(line,
 			"runId=%lu stage=%d name=%s requestedRate=%d effectiveRate=%d period=%u requestedBytes=%lu tryBytes=%lu openDeviceResult=%d interrupted=%d task=%p process=%p\n",
-			gGuiPlaybackStatus.runId, stage, GuiStartupStageName(stage),
+			gGuiPlaybackStatus.runId, stage,
+			MINIAMP3_DEBUG_FMT_PTR(GuiStartupStageName(stage)),
 			gGuiPlaybackStatus.requestedRate, gGuiPlaybackStatus.effectiveRate,
 			gGuiPlaybackStatus.paulaPeriod, gGuiPlaybackStatus.requestedBytes,
 			gGuiPlaybackStatus.tryBytes, gGuiPlaybackStatus.openDeviceResult,
-			gPlaybackInterrupted, (void *)FindTask(NULL), (void *)FindTask(NULL));
+			gPlaybackInterrupted,
+			MINIAMP3_DEBUG_FMT_PTR((void *)FindTask(NULL)),
+			MINIAMP3_DEBUG_FMT_PTR((void *)FindTask(NULL)));
 		log = Open((STRPTR)"T:MiniAMP3-startup.log", MODE_READWRITE);
 		if (log) {
 			Seek(log, 0, OFFSET_END);
@@ -4255,8 +4268,6 @@ static void GuiWriteDetailedStartupLog(int stage)
 #endif
 }
 #endif /* MINIAMP3_DEBUG */
-
-GuiPlaybackStatus gGuiPlaybackStatus;
 
 static void GuiPublishStartupStage(int stage)
 {
