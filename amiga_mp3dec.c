@@ -4803,7 +4803,8 @@ static void AmigaAudioCommitOne(AmigaAudioPlayer *player, int index, int ch)
 	if (gPlaybackInterrupted || player->stopping)
 		return;
 	player->req[index][ch]->ioa_Request.io_Command = CMD_WRITE;
-	player->req[index][ch]->ioa_Request.io_Flags |= ADIOF_PERVOL;
+	player->req[index][ch]->ioa_Request.io_Flags = ADIOF_PERVOL;
+	player->req[index][ch]->ioa_Request.io_Error = 0;
 	player->req[index][ch]->ioa_Volume = player->requestVolume;
 	player->sent[index][ch] = 1;
 	BeginIO((struct IORequest *)player->req[index][ch]);
