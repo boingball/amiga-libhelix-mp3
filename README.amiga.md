@@ -122,12 +122,17 @@ path display, a status bar, and Play/Stop buttons. The GUI uses
 `gadtools.library` through the AmigaOS m68k pragmas, so no `-lauto` linker flag
 is needed.
 
-The quality cycle maps to the same playback code used by `amiga_mp3dec`:
+The quality cycle maps directly to the same decoder quality levels used by
+`amiga_mp3dec`, and GUI playback always passes an explicit `--quality N` value:
 
-- **Fast** enables the explicit `--play-fast-path` alias for the lowest-overhead
-  playback setup.
-- **Normal** and **Best** leave the memory preload choice to the Fast-mem
-  checkbox, so unticking Fast-mem is always obeyed.
+- **Faster** passes `--quality 0`: maximum decoder speed and the most aggressive
+  optimisations.
+- **Fast** passes `--quality 1`.
+- **Normal** passes `--quality 2`.
+- **Best** passes `--quality 3`: least aggressive optimisation.
+
+The Fast-mem checkbox remains independent of decoder quality, so unticking
+Fast-mem is always obeyed.
 
 The buffer slider chooses the `--buffer-seconds` value from 1 to 30 seconds. The Volume slider stores `ENVARC:MiniAMP3/Volume` as 0-100% and maps it to `audio.device` `ioa_Volume` 0-64, so 0% is silent and 100% preserves the previous full-volume request value. Volume changes are shared with the embedded playback subprocess and applied to the next safe `CMD_WRITE` submission without changing PCM samples. The GUI rate selector cycles through 8287, 8820, 11025, 22050, and 28600 Hz.
 Superfast is a fast-lowrate variant rather than a separate exclusive mode; when

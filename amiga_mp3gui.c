@@ -161,7 +161,10 @@ extern volatile int gMiniAmp3EmbeddedPlayback;
 #include "picojpeg.h"
 
 #define HELIXAMP3_MAX_PATH 256
-#define HELIXAMP3_ARGC_MAX 20
+#define HELIXAMP3_ARGC_MAX 22
+#define HELIXAMP3_SETTINGS_VERSION 2
+#define HELIXAMP3_QUALITY_MIN 0
+#define HELIXAMP3_QUALITY_MAX 3
 #define HELIXAMP3_SIGMASK(gui) (1UL << (gui)->win->UserPort->mp_SigBit)
 #define GUI_ENV_PREFIX  "ENVARC:MiniAMP3"
 
@@ -467,6 +470,7 @@ static int RateIndexSupportsSuperfast(int rateIndex)
 }
 
 static const STRPTR kQualityLabels[] = {
+	(STRPTR)"Faster",
 	(STRPTR)"Fast",
 	(STRPTR)"Normal",
 	(STRPTR)"Best",
@@ -537,24 +541,36 @@ static void EnvName(char *dst, size_t dstSize, const char *key)
 	strncat(dst, key, dstSize - strlen(dst) - 1);
 }
 
-static int LoadEnvInt(const char *key, int fallback, int minValue, int maxValue)
+static int LoadEnvIntMaybe(const char *key, int *outValue, int minValue, int maxValue)
 {
 	char name[64];
 	char value[32];
 	long n;
 	int v;
 
+	if (!outValue)
+		return 0;
 	EnvName(name, sizeof(name), key);
 	n = GetVar((STRPTR)name, (STRPTR)value, sizeof(value) - 1, 0);
 	if (n <= 0)
-		return fallback;
+		return 0;
 	value[n] = '\0';
 	v = atoi(value);
 	if (v < minValue)
 		v = minValue;
 	if (v > maxValue)
 		v = maxValue;
-	return v;
+	*outValue = v;
+	return 1;
+}
+
+static int LoadEnvInt(const char *key, int fallback, int minValue, int maxValue)
+{
+	int v;
+
+	if (LoadEnvIntMaybe(key, &v, minValue, maxValue))
+		return v;
+	return fallback;
 }
 
 static void LoadEnvString(const char *key, char *dst, size_t dstSize)
@@ -601,6 +617,7 @@ static void SaveGuiSettings(HelixAmp3Gui *gui)
 	SaveEnvInt("BufferSeconds", gui->bufferSeconds);
 	SaveEnvInt("Volume", gui->volumePercent);
 	SaveEnvInt("QualityIndex", gui->qualityIndex);
+	SaveEnvInt("SettingsVersion", HELIXAMP3_SETTINGS_VERSION);
 	SaveEnvInt("DecodeThenPlay", gui->decodeThenPlay);
 	SaveEnvInt("Bench", gui->bench);
 	SaveEnvInt("Artwork", gui->artEnabled);
@@ -2863,7 +2880,26 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	gui->volumePercent = LoadEnvInt("Volume", 100, 0, 100);
 	gMiniAmp3RequestedVolume = (unsigned short)gui->volumePercent;
 	gMiniAmp3VolumeSequence++;
-	gui->qualityIndex = LoadEnvInt("QualityIndex", 0, 0, 2);
+	{
+		int settingsVersion;
+		int loadedQuality;
+		int hasSettingsVersion = LoadEnvIntMaybe("SettingsVersion", &settingsVersion,
+			1, HELIXAMP3_SETTINGS_VERSION);
+		int hasQualityIndex = LoadEnvIntMaybe("QualityIndex", &loadedQuality,
+			HELIXAMP3_QUALITY_MIN, HELIXAMP3_QUALITY_MAX);
+
+		if (!hasSettingsVersion && hasQualityIndex) {
+			/* Version 1 settings used 0=Fast, 1=Normal, 2=Best.
+			 * Version 2 inserts Faster at index 0, so migrate once. */
+			if (loadedQuality > 2)
+				loadedQuality = 2;
+			gui->qualityIndex = loadedQuality + 1;
+			SaveEnvInt("QualityIndex", gui->qualityIndex);
+			SaveEnvInt("SettingsVersion", HELIXAMP3_SETTINGS_VERSION);
+		} else {
+			gui->qualityIndex = hasQualityIndex ? loadedQuality : 1;
+		}
+	}
 	gui->decodeThenPlay = LoadEnvInt("DecodeThenPlay", 0, 0, 1);
 	gui->bench = LoadEnvInt("Bench", 0, 0, 1);
 	gui->artEnabled = LoadEnvInt("Artwork", 1, 0, 1);
@@ -3245,8 +3281,9 @@ static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Args *args)
 	AddArg(args, "--volume");
 	sprintf(num, "%d", gui->volumePercent);
 	AddArg(args, num);
-	if (gui->qualityIndex == 0)
-		AddArg(args, "--play-fast-path");
+	AddArg(args, "--quality");
+	sprintf(num, "%d", gui->qualityIndex);
+	AddArg(args, num);
 	if (gui->decodeThenPlay)
 		AddArg(args, "--decode-then-play");
 	if (gui->bench)
@@ -3265,18 +3302,77 @@ static void DebugPrintPlaybackArgs(const char *label, const HelixAmp3Args *args)
 	printf("\n");
 }
 
+static int DebugArgIndex(const HelixAmp3Args *args, const char *arg)
+{
+	int i;
+
+	for (i = 0; i < args->argc; i++) {
+		if (!strcmp(args->argv[i], arg))
+			return i;
+	}
+	return -1;
+}
+
+static int DebugArgCount(const HelixAmp3Args *args, const char *arg)
+{
+	int i;
+	int count = 0;
+
+	for (i = 0; i < args->argc; i++) {
+		if (!strcmp(args->argv[i], arg))
+			count++;
+	}
+	return count;
+}
+
+static void DebugValidatePlaybackArgs(const char *label, const HelixAmp3Args *args,
+	int expectedQuality, int expectedMono)
+{
+	char expected[16];
+	int qualityIndex;
+
+	sprintf(expected, "%d", expectedQuality);
+	qualityIndex = DebugArgIndex(args, "--quality");
+	if (qualityIndex < 0 || qualityIndex + 1 >= args->argc ||
+		strcmp(args->argv[qualityIndex + 1], expected))
+		printf("miniamp3-debug: ERROR %s missing expected --quality %s\n",
+			label, expected);
+	if (DebugArgCount(args, "--quality") != 1)
+		printf("miniamp3-debug: ERROR %s emitted --quality %d times\n",
+			label, DebugArgCount(args, "--quality"));
+	if (DebugArgIndex(args, "--play-fast-path") >= 0)
+		printf("miniamp3-debug: ERROR %s emitted --play-fast-path\n", label);
+	if (expectedMono) {
+		if (DebugArgCount(args, "--mono") != 1 || DebugArgCount(args, "--stereo") != 0)
+			printf("miniamp3-debug: ERROR %s mono argument mismatch\n", label);
+	} else if (DebugArgCount(args, "--stereo") != 1 || DebugArgCount(args, "--mono") != 0) {
+		printf("miniamp3-debug: ERROR %s stereo argument mismatch\n", label);
+	}
+}
+
 static void DebugSelftestPlaybackChannelArgs(HelixAmp3Gui *gui)
 {
 	HelixAmp3Gui copy;
 	HelixAmp3Args testArgs;
+	int quality;
 
 	copy = *gui;
 	copy.mono = 1;
 	BuildPlaybackArgs(&copy, &testArgs);
 	DebugPrintPlaybackArgs("BuildPlaybackArgs mono checked", &testArgs);
+	DebugValidatePlaybackArgs("BuildPlaybackArgs mono checked", &testArgs,
+		copy.qualityIndex, 1);
 	copy.mono = 0;
 	BuildPlaybackArgs(&copy, &testArgs);
 	DebugPrintPlaybackArgs("BuildPlaybackArgs mono unchecked", &testArgs);
+	DebugValidatePlaybackArgs("BuildPlaybackArgs mono unchecked", &testArgs,
+		copy.qualityIndex, 0);
+	for (quality = HELIXAMP3_QUALITY_MIN; quality <= HELIXAMP3_QUALITY_MAX; quality++) {
+		copy.qualityIndex = quality;
+		BuildPlaybackArgs(&copy, &testArgs);
+		DebugPrintPlaybackArgs(kQualityLabels[quality], &testArgs);
+		DebugValidatePlaybackArgs(kQualityLabels[quality], &testArgs, quality, copy.mono);
+	}
 }
 #endif
 
@@ -3812,8 +3908,9 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code,
 			break;
 		}
 		gui->qualityIndex = code;
-		if (gui->qualityIndex < 0 || gui->qualityIndex > 2)
-			gui->qualityIndex = 0;
+		if (gui->qualityIndex < HELIXAMP3_QUALITY_MIN ||
+			gui->qualityIndex > HELIXAMP3_QUALITY_MAX)
+			gui->qualityIndex = 1;
 		SetStatus(gui, "Quality profile updated.");
 		SaveGuiSettings(gui);
 		break;
