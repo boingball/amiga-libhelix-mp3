@@ -332,8 +332,11 @@ other invocations default to quality 3.
   Huffman shortcut is limited to this level because its ASM path has known
   bit-accounting edge cases; in builds without the Huffman m68k ASM path it
   silently falls back to the normal C Huffman decoder.
-- `--quality 1` (fast) enables reduced taps and fast polyphase. This is the
-  automatic default for `--fast-lowrate --rate 11025`.
+- `--quality 1` (fast) enables reduced taps and fast polyphase. It does not
+  enable IMDCT output thinning; `--exp-imdct-thin` remains an explicit
+  experimental opt-in because it produces a deterministic sparse approximation
+  rather than bit-identical full IMDCT output. This is the automatic default for
+  `--fast-lowrate --rate 11025`.
 - `--quality 2` (balanced) enables fast polyphase without reduced taps.
 - `--quality 3` (accurate) enables no approximations and is equivalent to the
   original decoder behavior.
@@ -377,6 +380,9 @@ amiga_mp3dec --quality 0 --play --fast-mem --fast-lowrate --rate 11025 --mono so
 - `--selftest-polyphase-stride4-stereo` compares the stereo stride-4 compact
   fast-lowrate polyphase kernel with the generic stereo sample selection over
   every phase and 500 pseudo-random vbuf states.
+- `--selftest-polyphase-stride2-stereo` compares the stereo stride-2 compact
+  fast-lowrate polyphase kernel with the generic stereo sample selection over
+  every phase and 500 pseudo-random vbuf states.
 - `--selftest-fastlowrate` compares a synthetic ramp/impulse-like PCM sequence
   through normal 44100 -> 11025 `--rate` decimation and the stride-4
   fast-lowrate selector across chunk boundaries.
@@ -390,8 +396,9 @@ amiga_mp3dec --quality 0 --play --fast-mem --fast-lowrate --rate 11025 --mono so
   optional 68030 dequant inner loop for scale values -47..0 and coefficient
   magnitudes 0..8206.
 - `--selftest-quality` verifies the `--quality 0` through `--quality 3` flag
-  combinations, explicit `--exp-*` override preservation, and the automatic
-  `--fast-lowrate --rate 11025` quality 1 default.
+  combinations, explicit `--exp-*` override preservation, the automatic
+  `--fast-lowrate --rate 11025` quality 1 default, and the fact that IMDCT
+  thinning stays explicitly opt-in.
 - `--checksum` prints a 32-bit checksum of the decoded 16-bit PCM stream before
   optional mixing, downsampling, or output-format conversion. With
   `--fast-lowrate`, it instead covers the low-rate output samples so experiments

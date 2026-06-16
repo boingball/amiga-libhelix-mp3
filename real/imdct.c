@@ -1136,8 +1136,12 @@ static int HybridTransform(int *xCurr, int *xPrev, int y[BLOCK_SIZE][NBANDS], Si
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_IMDCT_THIN_OUTPUT)
 			if (IMDCTThinBlockSelected(bc, i))
 				mOut |= IMDCT36(xCurr, xPrev, &(y[0][i]), currWinIdx, prevWinIdx, i, bc->gbIn);
-			else
+			else {
+				int row;
 				mOut |= IMDCT36_ThinSkip(xCurr, xPrev, bc->gbIn);
+				for (row = 0; row < BLOCK_SIZE; row++)
+					y[row][i] = 0;
+			}
 #else
 			mOut |= IMDCT36(xCurr, xPrev, &(y[0][i]), currWinIdx, prevWinIdx, i, bc->gbIn);
 #endif
@@ -1161,8 +1165,12 @@ static int HybridTransform(int *xCurr, int *xPrev, int y[BLOCK_SIZE][NBANDS], Si
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_IMDCT_THIN_OUTPUT)
 			if (IMDCTThinBlockSelected(bc, i))
 				mOut |= IMDCT36_C_REFERENCE(xCurr, xPrev, &(y[0][i]), currWinIdx, prevWinIdx, i, bc->gbIn);
-			else
+			else {
+				int row;
 				mOut |= IMDCT36_ThinSkip(xCurr, xPrev, bc->gbIn);
+				for (row = 0; row < BLOCK_SIZE; row++)
+					y[row][i] = 0;
+			}
 #else
 			mOut |= IMDCT36_C_REFERENCE(xCurr, xPrev, &(y[0][i]), currWinIdx, prevWinIdx, i, bc->gbIn);
 #endif
@@ -1450,6 +1458,7 @@ int IMDCTThinOutputSelftest(void)
 	int prevThin[MAX_NSAMP / 2];
 	int yFull[BLOCK_SIZE][NBANDS];
 	int yThin[BLOCK_SIZE][NBANDS];
+	int yExpected[BLOCK_SIZE][NBANDS];
 	SideInfoSub sis;
 	BlockCount fullBc;
 	BlockCount thinBc;
@@ -1458,6 +1467,7 @@ int IMDCTThinOutputSelftest(void)
 	int outThin;
 	unsigned int pcmFull;
 	unsigned int pcmThin;
+	unsigned int pcmExpected;
 	int failures;
 
 	for (i = 0; i < MAX_NSAMP; i++) {
@@ -1470,6 +1480,7 @@ int IMDCTThinOutputSelftest(void)
 	}
 	memset(yFull, 0xa5, sizeof(yFull));
 	memset(yThin, 0xa5, sizeof(yThin));
+	memset(yExpected, 0, sizeof(yExpected));
 	memset(&sis, 0, sizeof(sis));
 	memset(&fullBc, 0, sizeof(fullBc));
 	memset(&thinBc, 0, sizeof(thinBc));
@@ -1490,8 +1501,15 @@ int IMDCTThinOutputSelftest(void)
 
 	outFull = HybridTransform(xFull, prevFull, yFull, &sis, &fullBc);
 	outThin = HybridTransform(xThin, prevThin, yThin, &sis, &thinBc);
+	for (i = 0; i < NBANDS; i++) {
+		int t;
+		if ((i % thinBc.imdctThinStride) == thinBc.imdctThinPhase)
+			for (t = 0; t < BLOCK_SIZE; t++)
+				yExpected[t][i] = yFull[t][i];
+	}
 	pcmFull = IMDCTThinChecksumPCM(yFull, fullBc.gbOut);
 	pcmThin = IMDCTThinChecksumPCM(yThin, thinBc.gbOut);
+	pcmExpected = IMDCTThinChecksumPCM(yExpected, fullBc.gbOut);
 
 	failures = 0;
 	if (outFull != outThin) {
@@ -1502,17 +1520,24 @@ int IMDCTThinOutputSelftest(void)
 		printf("IMDCT thin xPrev mismatch\n");
 		failures++;
 	}
-	if (memcmp(yFull, yThin, sizeof(yFull)) != 0) {
-		printf("IMDCT thin selected y[] mismatch\n");
+	if (memcmp(yExpected, yThin, sizeof(yExpected)) != 0) {
+		int t, sb;
+		for (t = 0; t < BLOCK_SIZE; t++) {
+			for (sb = 0; sb < NBANDS; sb++) {
+				if (yExpected[t][sb] != yThin[t][sb]) {
+					printf("IMDCT thin sparse y[] mismatch: index=%d subband=%d time=%d blockType=%d stride=%d full=%ld thin=%ld\n",
+						t * NBANDS + sb, sb, t, sis.blockType, thinBc.imdctThinStride,
+						(long)yExpected[t][sb], (long)yThin[t][sb]);
+					t = BLOCK_SIZE;
+					break;
+				}
+			}
+		}
 		failures++;
 	}
-	if (pcmFull != pcmThin) {
-		printf("IMDCT thin fast-lowrate PCM checksum mismatch: full=%lu thin=%lu\n", (unsigned long)pcmFull, (unsigned long)pcmThin);
-		failures++;
-	}
-	if (pcmThin != 1199929127U) {
-		printf("IMDCT thin fast-lowrate PCM checksum unexpected: got=%lu expected=%lu\n",
-			(unsigned long)pcmThin, 1199929127UL);
+	if (pcmThin != pcmExpected) {
+		printf("IMDCT thin deterministic sparse PCM checksum mismatch: expected=%lu thin=%lu full=%lu\n",
+			(unsigned long)pcmExpected, (unsigned long)pcmThin, (unsigned long)pcmFull);
 		failures++;
 	}
 
@@ -1530,7 +1555,8 @@ int IMDCTThinOutputSelftest(void)
 		"disabled (compile gate unavailable)"
 #endif
 	);
-	printf("IMDCT thin fast-lowrate PCM checksum: %lu\n", (unsigned long)pcmFull);
+	printf("IMDCT thin full PCM checksum: %lu\n", (unsigned long)pcmFull);
+	printf("IMDCT thin deterministic sparse PCM checksum: %lu\n", (unsigned long)pcmExpected);
 	printf("IMDCT thin selftest failures: %d\n", failures);
 	return failures ? -1 : 0;
 }
