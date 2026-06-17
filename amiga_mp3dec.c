@@ -6958,8 +6958,13 @@ int main(int argc, char **argv)
 				stats.minimumSpareMilliseconds);
 		else
 			printf("playback minimum spare before buffer end: n/a\n");
-		printf("fast-lowrate stride: %d (experimental; IMDCT/DCT32 still full-rate)\n",
-			MP3GetFastLowrateStride(decoder));
+		if (MP3SuperfastLowrateEnabled(decoder))
+			printf("fast-lowrate stride: %d (superfast: IMDCT/overlap capped to %d of %d subbands; FDCT32 full-rate)\n",
+				MP3GetFastLowrateStride(decoder),
+				MP3GetFastLowrateActiveSubbands(decoder), 32);
+		else
+			printf("fast-lowrate stride: %d (fast-lowrate: IMDCT/DCT32 full-rate)\n",
+				MP3GetFastLowrateStride(decoder));
 		if (opt.bench) {
 			double elapsed = 0.0;
 			double audioSeconds;
@@ -7239,9 +7244,15 @@ int main(int argc, char **argv)
 		printf("%s PCM checksum: %08lx\n",
 			opt.fastLowrate ? "fast-lowrate output" : "decoded",
 			stats.pcmChecksum);
-	if (opt.fastLowrate)
-		printf("fast-lowrate stride: %d (experimental; IMDCT/DCT32 still full-rate)\n",
-			MP3GetFastLowrateStride(decoder));
+	if (opt.fastLowrate) {
+		if (MP3SuperfastLowrateEnabled(decoder))
+			printf("fast-lowrate stride: %d (superfast: IMDCT/overlap capped to %d of %d subbands; FDCT32 full-rate)\n",
+				MP3GetFastLowrateStride(decoder),
+				MP3GetFastLowrateActiveSubbands(decoder), 32);
+		else
+			printf("fast-lowrate stride: %d (fast-lowrate: IMDCT/DCT32 full-rate)\n",
+				MP3GetFastLowrateStride(decoder));
+	}
 
 	if (opt.bench) {
 		double elapsed = 0.0;
