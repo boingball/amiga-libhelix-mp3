@@ -311,6 +311,15 @@ int MP3GetFastLowrateStride(HMP3Decoder hMP3Decoder)
 		mp3DecInfo->fastLowrateStride : 1;
 }
 
+int MP3GetFastLowrateActiveSubbands(HMP3Decoder hMP3Decoder)
+{
+	MP3DecInfo *mp3DecInfo = (MP3DecInfo *)hMP3Decoder;
+
+	if (!mp3DecInfo || mp3DecInfo->fastLowrateActiveSubbands <= 0)
+		return NBANDS;
+	return mp3DecInfo->fastLowrateActiveSubbands;
+}
+
 int MP3GetFastLowrateDebug(HMP3Decoder hMP3Decoder,
 	MP3FastLowrateGranuleDebug *debug, int maxDebug)
 {

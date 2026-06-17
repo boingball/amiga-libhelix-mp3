@@ -177,6 +177,7 @@ int MP3GetNextFrameInfo(HMP3Decoder hMP3Decoder, MP3FrameInfo *mp3FrameInfo, uns
 int MP3FindSyncWord(unsigned char *buf, int nBytes);
 void MP3SetFastLowrate(HMP3Decoder hMP3Decoder, int stride);
 int MP3GetFastLowrateStride(HMP3Decoder hMP3Decoder);
+int MP3GetFastLowrateActiveSubbands(HMP3Decoder hMP3Decoder);
 void MP3SetSuperfastLowrate(HMP3Decoder hMP3Decoder, int enabled);
 int MP3SuperfastLowrateEnabled(HMP3Decoder hMP3Decoder);
 void MP3SetExperimentalIMDCTThin(HMP3Decoder hMP3Decoder, int enabled);
