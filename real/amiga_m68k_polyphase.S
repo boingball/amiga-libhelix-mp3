@@ -31,10 +31,11 @@ AmigaM68KPolyphaseMonoFast:
 	move.l	52(%sp),%a1
 	move.l	56(%sp),%a2
 
+/* coefficients arrive pre-shifted by DEF_NFRACBITS (see PolyAsmCoef in
+ * polyphase.c), so the per-tap `asl.l #6` is no longer needed here. */
 .macro PROD_ADD voff, coff, acc
 	move.l	\voff(%a1),%d0
 	move.l	\coff(%a2),%d1
-	asl.l	#6,%d1
 	muls.l	%d1,%d2:%d0
 	add.l	%d2,\acc
 .endm
@@ -42,7 +43,6 @@ AmigaM68KPolyphaseMonoFast:
 .macro PROD_SUB voff, coff, acc
 	move.l	\voff(%a1),%d0
 	move.l	\coff(%a2),%d1
-	asl.l	#6,%d1
 	muls.l	%d1,%d2:%d0
 	sub.l	%d2,\acc
 .endm
@@ -300,10 +300,11 @@ MonoFastPolyphaseStride4_Amiga_m68k:
  * left row base is 128, not a whole 512-int half-buffer.
  */
 
+/* coefficients arrive pre-shifted by DEF_NFRACBITS (see PolyAsmCoef in
+ * polyphase.c), so the per-tap `asl.l #6` is no longer needed here. */
 .macro STEREO_PROD_ADD voff, coff, lacc, racc
 	move.l	\voff(%a1),%d0
 	move.l	\coff(%a2),%d1
-	asl.l	#6,%d1
 	muls.l	%d1,%d2:%d0
 	add.l	%d2,\lacc
 	move.l	\voff+128(%a1),%d0
@@ -314,7 +315,6 @@ MonoFastPolyphaseStride4_Amiga_m68k:
 .macro STEREO_PROD_SUB voff, coff, lacc, racc
 	move.l	\voff(%a1),%d0
 	move.l	\coff(%a2),%d1
-	asl.l	#6,%d1
 	muls.l	%d1,%d2:%d0
 	sub.l	%d2,\lacc
 	move.l	\voff+128(%a1),%d0

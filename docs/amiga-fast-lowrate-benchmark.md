@@ -359,3 +359,37 @@ amiga_mp3dec.after  --decode-only --bench --checksum --fast-lowrate --rate 8820 
 
 (Decode a stereo file without `--mono` so the stereo synthesis path runs;
 `--stereo` itself is a `--play` streaming option, not a decode flag.)
+
+## Pre-shifted polyphase coefficients (remove per-tap `asl.l #6`)
+
+Both the C fast path and every m68k assembly polyphase kernel previously shifted
+each coefficient left by `DEF_NFRACBITS` (6) with an `asl.l #6` immediately
+before the `muls.l` on every filter tap.  The coefficient table is small and
+constant, so it is now pre-shifted once into a side table (`PolyAsmCoef()` in
+`real/polyphase.c`) that is handed to the assembly kernels in place of the raw
+`coefBase`.  The four assembly product macros (`PROD_ADD`, `PROD_SUB`,
+`STEREO_PROD_ADD`, `STEREO_PROD_SUB`) drop the per-tap shift entirely, removing
+one ALU op per tap from the hottest synthesis loop on the 68030.
+
+The C reference path is unchanged: it still receives the original `coefBase` and
+applies the shift itself, so the side table only feeds the assembly path.  The
+pre-shift can never overflow: `max |polyCoef| << 6` is about 19.2 million, far
+below 2^31.  Equivalence is exact because `muls.l(coef << 6, x) >> 32` equals the
+C reference's `(coef * x) >> 26`.
+
+Validate on target with the existing kernel selftests (they compare the assembly
+output sample-for-sample against the C reference, which still applies the shift):
+
+```sh
+amiga_mp3dec.fastexp --selftest-polyphase
+amiga_mp3dec.fastexp --selftest-polyphase-stride2
+amiga_mp3dec.fastexp --selftest-polyphase-stride4
+amiga_mp3dec.fastexp --selftest-polyphase-stride2-stereo
+amiga_mp3dec.fastexp --selftest-polyphase-stride4-stereo
+amiga_mp3dec.fastexp --selftest-polyphase-stride5-stereo
+```
+
+All six must report `failures: 0`.  Then record before/after polyphase timing
+with `--bench` on the target; the saving scales with the number of emitted
+samples, so it is largest at full-rate and 22050 Hz output and smallest at the
+sparser low-rate strides.
