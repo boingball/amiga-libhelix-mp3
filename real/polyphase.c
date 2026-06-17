@@ -277,12 +277,39 @@ extern int StereoFastPolyphaseStride4Phase2_Amiga_m68k(short *pcm, int *vbuf,
 extern int StereoFastPolyphaseStride4Phase3_Amiga_m68k(short *pcm, int *vbuf,
 	const int *coefBase) __asm__("StereoFastPolyphaseStride4Phase3_Amiga_m68k")
 	__attribute__((weak));
+
+/*
+ * The m68k assembly polyphase kernels previously shifted every coefficient left
+ * by DEF_NFRACBITS (6) with an `asl.l #6` immediately before each `muls.l`.  The
+ * coefficient table is small and constant, so pre-shift it once into a side
+ * table and hand that pointer to the assembly kernels instead.  This removes one
+ * shift per filter tap from the hottest synthesis loop on the 68030.  The C
+ * reference path is unchanged: it still receives the original coefBase and
+ * applies the shift itself, so PolyAsmCoef() only feeds the assembly path.
+ * polyCoef magnitudes are well within range: max |coef| << 6 stays far below
+ * 2^31, so the pre-shift never overflows.
+ */
+#define POLY_ASM_COEF_COUNT 264
+static int gPolyAsmCoef[POLY_ASM_COEF_COUNT];
+static int gPolyAsmCoefReady;
+
+static const int *PolyAsmCoef(const int *coefBase)
+{
+	int i;
+
+	if (!gPolyAsmCoefReady) {
+		for (i = 0; i < POLY_ASM_COEF_COUNT; i++)
+			gPolyAsmCoef[i] = coefBase[i] << DEF_NFRACBITS;
+		gPolyAsmCoefReady = 1;
+	}
+	return gPolyAsmCoef;
+}
 #endif
 
 static __inline short ClipToShort(int x, int fracBits)
 {
 	int sign;
-	
+
 	/* assumes you've already rounded (x += (1 << (fracBits-1))) */
 	x >>= fracBits;
 	
@@ -1378,7 +1405,7 @@ int PolyphaseStereoFastLowrateStride2_TEST_ACTIVE(short *pcm, int *vbuf, const i
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
 	if (!MP3ForceStereoStride2PolyphaseC() &&
 		StereoFastPolyphaseStride2Phase0_Amiga_m68k_IsActive()) {
-		StereoFastPolyphaseStride2Phase0_Amiga_m68k(pcm, vbuf, coefBase);
+		StereoFastPolyphaseStride2Phase0_Amiga_m68k(pcm, vbuf, PolyAsmCoef(coefBase));
 		return 32;
 	}
 #endif
@@ -1458,7 +1485,7 @@ void PolyphaseMonoFast_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase)
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
 	if (AmigaM68KPolyphaseMonoFast_IsActive()) {
-		AmigaM68KPolyphaseMonoFast(pcm, vbuf, coefBase);
+		AmigaM68KPolyphaseMonoFast(pcm, vbuf, PolyAsmCoef(coefBase));
 		return;
 	}
 #endif
@@ -1482,7 +1509,7 @@ int PolyphaseMonoFastLowrateStride2_TEST_ACTIVE(short *pcm, int *vbuf, const int
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
 	if (AmigaM68KPolyphaseMonoFastStride2_IsActive()) {
-		AmigaM68KPolyphaseMonoFastStride2(pcm, vbuf, coefBase);
+		AmigaM68KPolyphaseMonoFastStride2(pcm, vbuf, PolyAsmCoef(coefBase));
 		return 16;
 	}
 #endif
@@ -1504,7 +1531,7 @@ int PolyphaseMonoFastLowrateStride4_TEST_ACTIVE(short *pcm, int *vbuf, const int
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
 	if (MonoFastPolyphaseStride4_Amiga_m68k_IsActive()) {
-		MonoFastPolyphaseStride4_Amiga_m68k(pcm, vbuf, coefBase);
+		MonoFastPolyphaseStride4_Amiga_m68k(pcm, vbuf, PolyAsmCoef(coefBase));
 		return 8;
 	}
 #endif
@@ -1528,7 +1555,7 @@ int PolyphaseStereoFastLowrateStride4_TEST_ACTIVE(short *pcm, int *vbuf,
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
 	if (StereoFastPolyphaseStride4Half_Amiga_m68k_IsActive()) {
-		StereoFastPolyphaseStride4Half_Amiga_m68k(pcm, vbuf, coefBase, phase);
+		StereoFastPolyphaseStride4Half_Amiga_m68k(pcm, vbuf, PolyAsmCoef(coefBase), phase);
 		return 16;
 	}
 #endif
@@ -1551,7 +1578,7 @@ int PolyphaseStereoFastLowrateStride5_TEST_ACTIVE(short *pcm, int *vbuf,
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
 	if (StereoFastPolyphaseStride5_Amiga_m68k_IsActive())
-		return StereoFastPolyphaseStride5_Amiga_m68k(pcm, vbuf, coefBase, phase);
+		return StereoFastPolyphaseStride5_Amiga_m68k(pcm, vbuf, PolyAsmCoef(coefBase), phase);
 #endif
 	return PolyphaseStereoFastLowrateStride5_C_REFERENCE(pcm, vbuf, coefBase, phase);
 }
@@ -1602,7 +1629,7 @@ int PolyphaseMonoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int str
 		*phase = PolyphaseAdvanceLowratePhase(localPhase, stride);
 #if defined(AMIGA_M68K_ASM_POLYPHASE)
 		if (AmigaM68KPolyphaseMonoFastStride2_IsActive()) {
-			AmigaM68KPolyphaseMonoFastStride2(pcm, vbuf, coefBase);
+			AmigaM68KPolyphaseMonoFastStride2(pcm, vbuf, PolyAsmCoef(coefBase));
 			return 16;
 		}
 #endif
@@ -1618,7 +1645,7 @@ int PolyphaseMonoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int str
 #endif
 #if defined(AMIGA_M68K_ASM_POLYPHASE)
 		if (localPhase == 0 && MonoFastPolyphaseStride4_Amiga_m68k_IsActive()) {
-			MonoFastPolyphaseStride4_Amiga_m68k(pcm, vbuf, coefBase);
+			MonoFastPolyphaseStride4_Amiga_m68k(pcm, vbuf, PolyAsmCoef(coefBase));
 			return 8;
 		}
 #endif
@@ -1692,7 +1719,7 @@ int PolyphaseStereoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int s
 		if (!MP3ForceStereoStride2PolyphaseC() &&
 			StereoFastPolyphaseStride2Phase0_Amiga_m68k_IsActive()) {
 			gStereoStride2AsmCalls++;
-			StereoFastPolyphaseStride2Phase0_Amiga_m68k(pcm, vbuf, coefBase);
+			StereoFastPolyphaseStride2Phase0_Amiga_m68k(pcm, vbuf, PolyAsmCoef(coefBase));
 			return 32;
 		}
 #endif
@@ -1704,7 +1731,7 @@ int PolyphaseStereoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int s
 #if defined(AMIGA_M68K_ASM_POLYPHASE)
 		if (StereoFastPolyphaseStride4Half_Amiga_m68k_IsActive()) {
 			gStereoStride4AsmCalls++;
-			StereoFastPolyphaseStride4Half_Amiga_m68k(pcm, vbuf, coefBase,
+			StereoFastPolyphaseStride4Half_Amiga_m68k(pcm, vbuf, PolyAsmCoef(coefBase),
 				localPhase);
 			return 16;
 		}
@@ -1716,7 +1743,7 @@ int PolyphaseStereoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int s
 #if defined(AMIGA_M68K_ASM_POLYPHASE)
 		if (StereoFastPolyphaseStride5_Amiga_m68k_IsActive())
 			produced = StereoFastPolyphaseStride5_Amiga_m68k(pcm, vbuf,
-				coefBase, localPhase);
+				PolyAsmCoef(coefBase), localPhase);
 		else
 #endif
 			produced = PolyphaseStereoFastLowrateStride5(pcm, vbuf,
