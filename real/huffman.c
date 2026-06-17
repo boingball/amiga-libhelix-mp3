@@ -163,6 +163,7 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 {
 	int x, y;
 	int cachedBits, padBits, len, startBits, linBits, maxBits, minBits;
+	int rootMaxBits, curMaxBits;
 	HuffTabType tabType;
 	unsigned short cw, *tBase, *tCurr;
 	unsigned int cache;
@@ -265,6 +266,16 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 		 */
 		tCurr = tBase;
 		padBits = 0;
+		/*
+		 * The root metadata word tBase[0] is re-read on every symbol in the
+		 * original walk because tCurr is reset to tBase after each pair.  Hoist
+		 * its maxBits and carry the current level's maxBits in curMaxBits: the
+		 * common root level then needs no tCurr[0] load, and a subtable jump
+		 * loads the sub-level maxBits once.  curMaxBits and tCurr persist across
+		 * a mid-symbol refill, so the walk resumes correctly.
+		 */
+		rootMaxBits = GetMaxbits(tBase[0]);
+		curMaxBits = rootMaxBits;
 		while (nVals > 0) {
 			/* refill cache - assumes cachedBits <= 16 */
 			if (bitsLeft >= 16) {
@@ -292,13 +303,13 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 			}
 
 			while (nVals > 0 && cachedBits >= 11) {
-				maxBits = GetMaxbits(tCurr[0]);
-				cw = tCurr[(cache >> (32 - maxBits)) + 1];
+				cw = tCurr[(cache >> (32 - curMaxBits)) + 1];
 				len = GetHLen(cw);
 				if (!len) {
-					cachedBits -= maxBits;
-					cache <<= maxBits;
+					cachedBits -= curMaxBits;
+					cache <<= curMaxBits;
 					tCurr += cw;
+					curMaxBits = GetMaxbits(tCurr[0]);
 					continue;
 				}
 				cachedBits -= len;
@@ -317,6 +328,7 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 				*xy++ = y;
 				nVals -= 2;
 				tCurr = tBase;
+				curMaxBits = rootMaxBits;
 			}
 		}
 		bitsLeft += (cachedBits - padBits);
@@ -327,6 +339,9 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 	} else if (tabType == loopLinbits) {
 		tCurr = tBase;
 		padBits = 0;
+		/* Same root-metadata hoist as loopNoLinbits: see comment above. */
+		rootMaxBits = GetMaxbits(tBase[0]);
+		curMaxBits = rootMaxBits;
 		while (nVals > 0) {
 			/* refill cache - assumes cachedBits <= 16 */
 			if (bitsLeft >= 16) {
@@ -357,13 +372,13 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 
 			/* largest maxBits = 9, plus 2 for sign bits, so make sure cache has at least 11 bits */
 			while (nVals > 0 && cachedBits >= 11 ) {
-				maxBits = GetMaxbits(tCurr[0]);
-				cw = tCurr[(cache >> (32 - maxBits)) + 1];
+				cw = tCurr[(cache >> (32 - curMaxBits)) + 1];
 				len = GetHLen(cw);
 				if (!len) {
-					cachedBits -= maxBits;
-					cache <<= maxBits;
+					cachedBits -= curMaxBits;
+					cache <<= curMaxBits;
 					tCurr += cw;
+					curMaxBits = GetMaxbits(tCurr[0]);
 					continue;
 				}
 				cachedBits -= len;
@@ -423,6 +438,7 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 				*xy++ = y;
 				nVals -= 2;
 				tCurr = tBase;
+				curMaxBits = rootMaxBits;
 			}
 		}
 		bitsLeft += (cachedBits - padBits);
