@@ -239,6 +239,7 @@ enum {
 	GID_SUPERFAST_LOWRATE,
 	GID_FAST_MEM,
 	GID_MONO,
+	GID_FAKE_STEREO,
 	GID_RATE,
 	GID_BUFFER,
 	GID_VOLUME,
@@ -353,6 +354,7 @@ typedef struct HelixAmp3Gui {
 	int   superfastLowrate;
 	int   fastMem;
 	int   mono;
+	int   fakeStereo;
 	int   rateIndex;
 	int   bufferSeconds;
 	int   volumePercent;
@@ -632,6 +634,7 @@ static void SaveGuiSettings(HelixAmp3Gui *gui)
 	SaveEnvInt("SuperfastLowrate", gui->superfastLowrate);
 	SaveEnvInt("FastMem", gui->fastMem);
 	SaveEnvInt("Mono", gui->mono);
+	SaveEnvInt("FakeStereo", gui->fakeStereo);
 	SaveEnvInt("RateIndex", gui->rateIndex);
 	SaveEnvInt("BufferSeconds", gui->bufferSeconds);
 	SaveEnvInt("Volume", gui->volumePercent);
@@ -2845,6 +2848,16 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	if (!gad)
 		return -1;
 
+	/* Fake-stereo is a mono-path width effect; it only applies when Mono is on. */
+	gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_FAKE_STEREO,
+		GUI_MARGIN_L + 462, ROW_CHECKS, 20, 12, "Fake-st",
+		GTCB_Checked, gui->fakeStereo,
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0);
+	if (!gad)
+		return -1;
+
 	gui->gadRate = gad = MakeGadget(gui, gad, CYCLE_KIND, GID_RATE,
 		GUI_MARGIN_L + 48, ROW_CYCLES, 80, 16, "Rate:",
 		GTCY_Labels, (ULONG)(gui->superfastLowrate ? SuperfastRateLabels(gui->mono) : kRateLabels),
@@ -2977,6 +2990,7 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	gui->superfastLowrate = LoadEnvInt("SuperfastLowrate", 0, 0, 1);
 	gui->fastMem = LoadEnvInt("FastMem", 1, 0, 1);
 	gui->mono = LoadEnvInt("Mono", 1, 0, 1);
+	gui->fakeStereo = LoadEnvInt("FakeStereo", 0, 0, 1);
 	gui->rateIndex = LoadEnvInt("RateIndex", 2, 0, 4);
 	if (gui->superfastLowrate) {
 		gui->fastLowrate = 1;
@@ -3377,7 +3391,9 @@ static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Args *args)
 	} else if (gui->fastLowrate && strcmp(kRates[gui->rateIndex], "28600")) {
 		AddArg(args, "--fast-lowrate");
 	}
-	if (gui->mono)
+	if (gui->mono && gui->fakeStereo)
+		AddArg(args, "--fake-stereo");	/* mono decode + pseudo-stereo width */
+	else if (gui->mono)
 		AddArg(args, "--mono");
 	else
 		AddArg(args, "--stereo");
@@ -3465,6 +3481,7 @@ static void DebugSelftestPlaybackChannelArgs(HelixAmp3Gui *gui)
 	int quality;
 
 	copy = *gui;
+	copy.fakeStereo = 0;	/* this check validates plain --mono/--stereo emission */
 	copy.mono = 1;
 	BuildPlaybackArgs(&copy, &testArgs);
 	DebugPrintPlaybackArgs("BuildPlaybackArgs mono checked", &testArgs);
@@ -3975,6 +3992,20 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code,
 					SuperfastActiveFromRateIndex(gui->rateIndex, gui->mono) : gui->rateIndex,
 				TAG_DONE);
 		SetStatus(gui, gui->mono ? "Mono output enabled." : "Stereo output enabled.");
+		SaveGuiSettings(gui);
+		break;
+	case GID_FAKE_STEREO:
+		if (gui->playbackActive || gui->playbackDonePending) {
+			GT_SetGadgetAttrs(gad, gui->win, NULL,
+				GTCB_Checked, gui->fakeStereo, TAG_DONE);
+			SetStatus(gui, "Stop playback before changing channel mode.");
+			break;
+		}
+		gui->fakeStereo = !gui->fakeStereo;
+		GT_SetGadgetAttrs(gad, gui->win, NULL, GTCB_Checked, gui->fakeStereo, TAG_DONE);
+		SetStatus(gui, gui->fakeStereo ?
+			"Fake-stereo width enabled (applies in Mono mode)." :
+			"Fake-stereo width disabled.");
 		SaveGuiSettings(gui);
 		break;
 	case GID_RATE:
