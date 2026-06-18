@@ -147,6 +147,7 @@ extern volatile int gMiniAmp3EmbeddedPlayback;
 #include <graphics/text.h>
 #include <diskfont/diskfont.h>
 #include <devices/timer.h>
+#include <hardware/cia.h>
 #include <exec/io.h>
 #include <exec/ports.h>
 #include <dos/dos.h>
@@ -162,7 +163,7 @@ extern volatile int gMiniAmp3EmbeddedPlayback;
 #include "picojpeg.h"
 
 #define HELIXAMP3_MAX_PATH 256
-#define HELIXAMP3_ARGC_MAX 26
+#define HELIXAMP3_ARGC_MAX 28
 #define HELIXAMP3_SETTINGS_VERSION 2
 #define HELIXAMP3_QUALITY_MIN 0
 #define HELIXAMP3_QUALITY_MAX 3
@@ -193,10 +194,12 @@ extern volatile int gMiniAmp3EmbeddedPlayback;
 #define SLIDER_X        (GUI_MARGIN_L + 60)
 #define BUFFER_SLIDER_W 300
 #define VOLUME_SLIDER_W BUFFER_SLIDER_W
-#define TRANSPORT_W     96
-#define TRANSPORT_H     22
-#define PLAY_X          (GUI_MARGIN_L + 126)
-#define STOP_X          (GUI_MARGIN_L + 330)
+#define TRANSPORT_W     48
+#define TRANSPORT_H     20
+#define PLAY_X          (GUI_MARGIN_L + 154)
+#define STOP_X          (GUI_MARGIN_L + 306)
+#define FILTER_X         (GUI_MARGIN_L + 390)
+#define FILTER_W         54
 #define FILEINFO_X      (GUI_MARGIN_L + 84)
 #define FILEINFO_W      (GUI_WIN_W - FILEINFO_X - GUI_MARGIN_R)
 
@@ -265,6 +268,7 @@ enum {
 	GID_QUALITY,
 	GID_PLAY,
 	GID_STOP,
+	GID_HARDWARE_FILTER,
 	GID_STATUS,
 	GID_RATING_LABEL,
 	GID_RATING_VALUE,
@@ -350,6 +354,7 @@ typedef struct HelixAmp3Gui {
 	struct Gadget  *gadFakeStereoDelay;
 	struct Gadget  *gadPlay;
 	struct Gadget  *gadStop;
+	struct Gadget  *gadHardwareFilter;
 	struct VisualInfo *visualInfo;
 	struct Menu *menuStrip;
 	int artEnabled;
@@ -384,6 +389,7 @@ typedef struct HelixAmp3Gui {
 	int   fakeStereo;
 	int   fakeStereoWidthIndex;
 	int   fakeStereoDelayIndex;
+	int   hardwareFilter;
 	int   rateIndex;
 	int   bufferSeconds;
 	int   volumePercent;
@@ -425,6 +431,7 @@ typedef struct HelixAmp3Player {
 } HelixAmp3Player;
 
 struct IntuitionBase *IntuitionBase;
+extern struct CIA ciaa;
 struct Library *AslBase;
 struct Library *GadToolsBase;
 struct Library *DiskfontBase;
@@ -663,6 +670,7 @@ static void SaveGuiSettings(HelixAmp3Gui *gui)
 	SaveEnvInt("FakeStereo", gui->fakeStereo);
 	SaveEnvInt("FakeStereoWidthIndex", gui->fakeStereoWidthIndex);
 	SaveEnvInt("FakeStereoDelayIndex", gui->fakeStereoDelayIndex);
+	SaveEnvInt("HardwareFilter", gui->hardwareFilter);
 	SaveEnvInt("RateIndex", gui->rateIndex);
 	SaveEnvInt("BufferSeconds", gui->bufferSeconds);
 	SaveEnvInt("Volume", gui->volumePercent);
@@ -1805,7 +1813,62 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 }
 
 
+
+
+static void ApplyHardwareAudioFilter(HelixAmp3Gui *gui)
+{
+#if defined(AMIGA_M68K)
+	/* The Amiga/CD32 analogue audio filter is controlled through CIA-A port A,
+	 * bit 1, the same bit used for the power LED brightness.  It is global to
+	 * the machine and independent of audio.device's Paula channel ownership.
+	 * Low bit enables the filter/bright LED; high bit disables it/dims LED. */
+	Forbid();
+	if (gui && gui->hardwareFilter)
+		ciaa.ciapra &= (UBYTE)~CIAF_LED;
+	else
+		ciaa.ciapra |= CIAF_LED;
+	Permit();
+#else
+	(void)gui;
+#endif
+}
+
+static void DrawFilterButton(HelixAmp3Gui *gui)
+{
+	struct RastPort *rp;
+	int x, y;
+
+	if (!gui || !gui->win || !gui->gadHardwareFilter)
+		return;
+	rp = gui->win->RPort;
+	x = gui->gadHardwareFilter->LeftEdge + 8;
+	y = gui->gadHardwareFilter->TopEdge + 5;
+	SetAPen(rp, 1);
+	Move(rp, x, y);
+	Draw(rp, x, y + 9);
+	Move(rp, x, y);
+	Draw(rp, x + 9, y);
+	Move(rp, x, y + 4);
+	Draw(rp, x + 7, y + 4);
+	Move(rp, x + 14, y);
+	Draw(rp, x + 14, y + 9);
+	Draw(rp, x + 23, y + 9);
+	Move(rp, x + 28, y);
+	Draw(rp, x + 39, y);
+	Move(rp, x + 33, y);
+	Draw(rp, x + 33, y + 9);
+	if (gui->hardwareFilter) {
+		RectFill(rp, gui->gadHardwareFilter->LeftEdge + 2,
+			gui->gadHardwareFilter->TopEdge + 2,
+			gui->gadHardwareFilter->LeftEdge + 5,
+			gui->gadHardwareFilter->TopEdge + 5);
+	}
+}
+
 static void DrawArtPanel(HelixAmp3Gui *gui);
+static void DrawTransportIcons(HelixAmp3Gui *gui);
+static void DrawFilterButton(HelixAmp3Gui *gui);
+static void ApplyHardwareAudioFilter(HelixAmp3Gui *gui);
 static void HandleDoneSignal(HelixAmp3Gui *gui);
 static void SaveArtworkCache(HelixAmp3Gui *gui);
 
@@ -1867,6 +1930,8 @@ static void FinishArtDecode(HelixAmp3Gui *gui, int ok)
 	st->active = 0;
 	gui->artLoading = 0;
 	DrawArtPanel(gui);
+	DrawTransportIcons(gui);
+	DrawFilterButton(gui);
 }
 
 static void CancelArtDecode(HelixAmp3Gui *gui)
@@ -2164,6 +2229,31 @@ static int ArtGreyPen(HelixAmp3Gui *gui, int level)
 		FreeScreenDrawInfo(gui->win->WScreen, dri);
 	}
 	return pen;
+}
+
+static void DrawTransportIcons(HelixAmp3Gui *gui)
+{
+	struct RastPort *rp;
+	int playX;
+	int playY;
+	int stopX;
+	int stopY;
+	int i;
+
+	if (!gui || !gui->win || !gui->gadPlay || !gui->gadStop)
+		return;
+	rp = gui->win->RPort;
+	SetAPen(rp, 1);
+	playX = gui->gadPlay->LeftEdge + (gui->gadPlay->Width / 2) - 5;
+	playY = gui->gadPlay->TopEdge + (gui->gadPlay->Height / 2) - 5;
+	for (i = 0; i < 10; i++) {
+		int half = (9 - i) / 2;
+		RectFill(rp, playX + i, playY + 5 - half, playX + i,
+			playY + 5 + half);
+	}
+	stopX = gui->gadStop->LeftEdge + (gui->gadStop->Width / 2) - 5;
+	stopY = gui->gadStop->TopEdge + (gui->gadStop->Height / 2) - 5;
+	RectFill(rp, stopX, stopY, stopX + 9, stopY + 9);
 }
 
 static void DrawArtPanel(HelixAmp3Gui *gui)
@@ -2940,8 +3030,17 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	if (!gad)
 		return -1;
 
+	gad = MakeGadget(gui, gad, TEXT_KIND, GID_COUNT,
+		GUI_MARGIN_L + 14, ROW_CHECKS - 1, 68, 16, "",
+		GTTX_Text, (ULONG)"Processing:",
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0);
+	if (!gad)
+		return -1;
+
 	gui->gadFastLowrate = gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_FAST_LOWRATE,
-		GUI_MARGIN_L + 14, ROW_CHECKS, 20, 12, "Fast-lr",
+		GUI_MARGIN_L + 96, ROW_CHECKS, 20, 12, "Fast",
 		GTCB_Checked, gui->fastLowrate,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -2950,7 +3049,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadSuperfastLowrate = gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_SUPERFAST_LOWRATE,
-		GUI_MARGIN_L + 116, ROW_CHECKS, 20, 12, "Superfast",
+		GUI_MARGIN_L + 178, ROW_CHECKS, 20, 12, "Superfast",
 		GTCB_Checked, gui->superfastLowrate,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -2959,7 +3058,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadFastMem = gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_FAST_MEM,
-		GUI_MARGIN_L + 240, ROW_CHECKS, 20, 12, "Fast-mem",
+		GUI_MARGIN_L + 314, ROW_CHECKS, 20, 12, "Fast-mem",
 		GTCB_Checked, gui->fastMem,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -3037,7 +3136,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadPlay = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_PLAY,
-		PLAY_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, ">",
+		PLAY_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, "",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -3046,7 +3145,16 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadStop = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_STOP,
-		STOP_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, "[]",
+		STOP_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, "",
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0);
+	if (!gad)
+		return -1;
+
+	gui->gadHardwareFilter = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_HARDWARE_FILTER,
+		FILTER_X, ROW_BUTTONS, FILTER_W, TRANSPORT_H, "",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -3133,6 +3241,7 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	gui->fakeStereo = LoadEnvInt("FakeStereo", 0, 0, 1);
 	gui->fakeStereoWidthIndex = LoadEnvInt("FakeStereoWidthIndex", 1, 0, 4);
 	gui->fakeStereoDelayIndex = LoadEnvInt("FakeStereoDelayIndex", 2, 0, 4);
+	gui->hardwareFilter = LoadEnvInt("HardwareFilter", 0, 0, 1);
 	gui->rateIndex = LoadEnvInt("RateIndex", 2, 0, 4);
 	if (gui->superfastLowrate) {
 		gui->fastLowrate = 1;
@@ -3252,6 +3361,7 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	AddGList(gui->win, gui->gadgets, (UWORD)-1, -1, NULL);
 	RefreshGList(gui->gadgets, gui->win, NULL, -1);
 	UpdateChannelGadgetState(gui);
+	ApplyHardwareAudioFilter(gui);
 	if (gui->decodeThenPlay && gui->gadBuffer) {
 		GT_SetGadgetAttrs(gui->gadBuffer, gui->win, NULL,
 			GA_Disabled, TRUE,
@@ -3291,6 +3401,8 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	DrawProgressFrame(gui);
 	DrawProgress(gui);
 	DrawArtPanel(gui);
+	DrawTransportIcons(gui);
+	DrawFilterButton(gui);
 	if (gui->timerOpen)
 		SendTimerRequest(gui, TIMER_TICK_MICROS);
 	return 0;
@@ -4262,6 +4374,14 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code,
 	case GID_STOP:
 		StopPlayback(gui);
 		break;
+	case GID_HARDWARE_FILTER:
+		gui->hardwareFilter = !gui->hardwareFilter;
+		ApplyHardwareAudioFilter(gui);
+		DrawFilterButton(gui);
+		SetStatus(gui, gui->hardwareFilter ?
+			"Hardware filter enabled." : "Hardware filter disabled.");
+		SaveGuiSettings(gui);
+		break;
 	}
 }
 
@@ -4352,6 +4472,10 @@ static void GuiPoll(HelixAmp3Gui *gui)
 			}
 		} else if (classValue == IDCMP_GADGETUP) {
 			HandleGuiAction(gui, gad, code, classValue, TRUE);
+			/* GadTools redraws the button face after a press, so repaint our
+			 * hand-drawn transport icons once the gadget has popped back up. */
+			DrawTransportIcons(gui);
+			DrawFilterButton(gui);
 		} else if (classValue == IDCMP_MOUSEMOVE) {
 			if (gad &&
 				(gad->GadgetID == GID_BUFFER ||
