@@ -2184,14 +2184,13 @@ static void DrawTransportIcons(HelixAmp3Gui *gui)
 	playX = gui->gadPlay->LeftEdge + (gui->gadPlay->Width / 2) - 5;
 	playY = gui->gadPlay->TopEdge + (gui->gadPlay->Height / 2) - 5;
 	for (i = 0; i < 10; i++) {
-		int half = i / 2;
+		int half = (9 - i) / 2;
 		RectFill(rp, playX + i, playY + 5 - half, playX + i,
 			playY + 5 + half);
 	}
-	stopX = gui->gadStop->LeftEdge + (gui->gadStop->Width / 2) - 6;
+	stopX = gui->gadStop->LeftEdge + (gui->gadStop->Width / 2) - 5;
 	stopY = gui->gadStop->TopEdge + (gui->gadStop->Height / 2) - 5;
-	RectFill(rp, stopX, stopY, stopX + 3, stopY + 9);
-	RectFill(rp, stopX + 8, stopY, stopX + 11, stopY + 9);
+	RectFill(rp, stopX, stopY, stopX + 9, stopY + 9);
 }
 
 static void DrawArtPanel(HelixAmp3Gui *gui)
@@ -4390,6 +4389,9 @@ static void GuiPoll(HelixAmp3Gui *gui)
 			}
 		} else if (classValue == IDCMP_GADGETUP) {
 			HandleGuiAction(gui, gad, code, classValue, TRUE);
+			/* GadTools redraws the button face after a press, so repaint our
+			 * hand-drawn transport icons once the gadget has popped back up. */
+			DrawTransportIcons(gui);
 		} else if (classValue == IDCMP_MOUSEMOVE) {
 			if (gad &&
 				(gad->GadgetID == GID_BUFFER ||
