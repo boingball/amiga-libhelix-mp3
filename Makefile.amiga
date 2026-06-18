@@ -63,11 +63,12 @@ fast030-halfasm-test: $(FAST030_HALFASM_TEST_TARGET)
 
 gui-halfasm-test: $(GUI_HALFASM_TEST_TARGET)
 
-# PR #223 is a diagnostic branch. Apply its source transformation once before
+# PR #223 is a diagnostic branch. Apply its source transformations once before
 # compiling so a normal `make -f Makefile.amiga gui` produces the test binary.
 apply-replay-message-fix:
 	@grep -q 'struct Message \*doneMsg;' amiga_mp3gui.c || python3 tools/apply_per_run_done_message.py
 	@python3 tools/remove_legacy_done_init.py
+	@python3 tools/apply_startup_stage_diagnostics.py
 
 $(GUI_TARGET): apply-replay-message-fix $(GUI_SOURCES) amiga_mp3dec.c $(DECODER_SOURCES) $(FAST030_ASM_SOURCES)
 	$(CC) $(FAST030_CFLAGS) $(CPPFLAGS_COMMON) $(FAST030_CPPFLAGS) $(EXTRA_CFLAGS) \
