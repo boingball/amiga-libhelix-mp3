@@ -4924,10 +4924,10 @@ static unsigned int AmigaPalAudioPeriod(int outputRate)
  * three-request mono ring can leave Stop blocked while audio.device unwinds the
  * queued writes on real hardware.  Arrays remain sized for the stereo Fast-RAM
  * decode-ahead slot C, but only A/B are submitted to Paula. */
-#define AMIGA_MONO_AUDIO_SLOTS 2
+#define AMIGA_MONO_AUDIO_SLOTS 3
 #define AMIGA_STEREO_AUDIO_SLOTS 2
 #define AMIGA_STEREO_DECODE_SLOTS 3
-#define AMIGA_AUDIO_PLAYBACK_SLOTS AMIGA_STEREO_DECODE_SLOTS
+#define AMIGA_AUDIO_PLAYBACK_SLOTS AMIGA_MONO_AUDIO_SLOTS
 
 static int AmigaAudioLiveSlots(int stereo)
 {
