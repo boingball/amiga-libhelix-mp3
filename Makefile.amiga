@@ -68,7 +68,7 @@ gui-halfasm-test: $(GUI_HALFASM_TEST_TARGET)
 apply-replay-message-fix:
 	@grep -q 'struct Message \*doneMsg;' amiga_mp3gui.c || python3 tools/apply_per_run_done_message.py
 	@python3 tools/remove_legacy_done_init.py
-	@python3 tools/apply_first_fill_diagnostics.py
+	@python3 tools/apply_first_fill_diagnostics_v2.py
 	@python3 tools/apply_startup_stage_diagnostics.py
 
 $(GUI_TARGET): apply-replay-message-fix $(GUI_SOURCES) amiga_mp3dec.c $(DECODER_SOURCES) $(FAST030_ASM_SOURCES)
