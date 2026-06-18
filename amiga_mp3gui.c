@@ -188,7 +188,7 @@ extern volatile int gMiniAmp3EmbeddedPlayback;
 #define META_RIGHT      (ART_X - 8)
 #define META_W          (META_RIGHT - META_X)
 #define BROWSE_W        56
-#define BROWSE_X        (ART_X - BROWSE_W)
+#define BROWSE_X        (ART_X - BROWSE_W - 6)
 #define FILE_W          (BROWSE_X - META_X - 4)
 #define SLIDER_X        (GUI_MARGIN_L + 60)
 #define BUFFER_SLIDER_W 300
@@ -2416,7 +2416,10 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 		gui->elapsedSecs = gui->totalSecs + gui->launchBufferSecs;
 	DrawProgress(gui);
 	ResetCliParser();
-	ResetDecoderStatics();
+	/* Decoder statics are reset by the next playback child immediately before
+	 * entering the decoder.  Do not reset them again from the GUI task after
+	 * teardown; keeping all decoder-global mutation in the child avoids a
+	 * second-play race on shared process address space. */
 	gGuiPlayer.stopRequested = 0;
 	gPlaybackInterrupted = 0;
 	gui->lastCleanupStage = GUIPLAY_CLEANUP_NONE;
@@ -2947,9 +2950,9 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	if (!gad)
 		return -1;
 
-	gui->gadFakeStereo = gad = MakeGadgetWithTextAttr(gui, gad,
+	gui->gadFakeStereo = gad = MakeGadget(gui, gad,
 		CHECKBOX_KIND, GID_FAKE_STEREO,
-		GUI_MARGIN_L + 92, ROW_CHANNELS, 20, 12, &gTopaz8Attr, "Fake-st",
+		GUI_MARGIN_L + 92, ROW_CHANNELS, 20, 12, "Fake-st",
 		GTCB_Checked, gui->fakeStereo,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -2957,9 +2960,9 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	if (!gad)
 		return -1;
 
-	gui->gadFakeStereoWidth = gad = MakeGadgetWithTextAttr(gui, gad,
+	gui->gadFakeStereoWidth = gad = MakeGadget(gui, gad,
 		CYCLE_KIND, GID_FAKE_STEREO_WIDTH,
-		GUI_MARGIN_L + 232, ROW_CHANNELS - 2, 92, 16, &gTopaz8Attr, "Width:",
+		GUI_MARGIN_L + 232, ROW_CHANNELS - 2, 92, 16, "Width:",
 		GTCY_Labels, (ULONG)kFakeStereoWidthLabels,
 		GTCY_Active, gui->fakeStereoWidthIndex,
 		GA_Disabled, !gui->fakeStereo,
@@ -2967,9 +2970,9 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	if (!gad)
 		return -1;
 
-	gui->gadFakeStereoDelay = gad = MakeGadgetWithTextAttr(gui, gad,
+	gui->gadFakeStereoDelay = gad = MakeGadget(gui, gad,
 		CYCLE_KIND, GID_FAKE_STEREO_DELAY,
-		GUI_MARGIN_L + 414, ROW_CHANNELS - 2, 70, 16, &gTopaz8Attr, "Delay:",
+		GUI_MARGIN_L + 414, ROW_CHANNELS - 2, 70, 16, "Delay:",
 		GTCY_Labels, (ULONG)kFakeStereoDelayLabels,
 		GTCY_Active, gui->fakeStereoDelayIndex,
 		GA_Disabled, !gui->fakeStereo,
@@ -3003,12 +3006,12 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 
 	gui->gadVolume = gad = MakeSliderGadget(gui, gad, GID_VOLUME,
 		SLIDER_X, ROW_VOLUME, VOLUME_SLIDER_W, "Volume:",
-		0, 100, gui->volumePercent, "%ld%%", 4, 12);
+		0, 100, gui->volumePercent, "%ld%%", 4, 30);
 	if (!gad)
 		return -1;
 
 	gui->gadPlay = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_PLAY,
-		PLAY_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, "> PLAY",
+		PLAY_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, ">",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -3017,7 +3020,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadStop = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_STOP,
-		STOP_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, "[] STOP",
+		STOP_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, "[]",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -3798,8 +3801,9 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	memset(&gDoneMsg, 0, sizeof(gDoneMsg));
 	gDoneMsg.mn_Length = sizeof(gDoneMsg);
 	gDoneMsg.mn_Node.ln_Type = NT_MESSAGE;
-	CancelArtDecode(gui);
-	DrawArtPanel(gui);
+	/* Artwork decoding belongs to the GUI task and may continue at the normal
+	 * timer-pump rate while the playback child runs.  Keeping it active preserves
+	 * the current cover and uses only the existing small per-tick work budget. */
 	gui->elapsedSecs = 0;
 	gui->lastUnderrunCount = 0;
 	gui->lastDisplayedSpareMs = 0;
