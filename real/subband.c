@@ -46,7 +46,7 @@
 #include "amiga_profile_decode.h"
 #include "assembly.h"
 
-static void FDCT32FastLowrate(int *x, int *d, int offset, int oddBlock, int gb,
+void FDCT32FastLowrate(int *x, int *d, int offset, int oddBlock, int gb,
 	int stride, int phase)
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE)

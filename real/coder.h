@@ -328,6 +328,8 @@ void IntensityProcMPEG2(int x[MAX_NCHAN][MAX_NSAMP], int nSamps, FrameHeader *fh
 void FDCT32(int *x, int *d, int offset, int oddBlock, int gb);
 void FDCT32Half(int *x, int *d, int offset, int oddBlock, int gb);
 void FDCT32Quarter(int *x, int *d, int offset, int oddBlock, int gb, int phase, int stride);
+void FDCT32FastLowrate(int *x, int *d, int offset, int oddBlock, int gb,
+	int stride, int phase);
 void FDCT32_C_REFERENCE(int *x, int *d, int offset, int oddBlock, int gb);
 int FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 void FDCT32Half_TEST_ACTIVE(int *x, int *d, int offset, int oddBlock, int gb);

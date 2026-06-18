@@ -284,6 +284,7 @@ typedef struct DecodeOptions {
 	int selftestFastLowrate;
 	int selftestReducedTaps;
 	int selftestFdct32Quarter;
+	int selftestFdct32QuarterStereo;
 	int selftestHuffman;
 	int selftestDequant;
 	int selftestBitstream;
@@ -699,6 +700,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-fastlowrate compare synthetic stride decimation paths\n");
 	printf("  --selftest-reduced-taps compare full and reduced stride-4 dewindow paths\n");
 	printf("  --selftest-fdct32-quarter inspect lossy stride-4 quarter-rate FDCT32 scatter\n");
+	printf("  --selftest-fdct32-quarter-stereo verify independent stereo stride-4 quarter FDCT32 dispatch\n");
 	printf("  --selftest-huffman compare C and active Huffman pair decode paths\n");
 	printf("  --selftest-dequant compare C and optional m68k asm dequant block paths\n");
 	printf("  --selftest-bitstream compare C and optional m68k move.l bitstream refill paths\n");
@@ -927,6 +929,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->selftestReducedTaps = 1;
 		} else if (!strcmp(argv[i], "--selftest-fdct32-quarter")) {
 			opt->selftestFdct32Quarter = 1;
+		} else if (!strcmp(argv[i], "--selftest-fdct32-quarter-stereo")) {
+			opt->selftestFdct32QuarterStereo = 1;
 		} else if (!strcmp(argv[i], "--selftest-huffman")) {
 			opt->selftestHuffman = 1;
 		} else if (!strcmp(argv[i], "--selftest-dequant")) {
@@ -1019,6 +1023,7 @@ if (opt->selftestMulshift ||
     opt->selftestFastLowrate ||
     opt->selftestReducedTaps ||
     opt->selftestFdct32Quarter ||
+    opt->selftestFdct32QuarterStereo ||
     opt->selftestHuffman ||
     opt->selftestDequant ||
     opt->selftestBitstream ||
@@ -3655,6 +3660,116 @@ static int SelftestFdct32Quarter(void)
 		(4 == 4 && MP3ExperimentalFDCT32QuarterEnabled()) ? "yes" : "no");
 	MP3SetExperimentalFDCT32Quarter(0);
 	printf("FDCT32Quarter selftest PASS (lossy approximation)\n");
+	return 0;
+#endif
+}
+
+static int SelftestFdct32QuarterStereo(void)
+{
+#if !(defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_FAST_FDCT32_QUARTER))
+	printf("FDCT32Quarter stereo compile flag: no\n");
+	printf("FDCT32Quarter stereo selftest not run: quarter FDCT body is not compiled in this build\n");
+	return 0;
+#else
+	enum { CASES = 500, DEST_WORDS = 4096, ACTIVE = 9, CHANNEL_OFFSET = 32 };
+	static int input[2][32];
+	static int referenceInput[2][32];
+	static int reference[2][DEST_WORDS + CHANNEL_OFFSET];
+	static int actual[DEST_WORDS + CHANNEL_OFFSET];
+	unsigned long seed[2];
+	unsigned long i;
+	unsigned long activationMismatches;
+	unsigned long independenceMismatches;
+	double squares[2];
+	double samples[2];
+	int ch;
+	int j;
+
+	seed[0] = 0x4d504733UL;
+	seed[1] = 0x53544552UL;
+	activationMismatches = 0;
+	independenceMismatches = 0;
+	squares[0] = squares[1] = 0.0;
+	samples[0] = samples[1] = 0.0;
+	MP3SetExperimentalFDCT32Quarter(1);
+
+	for (i = 0; i < CASES; i++) {
+		int offset = (int)(i & 7UL);
+		int oddBlock = (int)((i >> 3) & 1UL);
+		int gb = (int)((i >> 4) & 7UL);
+		int phase = (int)((i >> 7) & 3UL);
+		int oddBase = oddBlock ? AMIGA_POLYPHASE_VBUF_LENGTH : 0;
+		int evenBase = oddBlock ? 0 : AMIGA_POLYPHASE_VBUF_LENGTH;
+		int delayOff = (offset - oddBlock) & 7;
+		int active[ACTIVE];
+		int channel0AfterFirst[ACTIVE];
+
+		active[0] = 64 * 16 + delayOff + evenBase;
+		active[1] = offset + oddBase + 64 * 0;
+		active[2] = offset + oddBase + 64 * 4;
+		active[3] = offset + oddBase + 64 * 8;
+		active[4] = offset + oddBase + 64 * 12;
+		active[5] = 16 + delayOff + evenBase + 64 * 0;
+		active[6] = 16 + delayOff + evenBase + 64 * 4;
+		active[7] = 16 + delayOff + evenBase + 64 * 8;
+		active[8] = 16 + delayOff + evenBase + 64 * 12;
+
+		for (ch = 0; ch < 2; ch++) {
+			for (j = 0; j < 32; j++) {
+				seed[ch] = seed[ch] * 1664525UL + 1013904223UL;
+				input[ch][j] = j < 8 ? ((int)seed[ch]) >> (ch ? 8 : 9) : 0;
+				referenceInput[ch][j] = input[ch][j];
+			}
+			for (j = 0; j < DEST_WORDS + CHANNEL_OFFSET; j++)
+				reference[ch][j] = (int)(0x55aa0000UL ^ (unsigned long)j);
+			AMIGA_FDCT32_HALF(referenceInput[ch],
+				reference[ch] + ch * CHANNEL_OFFSET,
+				offset, oddBlock, gb);
+		}
+		for (j = 0; j < DEST_WORDS + CHANNEL_OFFSET; j++)
+			actual[j] = (int)(0x55aa0000UL ^ (unsigned long)j);
+
+		FDCT32FastLowrate(input[0], actual, offset, oddBlock, gb, 4, phase);
+		for (j = 0; j < ACTIVE; j++)
+			channel0AfterFirst[j] = actual[active[j]];
+		FDCT32FastLowrate(input[1], actual + CHANNEL_OFFSET, offset, oddBlock,
+			gb, 4, phase);
+		for (j = 0; j < ACTIVE; j++) {
+			if (actual[active[j]] != channel0AfterFirst[j])
+				independenceMismatches++;
+		}
+
+		for (ch = 0; ch < 2; ch++) {
+			for (j = 0; j < ACTIVE; j++) {
+				int idx = active[j] + ch * CHANNEL_OFFSET;
+				int sentinel = (int)(0x55aa0000UL ^ (unsigned long)idx);
+				int got = actual[idx];
+				if (got == sentinel)
+					activationMismatches++;
+				else {
+					double d = (double)reference[ch][idx] - (double)got;
+					squares[ch] += d * d;
+					samples[ch] += 1.0;
+				}
+			}
+		}
+	}
+	MP3SetExperimentalFDCT32Quarter(0);
+
+	printf("FDCT32Quarter stereo selftest cases: %lu\n", (unsigned long)CASES);
+	printf("FDCT32Quarter stereo activation mismatches: %lu\n",
+		activationMismatches);
+	printf("FDCT32Quarter stereo channel-independence mismatches: %lu\n",
+		independenceMismatches);
+	printf("FDCT32Quarter stereo channel 0 RMS difference vs full FDCT32 (active rows): %.2f counts\n",
+		SqrtApprox(squares[0] / (samples[0] > 0.0 ? samples[0] : 1.0)));
+	printf("FDCT32Quarter stereo channel 1 RMS difference vs full FDCT32 (active rows): %.2f counts\n",
+		SqrtApprox(squares[1] / (samples[1] > 0.0 ? samples[1] : 1.0)));
+	if (activationMismatches || independenceMismatches) {
+		printf("FDCT32Quarter stereo selftest FAIL\n");
+		return 1;
+	}
+	printf("FDCT32Quarter stereo selftest PASS (lossy approximation)\n");
 	return 0;
 #endif
 }
@@ -6871,6 +6986,11 @@ int main(int argc, char **argv)
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}
+	if (opt.selftestFdct32QuarterStereo) {
+		int selftestErr = SelftestFdct32QuarterStereo();
+		AmigaFreeNormalizedArgs(&normalized);
+		return selftestErr;
+	}
 	if (opt.selftestHuffman) {
 		int selftestErr = SelftestHuffman(&opt);
 		AmigaFreeNormalizedArgs(&normalized);
@@ -7221,9 +7341,12 @@ int main(int argc, char **argv)
 		else
 			printf("playback minimum spare before buffer end: n/a\n");
 		if (MP3SuperfastLowrateEnabled(decoder))
-			printf("fast-lowrate stride: %d (superfast: IMDCT/overlap capped to %d of %d subbands; FDCT32 full-rate)\n",
+			printf("fast-lowrate stride: %d (superfast: IMDCT/overlap capped to %d of %d subbands; %s)\n",
 				MP3GetFastLowrateStride(decoder),
-				MP3GetFastLowrateActiveSubbands(decoder), 32);
+				MP3GetFastLowrateActiveSubbands(decoder), 32,
+				(MP3GetFastLowrateStride(decoder) == 4 &&
+				 MP3ExperimentalFDCT32QuarterEnabled()) ?
+					"FDCT32Quarter" : "FDCT32 full-rate");
 		else
 			printf("fast-lowrate stride: %d (fast-lowrate: IMDCT/DCT32 full-rate)\n",
 				MP3GetFastLowrateStride(decoder));
@@ -7508,9 +7631,12 @@ int main(int argc, char **argv)
 			stats.pcmChecksum);
 	if (opt.fastLowrate) {
 		if (MP3SuperfastLowrateEnabled(decoder))
-			printf("fast-lowrate stride: %d (superfast: IMDCT/overlap capped to %d of %d subbands; FDCT32 full-rate)\n",
+			printf("fast-lowrate stride: %d (superfast: IMDCT/overlap capped to %d of %d subbands; %s)\n",
 				MP3GetFastLowrateStride(decoder),
-				MP3GetFastLowrateActiveSubbands(decoder), 32);
+				MP3GetFastLowrateActiveSubbands(decoder), 32,
+				(MP3GetFastLowrateStride(decoder) == 4 &&
+				 MP3ExperimentalFDCT32QuarterEnabled()) ?
+					"FDCT32Quarter" : "FDCT32 full-rate");
 		else
 			printf("fast-lowrate stride: %d (fast-lowrate: IMDCT/DCT32 full-rate)\n",
 				MP3GetFastLowrateStride(decoder));
