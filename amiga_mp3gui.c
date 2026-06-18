@@ -1806,6 +1806,7 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 
 
 static void DrawArtPanel(HelixAmp3Gui *gui);
+static void DrawTransportIcons(HelixAmp3Gui *gui);
 static void HandleDoneSignal(HelixAmp3Gui *gui);
 static void SaveArtworkCache(HelixAmp3Gui *gui);
 
