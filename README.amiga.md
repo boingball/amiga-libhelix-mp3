@@ -161,7 +161,7 @@ source while reusing the public decoder and Paula playback implementation.
 ```sh
 amiga_mp3dec [options] infile.mp3 outfile
 amiga_mp3dec --info infile.mp3
-amiga_mp3dec --play [--stereo] [--rate 8287|8820|11025|22050|28600] [--quality 0|1|2|3] [--buffer-seconds N] [--volume N] [--fast-mem] infile.mp3
+amiga_mp3dec --play [--stereo|--fake-stereo] [--rate 8287|8820|11025|22050|28600] [--quality 0|1|2|3] [--buffer-seconds N] [--volume N] [--fast-mem] infile.mp3
 amiga_mp3dec --selftest-play-cleanup [--debug-cleanup] [--buffer-seconds N]
 ```
 
@@ -219,6 +219,21 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
   the PAL-top Paula mode. `--rate 8287` is mono-only.
   Enabling stereo prints `Stereo playback needs significantly more CPU and may
   underrun on 030.`
+- `--fake-stereo` is an opt-in `--play` alternative to true `--stereo` for systems
+  that cannot decode real stereo in real time. It decodes a single (mono) channel
+  — so it costs about the same CPU as mono playback — then synthesises a stereo
+  impression with a complementary-comb (Lauridsen) pseudo-stereo widener:
+  `L = mono + (delayed >> shift)`, `R = mono - (delayed >> shift)`. Because
+  `L + R == 2*mono` before clipping, the output is mono-compatible, while the
+  +/- pair produces frequency-dependent width. It is mutually exclusive with
+  `--stereo`. `--fake-stereo-delay N` sets the delay line length in output samples
+  (1-256, default 96 ≈ 11 ms at 8820 Hz); `--fake-stereo-shift K` sets the width
+  attenuation `>>K` (0-8, default 2; lower K = wider). It is an effect, not the
+  real left/right mix, so hard-panned material is not reproduced faithfully.
+  In the GUI it is the "Fake-st" checkbox and applies when Mono is also selected.
+- `--selftest-fake-stereo` verifies the widener's mono-compatibility invariant
+  (`L + R == 2*mono`), the delayed-difference width term, and the zeroed warm-up
+  region, without playing audio.
 - `--play-fast-path` is accepted as an explicit alias for `--play`; the normal
   `--play` mode already uses this reduced-overhead streaming path.
 - `--volume N` sets the `audio.device` request volume for playback, from 0 to 100 percent (default 100). The implementation maps this integer range to `ioa_Volume` 0-64 with rounded integer arithmetic; both stereo channel requests receive the exact same value. Live GUI changes are observed by the playback task through a volatile percent plus sequence counter and are applied to the next submitted buffer, so latency is bounded by the queued-buffer duration and active writes are not aborted just to change volume.

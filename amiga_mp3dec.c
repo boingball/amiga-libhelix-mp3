@@ -229,6 +229,12 @@ extern const int STATNAME(polyCoef)[264];
 
 #define READBUF_SIZE (1024 * 16)
 #define OUTBUF_SAMPS (MAX_NCHAN * MAX_NGRAN * MAX_NSAMP)
+
+/* Fake-stereo (pseudo-stereo) widener parameters; see FakeStereo below. */
+#define FAKE_STEREO_MAX_DELAY 256
+#define FAKE_STEREO_DELAY_MASK (FAKE_STEREO_MAX_DELAY - 1)
+#define FAKE_STEREO_DEFAULT_DELAY 96
+#define FAKE_STEREO_DEFAULT_SHIFT 2
 #define AMIGA_IMDCT_BLOCK_SIZE 18
 #define AMIGA_IMDCT_NBANDS 32
 #define AMIGA_POLYPHASE_NBANDS 32
@@ -276,6 +282,7 @@ typedef struct DecodeOptions {
 	int selftestBitstream;
 	int selftestMonoFastLowrateStereo;
 	int selftestQuality;
+	int selftestFakeStereo;
 	int checksum;
 	int outputRate;
 	int fastLowrate;
@@ -294,6 +301,9 @@ typedef struct DecodeOptions {
 	int debugCleanup;
 	int play;
 	int stereo;
+	int fakeStereo;
+	int fakeStereoDelay;
+	int fakeStereoShift;
 	int decodeThenPlay;
 	int playLifecycleTest;
 	int audioOpenSilentTest;
@@ -632,6 +642,12 @@ static void PrintUsage(const char *prog)
 	printf("  --stereo     opt-in experimental --play stereo output (s8 per channel)\n");
 	printf("               stereo rates: 8820, 11025, 22050, or PAL-top 28600 Hz\n");
 	printf("               mono rates: 8287 default, 8820, 11025, 22050, or PAL-top 28600 Hz\n");
+	printf("  --fake-stereo  --play pseudo-stereo width from the mono decode (mono CPU cost)\n");
+	printf("               complementary-comb widener; mutually exclusive with --stereo\n");
+	printf("  --fake-stereo-delay N  fake-stereo delay in samples (1-%d, default %d)\n",
+		FAKE_STEREO_MAX_DELAY, FAKE_STEREO_DEFAULT_DELAY);
+	printf("  --fake-stereo-shift K  fake-stereo width attenuation >>K (0-8, default %d; lower=wider)\n",
+		FAKE_STEREO_DEFAULT_SHIFT);
 	printf("  --play-fast-path accepted alias; --play already uses reduced-overhead playback\n");
 	printf("  --decode-then-play decode whole MP3 to RAM, then play (debug for --play)\n");
 	printf("  --selftest-play-cleanup open/submit/cleanup audio.device five times\n");
@@ -681,6 +697,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-bitstream compare C and optional m68k move.l bitstream refill paths\n");
 	printf("  --selftest-mono-fastlowrate-stereo verify stereo-to-mono low-rate accounting\n");
 	printf("  --selftest-quality verify --quality flag mapping and auto-default selection\n");
+	printf("  --selftest-fake-stereo verify pseudo-stereo mono-compatibility and delay line\n");
 	printf("  --checksum  print a 32-bit checksum of decoded PCM samples\n");
 	printf("  --no-ms-mono-skip force full two-channel M/S decode before mono regression checks\n");
 	printf("  --debug-fastlowrate print per-frame/granule fast-lowrate placement\n");
@@ -777,6 +794,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	opt->qualitySpecified = 0;
 	opt->bufferSeconds = 4;
 	opt->volumePercent = 100;
+	opt->fakeStereoDelay = FAKE_STEREO_DEFAULT_DELAY;
+	opt->fakeStereoShift = FAKE_STEREO_DEFAULT_SHIFT;
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--mono")) {
@@ -800,6 +819,23 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->mono = 1;
 		} else if (!strcmp(argv[i], "--stereo")) {
 			opt->stereo = 1;
+		} else if (!strcmp(argv[i], "--fake-stereo")) {
+			opt->fakeStereo = 1;
+		} else if (!strcmp(argv[i], "--fake-stereo-delay")) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "--fake-stereo-delay requires a value (1-%d)\n",
+					FAKE_STEREO_MAX_DELAY);
+				return -1;
+			}
+			i++;
+			opt->fakeStereoDelay = atoi(argv[i]);
+		} else if (!strcmp(argv[i], "--fake-stereo-shift")) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "--fake-stereo-shift requires a value (0-8)\n");
+				return -1;
+			}
+			i++;
+			opt->fakeStereoShift = atoi(argv[i]);
 		} else if (!strcmp(argv[i], "--play-fast-path")) {
 			opt->play = 1;
 			opt->outFormat = OUT_S8;
@@ -894,6 +930,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->selftestMonoFastLowrateStereo = 1;
 		} else if (!strcmp(argv[i], "--selftest-quality")) {
 			opt->selftestQuality = 1;
+		} else if (!strcmp(argv[i], "--selftest-fake-stereo")) {
+			opt->selftestFakeStereo = 1;
 		} else if (!strcmp(argv[i], "--checksum")) {
 			opt->checksum = 1;
 		} else if (!strcmp(argv[i], "--fast-lowrate")) {
@@ -978,11 +1016,31 @@ if (opt->selftestMulshift ||
     opt->selftestDequant ||
     opt->selftestBitstream ||
     opt->selftestMonoFastLowrateStereo ||
-    opt->selftestQuality)
+    opt->selftestQuality ||
+    opt->selftestFakeStereo)
 		return 0;
 
 	if (opt->stereo && !opt->play) {
 		fprintf(stderr, "--stereo is only supported with --play\n");
+		return -1;
+	}
+	if (opt->fakeStereo && !opt->play) {
+		fprintf(stderr, "--fake-stereo is only supported with --play\n");
+		return -1;
+	}
+	if (opt->fakeStereo && opt->stereo) {
+		fprintf(stderr, "--fake-stereo and --stereo are mutually exclusive\n");
+		return -1;
+	}
+	if (opt->fakeStereo &&
+		(opt->fakeStereoDelay < 1 || opt->fakeStereoDelay > FAKE_STEREO_MAX_DELAY)) {
+		fprintf(stderr, "--fake-stereo-delay must be 1-%d samples\n",
+			FAKE_STEREO_MAX_DELAY);
+		return -1;
+	}
+	if (opt->fakeStereo &&
+		(opt->fakeStereoShift < 0 || opt->fakeStereoShift > 8)) {
+		fprintf(stderr, "--fake-stereo-shift must be 0-8\n");
 		return -1;
 	}
 
@@ -4006,6 +4064,112 @@ static int SelftestMulshift(void)
 }
 
 
+/*
+ * Fake-stereo (pseudo-stereo) widener.  Runs on the mono decode path so the
+ * stereo impression costs ~mono CPU.  Complementary comb (Lauridsen):
+ *   L = mono + (delayed >> shift), R = mono - (delayed >> shift)
+ * so L + R == 2*mono before clipping (mono-compatible), while the +/- pair
+ * produces frequency-dependent width.  delay is in output samples.
+ */
+typedef struct FakeStereo {
+	short hist[FAKE_STEREO_MAX_DELAY];
+	int pos;
+	int delay;
+	int shift;
+	int enabled;
+	int configured;
+} FakeStereo;
+
+static void FakeStereoInit(FakeStereo *fs, int enabled, int delay, int shift)
+{
+	int i;
+
+	for (i = 0; i < FAKE_STEREO_MAX_DELAY; i++)
+		fs->hist[i] = 0;
+	fs->pos = 0;
+	if (delay < 1)
+		delay = 1;
+	if (delay > FAKE_STEREO_MAX_DELAY)
+		delay = FAKE_STEREO_MAX_DELAY;
+	fs->delay = delay;
+	if (shift < 0)
+		shift = 0;
+	if (shift > 8)
+		shift = 8;
+	fs->shift = shift;
+	fs->enabled = enabled ? 1 : 0;
+	fs->configured = 1;
+}
+
+static void FakeStereoProcess(FakeStereo *fs, int mono, short *outL, short *outR)
+{
+	int idx, w, l, r;
+
+	idx = (fs->pos + FAKE_STEREO_MAX_DELAY - fs->delay) & FAKE_STEREO_DELAY_MASK;
+	w = (int)fs->hist[idx] >> fs->shift;
+	l = mono + w;
+	r = mono - w;
+	if (l > 32767) l = 32767; else if (l < -32768) l = -32768;
+	if (r > 32767) r = 32767; else if (r < -32768) r = -32768;
+	*outL = (short)l;
+	*outR = (short)r;
+	fs->hist[fs->pos] = (short)mono;
+	fs->pos = (fs->pos + 1) & FAKE_STEREO_DELAY_MASK;
+}
+
+static int SelftestFakeStereo(void)
+{
+	FakeStereo fs;
+	short mono[512], L[512], R[512];
+	int failures = 0;
+	int i;
+	int delay = 64;
+	int shift = 2;
+	unsigned long seed = 0x1234567UL;
+
+	/* moderate amplitude so the comb sum never clips, keeping the invariants exact */
+	for (i = 0; i < 512; i++) {
+		seed = seed * 1664525UL + 1013904223UL;
+		mono[i] = (short)(((int)(seed >> 16) & 0x3fff) - 0x2000); /* -8192..8191 */
+	}
+	FakeStereoInit(&fs, 1, delay, shift);
+	for (i = 0; i < 512; i++)
+		FakeStereoProcess(&fs, mono[i], &L[i], &R[i]);
+
+	/* mono-compatibility: L + R == 2*mono (no clipping at this amplitude) */
+	for (i = 0; i < 512; i++) {
+		if ((int)L[i] + (int)R[i] != 2 * (int)mono[i]) {
+			printf("fake-stereo mono-compat fail %d: L=%d R=%d mono=%d\n",
+				i, L[i], R[i], mono[i]);
+			failures++;
+			break;
+		}
+	}
+	/* width: L - R == 2*(delayed >> shift), delayed = mono[i-delay] (0 before) */
+	for (i = 0; i < 512; i++) {
+		int delayed = (i >= delay) ? (int)mono[i - delay] : 0;
+		int expect = 2 * (delayed >> shift);
+		if ((int)L[i] - (int)R[i] != expect) {
+			printf("fake-stereo width fail %d: L-R=%d expect=%d\n",
+				i, (int)L[i] - (int)R[i], expect);
+			failures++;
+			break;
+		}
+	}
+	/* warm-up: first `delay` samples see zero history, so L==R==mono */
+	for (i = 0; i < delay; i++) {
+		if (L[i] != mono[i] || R[i] != mono[i]) {
+			printf("fake-stereo warm-up fail %d: L=%d R=%d mono=%d\n",
+				i, L[i], R[i], mono[i]);
+			failures++;
+			break;
+		}
+	}
+	printf("fake-stereo selftest delay=%d shift=%d cases=512 failures=%d\n",
+		delay, shift, failures);
+	return failures ? 1 : 0;
+}
+
 typedef struct DecodeStream {
 	InputSource *input;
 	HMP3Decoder decoder;
@@ -4030,6 +4194,7 @@ typedef struct DecodeStream {
 	DecodeStats *stats;
 	TimingStats *timing;
 	RateState rateState;
+	FakeStereo fakeStereo;
 } DecodeStream;
 
 static void DecodeStreamInit(DecodeStream *stream, InputSource *input,
@@ -4267,6 +4432,9 @@ static int DecodeStreamFillPlanarS8(DecodeStream *stream, const DecodeOptions *o
 	int produced;
 
 	produced = 0;
+	if (!stream->fakeStereo.configured)
+		FakeStereoInit(&stream->fakeStereo, opt->fakeStereo,
+			opt->fakeStereoDelay, opt->fakeStereoShift);
 	DecodeStreamCopyPlanarSpill(stream, left, right, maxFrames, &produced);
 	while (produced < maxFrames && !stream->outOfData) {
 		const short *pcm;
@@ -4385,6 +4553,11 @@ static int DecodeStreamFillPlanarS8(DecodeStream *stream, const DecodeOptions *o
 			if (channels == 2) {
 				left[produced + i] = Sample16ToS8(pcm[2 * i]);
 				right[produced + i] = Sample16ToS8(pcm[2 * i + 1]);
+			} else if (stream->fakeStereo.enabled) {
+				short wl, wr;
+				FakeStereoProcess(&stream->fakeStereo, pcm[i], &wl, &wr);
+				left[produced + i] = Sample16ToS8(wl);
+				right[produced + i] = Sample16ToS8(wr);
 			} else {
 				left[produced + i] = Sample16ToS8(pcm[i]);
 				right[produced + i] = left[produced + i];
@@ -4397,6 +4570,11 @@ static int DecodeStreamFillPlanarS8(DecodeStream *stream, const DecodeOptions *o
 			if (channels == 2) {
 				stream->spill.planar[0][spill] = Sample16ToS8(pcm[2 * i]);
 				stream->spill.planar[1][spill] = Sample16ToS8(pcm[2 * i + 1]);
+			} else if (stream->fakeStereo.enabled) {
+				short wl, wr;
+				FakeStereoProcess(&stream->fakeStereo, pcm[i], &wl, &wr);
+				stream->spill.planar[0][spill] = Sample16ToS8(wl);
+				stream->spill.planar[1][spill] = Sample16ToS8(wr);
 			} else {
 				stream->spill.planar[0][spill] = Sample16ToS8(pcm[i]);
 				stream->spill.planar[1][spill] = stream->spill.planar[0][spill];
@@ -6641,6 +6819,11 @@ int main(int argc, char **argv)
 	}
 	if (opt.selftestQuality) {
 		int selftestErr = SelftestQuality();
+		AmigaFreeNormalizedArgs(&normalized);
+		return selftestErr;
+	}
+	if (opt.selftestFakeStereo) {
+		int selftestErr = SelftestFakeStereo();
 		AmigaFreeNormalizedArgs(&normalized);
 		return selftestErr;
 	}
