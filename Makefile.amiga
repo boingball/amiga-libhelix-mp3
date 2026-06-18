@@ -72,6 +72,7 @@ apply-replay-message-fix:
 	@python3 tools/apply_startup_stage_diagnostics.py
 	@python3 tools/apply_first_fill_gui_bridge.py
 	@python3 tools/apply_artwork_io_serialization.py
+	@python3 tools/apply_artwork_timer_startup_fix.py
 
 $(GUI_TARGET): apply-replay-message-fix $(GUI_SOURCES) amiga_mp3dec.c $(DECODER_SOURCES) $(FAST030_ASM_SOURCES)
 	$(CC) $(FAST030_CFLAGS) $(CPPFLAGS_COMMON) $(FAST030_CPPFLAGS) $(EXTRA_CFLAGS) \
