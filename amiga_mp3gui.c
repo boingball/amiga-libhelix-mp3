@@ -193,10 +193,10 @@ extern volatile int gMiniAmp3EmbeddedPlayback;
 #define SLIDER_X        (GUI_MARGIN_L + 60)
 #define BUFFER_SLIDER_W 300
 #define VOLUME_SLIDER_W BUFFER_SLIDER_W
-#define TRANSPORT_W     96
-#define TRANSPORT_H     22
-#define PLAY_X          (GUI_MARGIN_L + 126)
-#define STOP_X          (GUI_MARGIN_L + 330)
+#define TRANSPORT_W     48
+#define TRANSPORT_H     20
+#define PLAY_X          (GUI_MARGIN_L + 154)
+#define STOP_X          (GUI_MARGIN_L + 306)
 #define FILEINFO_X      (GUI_MARGIN_L + 84)
 #define FILEINFO_W      (GUI_WIN_W - FILEINFO_X - GUI_MARGIN_R)
 
@@ -1867,6 +1867,7 @@ static void FinishArtDecode(HelixAmp3Gui *gui, int ok)
 	st->active = 0;
 	gui->artLoading = 0;
 	DrawArtPanel(gui);
+	DrawTransportIcons(gui);
 }
 
 static void CancelArtDecode(HelixAmp3Gui *gui)
@@ -2164,6 +2165,32 @@ static int ArtGreyPen(HelixAmp3Gui *gui, int level)
 		FreeScreenDrawInfo(gui->win->WScreen, dri);
 	}
 	return pen;
+}
+
+static void DrawTransportIcons(HelixAmp3Gui *gui)
+{
+	struct RastPort *rp;
+	int playX;
+	int playY;
+	int stopX;
+	int stopY;
+	int i;
+
+	if (!gui || !gui->win || !gui->gadPlay || !gui->gadStop)
+		return;
+	rp = gui->win->RPort;
+	SetAPen(rp, 1);
+	playX = gui->gadPlay->LeftEdge + (gui->gadPlay->Width / 2) - 5;
+	playY = gui->gadPlay->TopEdge + (gui->gadPlay->Height / 2) - 5;
+	for (i = 0; i < 10; i++) {
+		int half = i / 2;
+		RectFill(rp, playX + i, playY + 5 - half, playX + i,
+			playY + 5 + half);
+	}
+	stopX = gui->gadStop->LeftEdge + (gui->gadStop->Width / 2) - 6;
+	stopY = gui->gadStop->TopEdge + (gui->gadStop->Height / 2) - 5;
+	RectFill(rp, stopX, stopY, stopX + 3, stopY + 9);
+	RectFill(rp, stopX + 8, stopY, stopX + 11, stopY + 9);
 }
 
 static void DrawArtPanel(HelixAmp3Gui *gui)
@@ -2940,8 +2967,17 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	if (!gad)
 		return -1;
 
+	gad = MakeGadget(gui, gad, TEXT_KIND, GID_COUNT,
+		GUI_MARGIN_L + 14, ROW_CHECKS - 1, 68, 16, "",
+		GTTX_Text, (ULONG)"Processing:",
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0,
+		TAG_IGNORE, 0);
+	if (!gad)
+		return -1;
+
 	gui->gadFastLowrate = gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_FAST_LOWRATE,
-		GUI_MARGIN_L + 14, ROW_CHECKS, 20, 12, "Fast-lr",
+		GUI_MARGIN_L + 96, ROW_CHECKS, 20, 12, "Fast",
 		GTCB_Checked, gui->fastLowrate,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -2950,7 +2986,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadSuperfastLowrate = gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_SUPERFAST_LOWRATE,
-		GUI_MARGIN_L + 116, ROW_CHECKS, 20, 12, "Superfast",
+		GUI_MARGIN_L + 178, ROW_CHECKS, 20, 12, "Superfast",
 		GTCB_Checked, gui->superfastLowrate,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -2959,7 +2995,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadFastMem = gad = MakeGadget(gui, gad, CHECKBOX_KIND, GID_FAST_MEM,
-		GUI_MARGIN_L + 240, ROW_CHECKS, 20, 12, "Fast-mem",
+		GUI_MARGIN_L + 314, ROW_CHECKS, 20, 12, "Fast-mem",
 		GTCB_Checked, gui->fastMem,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -3037,7 +3073,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadPlay = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_PLAY,
-		PLAY_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, ">",
+		PLAY_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, "",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -3046,7 +3082,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 		return -1;
 
 	gui->gadStop = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_STOP,
-		STOP_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, "[]",
+		STOP_X, ROW_BUTTONS, TRANSPORT_W, TRANSPORT_H, "",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -3291,6 +3327,7 @@ static int GuiOpen(HelixAmp3Gui *gui)
 	DrawProgressFrame(gui);
 	DrawProgress(gui);
 	DrawArtPanel(gui);
+	DrawTransportIcons(gui);
 	if (gui->timerOpen)
 		SendTimerRequest(gui, TIMER_TICK_MICROS);
 	return 0;
