@@ -52,7 +52,6 @@ static __inline unsigned int LOADBE16(const unsigned char *buf)
 }
 #endif
 #include "string.h"
-#include <stdio.h>
 
 /* helper macros - see comments in hufftabs.c about the format of the huffman tables */
 #define GetMaxbits(x)   ((int)( (((unsigned short)(x)) >>  0) & 0x000f))
@@ -167,9 +166,6 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 	HuffTabType tabType;
 	unsigned short cw, *tBase, *tCurr;
 	unsigned int cache;
-	int gHuffmanTrace;
-
-	gHuffmanTrace = (nVals == 318 && bitsLeft == 665 && bitOffset == 6 && tabIdx == 9) ? 1 : 0;
 
 	if(nVals <= 0) 
 		return 0;
@@ -217,9 +213,6 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 				bitsLeft -= 16;
 			} else {
 				/* last time through, pad cache with zeros and drain cache */
-				if (gHuffmanTrace)
-					printf("T%d END-DRAIN entry: nVals=%d bitsLeft=%d cachedBits=%d padBits=%d\n",
-						gHuffmanTrace, nVals, bitsLeft, cachedBits, padBits);
 				if (cachedBits + bitsLeft <= 0)	return -1;
 				if (bitsLeft > 0)	cache |= (unsigned int)(*buf++) << (24 - cachedBits);
 				if (bitsLeft > 8)	cache |= (unsigned int)(*buf++) << (16 - cachedBits);
@@ -254,9 +247,6 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 			}
 		}
 		bitsLeft += (cachedBits - padBits);
-		if (gHuffmanTrace)
-			printf("T%d RETURN: startBits=%d bitsLeft=%d result=%d\n",
-				gHuffmanTrace, startBits, bitsLeft, startBits - bitsLeft);
 		return (startBits - bitsLeft);
 	} else if (tabType == loopNoLinbits) {
 		/*
@@ -288,9 +278,6 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 				cachedBits += 16;
 				bitsLeft -= 16;
 			} else {
-				if (gHuffmanTrace)
-					printf("T%d END-DRAIN entry: nVals=%d bitsLeft=%d cachedBits=%d padBits=%d\n",
-						gHuffmanTrace, nVals, bitsLeft, cachedBits, padBits);
 				if (cachedBits + bitsLeft <= 0)	return -1;
 				if (bitsLeft > 0)	cache |= (unsigned int)(*buf++) << (24 - cachedBits);
 				if (bitsLeft > 8)	cache |= (unsigned int)(*buf++) << (16 - cachedBits);
@@ -332,9 +319,6 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 			}
 		}
 		bitsLeft += (cachedBits - padBits);
-		if (gHuffmanTrace)
-			printf("T%d RETURN: startBits=%d bitsLeft=%d result=%d\n",
-				gHuffmanTrace, startBits, bitsLeft, startBits - bitsLeft);
 		return (startBits - bitsLeft);
 	} else if (tabType == loopLinbits) {
 		tCurr = tBase;
@@ -356,9 +340,6 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 				bitsLeft -= 16;
 			} else {
 				/* last time through, pad cache with zeros and drain cache */
-				if (gHuffmanTrace)
-					printf("T%d END-DRAIN entry: nVals=%d bitsLeft=%d cachedBits=%d padBits=%d\n",
-						gHuffmanTrace, nVals, bitsLeft, cachedBits, padBits);
 				if (cachedBits + bitsLeft <= 0)	return -1;
 				if (bitsLeft > 0)	cache |= (unsigned int)(*buf++) << (24 - cachedBits);
 				if (bitsLeft > 8)	cache |= (unsigned int)(*buf++) << (16 - cachedBits);
@@ -442,9 +423,6 @@ static int DecodeHuffmanPairs_Impl(int *xy, int nVals, int tabIdx, int bitsLeft,
 			}
 		}
 		bitsLeft += (cachedBits - padBits);
-		if (gHuffmanTrace)
-			printf("T%d RETURN: startBits=%d bitsLeft=%d result=%d\n",
-				gHuffmanTrace, startBits, bitsLeft, startBits - bitsLeft);
 		return (startBits - bitsLeft);
 	}
 
