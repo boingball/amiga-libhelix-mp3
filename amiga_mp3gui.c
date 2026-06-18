@@ -329,7 +329,6 @@ typedef struct HelixAmp3Gui {
 	struct Gadget  *gadgets;
 	struct Gadget  *gadContext;
 	struct Gadget  *gadFile;
-	struct Gadget  *gadBrowse;
 	struct Gadget  *gadTitle;
 	struct Gadget  *gadArtist;
 	struct Gadget  *gadAlbum;
@@ -370,6 +369,7 @@ typedef struct HelixAmp3Gui {
 	int timerIsArt;
 	Mp3Tags tags;
 	char  inputName[HELIXAMP3_MAX_PATH];
+	char  queuedInputName[HELIXAMP3_MAX_PATH];
 	char  fileText[HELIXAMP3_MAX_PATH];
 	char  lastDrawer[HELIXAMP3_MAX_PATH];
 	char  statusText[128];
@@ -2410,9 +2410,6 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 	gui->playbackDonePending = 0;
 	gui->playbackStoppedByUser = 0;
 	gui->playbackActive = 0;
-	if (gui->win && gui->gadBrowse)
-		GT_SetGadgetAttrs(gui->gadBrowse, gui->win, NULL,
-			GA_Disabled, FALSE, TAG_DONE);
 	gGuiPlayer.process = NULL;
 	gDonePort = NULL;
 	if (gui->totalSecs > 0 && !stoppedByUser)
@@ -2429,6 +2426,27 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 #else
 	SetStatus(gui, stoppedByUser ? "Stopped - ready." : "Playback finished - ready.");
 #endif
+	if (gui->closeRequested) {
+		gui->queuedInputName[0] = '\0';
+	} else if (gui->queuedInputName[0]) {
+		char queued[HELIXAMP3_MAX_PATH];
+		SafeCopy(queued, sizeof(queued), gui->queuedInputName);
+		gui->queuedInputName[0] = '\0';
+		CancelArtDecode(gui);
+		SafeCopy(gui->inputName, sizeof(gui->inputName), queued);
+		SetFileDisplay(gui, gui->inputName);
+		ReadMp3Tags(gui->inputName, &gui->tags, gui->artEnabled);
+		gui->totalSecs = gui->tags.durationSecs;
+		gui->elapsedSecs = 0;
+		gui->launchBufferSecs = 0;
+		UpdateTagDisplay(gui);
+		UpdateArtDisplay(gui);
+		DrawProgress(gui);
+		if (gui->artDecode.active)
+			SendTimerRequest(gui, ART_TIMER_MICROS);
+		else
+			SetStatus(gui, "Next file ready.");
+	}
 }
 
 static void HandleTimerSignal(HelixAmp3Gui *gui)
@@ -2805,7 +2823,7 @@ static int GuiCreateGadgets(HelixAmp3Gui *gui)
 	if (!gad)
 		return -1;
 
-	gui->gadBrowse = gad = MakeGadget(gui, gad, BUTTON_KIND, GID_BROWSE,
+	gad = MakeGadget(gui, gad, BUTTON_KIND, GID_BROWSE,
 		BROWSE_X, ROW_FILE - 1, BROWSE_W, 16, "Browse",
 		TAG_IGNORE, 0,
 		TAG_IGNORE, 0,
@@ -3420,13 +3438,6 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 	struct FileRequester *req;
 	char path[HELIXAMP3_MAX_PATH];
 
-	/* Replacing tags/artwork while the playback child and artwork timer still
-	 * reference the current selection can corrupt Intuition/ASL state and raise
-	 * a recoverable alert.  File changes are intentionally a stopped-state action. */
-	if (gui->playbackActive || gui->playbackDonePending) {
-		SetStatus(gui, "Stop playback before choosing another file.");
-		return;
-	}
 	if (!gui->lastDrawer[0] && gui->inputName[0])
 		CopyDrawerFromPath(gui->lastDrawer, sizeof(gui->lastDrawer),
 			gui->inputName);
@@ -3441,7 +3452,8 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 		SetStatus(gui, "Cannot allocate ASL file requester.");
 		return;
 	}
-	if (AslRequest(req, NULL)) {
+	if (AslRequestTags(req, ASLFR_Window, (ULONG)gui->win,
+		ASLFR_SleepWindow, TRUE, TAG_DONE)) {
 		path[0] = '\0';
 		if (req->fr_Drawer && req->fr_Drawer[0]) {
 			SafeCopy(gui->lastDrawer, sizeof(gui->lastDrawer),
@@ -3451,21 +3463,27 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 		} else {
 			SafeCopy(path, sizeof(path), req->fr_File);
 		}
-		SafeCopy(gui->inputName, sizeof(gui->inputName), path);
-		SetFileDisplay(gui, gui->inputName);
-		ReadMp3Tags(gui->inputName, &gui->tags, gui->artEnabled);
-		gui->totalSecs = gui->tags.durationSecs;
-		gui->elapsedSecs = 0;
-		UpdateTagDisplay(gui);
-		UpdateArtDisplay(gui);
-		DrawProgress(gui);
-		if (gui->artDecode.active)
-			SendTimerRequest(gui, ART_TIMER_MICROS);
-		if (!gui->artDecode.active) {
-			FormatReadyStatus(&gui->tags, gui->statusText, sizeof(gui->statusText));
-			SetStatus(gui, gui->statusText);
+		if (gui->playbackActive || gui->playbackDonePending) {
+			SafeCopy(gui->queuedInputName, sizeof(gui->queuedInputName), path);
+			SetStatus(gui, "Selected for next Play.");
+		} else {
+			CancelArtDecode(gui);
+			SafeCopy(gui->inputName, sizeof(gui->inputName), path);
+			SetFileDisplay(gui, gui->inputName);
+			ReadMp3Tags(gui->inputName, &gui->tags, gui->artEnabled);
+			gui->totalSecs = gui->tags.durationSecs;
+			gui->elapsedSecs = 0;
+			UpdateTagDisplay(gui);
+			UpdateArtDisplay(gui);
+			DrawProgress(gui);
+			if (gui->artDecode.active)
+				SendTimerRequest(gui, ART_TIMER_MICROS);
+			if (!gui->artDecode.active) {
+				FormatReadyStatus(&gui->tags, gui->statusText, sizeof(gui->statusText));
+				SetStatus(gui, gui->statusText);
+			}
+			GuiDisableFastMemIfTooSmall(gui);
 		}
-		GuiDisableFastMemIfTooSmall(gui);
 	}
 	FreeAslRequest(req);
 }
@@ -3861,9 +3879,6 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	gui->playbackDonePending = 0;
 	gui->playbackStoppedByUser = 0;
 	gui->playbackActive = 1;
-	if (gui->gadBrowse)
-		GT_SetGadgetAttrs(gui->gadBrowse, gui->win, NULL,
-			GA_Disabled, TRUE, TAG_DONE);
 	SetStatus(gui, gui->decodeThenPlay ?
 		"Buffering..." :
 		"Starting playback...");
