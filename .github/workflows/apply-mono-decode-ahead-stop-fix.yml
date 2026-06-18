@@ -1,0 +1,31 @@
+name: Apply mono decode-ahead stop fix
+on:
+  push:
+    branches:
+      - codex/mono-decode-ahead-stop-fix
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 tools/apply_mono_decode_ahead_stop_fix.py
+      - run: |
+          git diff --check
+          grep -q '#define AMIGA_MONO_AUDIO_SLOTS 2' amiga_mp3dec.c
+          grep -q 'decodeAhead = (opt->stereo || opt->fastLowrate) ? 2 : -1;' amiga_mp3dec.c
+          grep -q 'else if (decodeAhead >= 0)' amiga_mp3dec.c
+      - run: |
+          rm -f tools/apply_mono_decode_ahead_stop_fix.py
+          rm -f .github/workflows/apply-mono-decode-ahead-stop-fix.yml
+          rmdir tools 2>/dev/null || true
+          rmdir .github/workflows 2>/dev/null || true
+          rmdir .github 2>/dev/null || true
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add -A
+          git commit -m 'Use decode-ahead for mono fast-lowrate playback'
+          git push origin HEAD:codex/mono-decode-ahead-stop-fix
