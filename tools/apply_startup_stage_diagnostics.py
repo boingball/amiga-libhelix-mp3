@@ -38,6 +38,13 @@ static const char *GuiStartupStageLabel(int stage)
 \tcase GUISTART_ALLOC_WORK_BUFFERS: return "allocate work buffers";
 \tcase GUISTART_AUDIO_SETUP_DONE: return "audio setup done";
 \tcase GUISTART_FILL_BUFFER_A: return "fill buffer A";
+\tcase GUISTART_FILL_PLANAR_ENTER: return "planar fill entered";
+\tcase GUISTART_FILL_PLANAR_READ: return "reading first data";
+\tcase GUISTART_FILL_PLANAR_SYNC: return "finding first frame";
+\tcase GUISTART_FILL_PLANAR_DECODE: return "before first MP3Decode";
+\tcase GUISTART_FILL_PLANAR_DECODED: return "after first MP3Decode";
+\tcase GUISTART_FILL_PLANAR_CONVERT: return "converting first frame";
+\tcase GUISTART_FILL_PLANAR_COPIED: return "first frame copied";
 \tcase GUISTART_FILL_BUFFER_A_DONE: return "buffer A filled";
 \tcase GUISTART_FILL_BUFFER_B: return "fill buffer B";
 \tcase GUISTART_FILL_BUFFER_B_DONE: return "buffer B filled";
@@ -55,6 +62,20 @@ if 'GuiStartupStageLabel' not in text:
     if marker not in text:
         raise SystemExit('extern marker not found')
     text = text.replace(marker, helper, 1)
+elif 'before first MP3Decode' not in text:
+    old = '\tcase GUISTART_FILL_BUFFER_A: return "fill buffer A";\n'
+    new = '''\tcase GUISTART_FILL_BUFFER_A: return "fill buffer A";
+\tcase GUISTART_FILL_PLANAR_ENTER: return "planar fill entered";
+\tcase GUISTART_FILL_PLANAR_READ: return "reading first data";
+\tcase GUISTART_FILL_PLANAR_SYNC: return "finding first frame";
+\tcase GUISTART_FILL_PLANAR_DECODE: return "before first MP3Decode";
+\tcase GUISTART_FILL_PLANAR_DECODED: return "after first MP3Decode";
+\tcase GUISTART_FILL_PLANAR_CONVERT: return "converting first frame";
+\tcase GUISTART_FILL_PLANAR_COPIED: return "first frame copied";
+'''
+    if old not in text:
+        raise SystemExit('stage-label insertion point not found')
+    text = text.replace(old, new, 1)
 
 old = '''#else
 \t\t\tif (gui->startupStageStableTicks >= 5 && !gui->startupStallShown) {
