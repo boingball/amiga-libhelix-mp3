@@ -311,7 +311,6 @@ typedef struct DecodeOptions {
 	int fakeStereo;
 	int fakeStereoDelay;
 	int fakeStereoShift;
-	int lowPass;
 	int decodeThenPlay;
 	int playLifecycleTest;
 	int audioOpenSilentTest;
@@ -656,7 +655,6 @@ static void PrintUsage(const char *prog)
 		FAKE_STEREO_MAX_DELAY, FAKE_STEREO_DEFAULT_DELAY);
 	printf("  --fake-stereo-shift K  fake-stereo cross-bleed >>K (0-8, default %d; higher=wider, 0=mono)\n",
 		FAKE_STEREO_DEFAULT_SHIFT);
-	printf("  --low-pass   soften Paula output with a light one-pole low-pass filter\n");
 	printf("  --play-fast-path accepted alias; --play already uses reduced-overhead playback\n");
 	printf("  --decode-then-play decode whole MP3 to RAM, then play (debug for --play)\n");
 	printf("  --selftest-play-cleanup open/submit/cleanup audio.device five times\n");
@@ -845,8 +843,6 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			}
 			i++;
 			opt->fakeStereoShift = atoi(argv[i]);
-		} else if (!strcmp(argv[i], "--low-pass")) {
-			opt->lowPass = 1;
 		} else if (!strcmp(argv[i], "--play-fast-path")) {
 			opt->play = 1;
 			opt->outFormat = OUT_S8;
@@ -4262,9 +4258,6 @@ typedef struct DecodeStream {
 	TimingStats *timing;
 	RateState rateState;
 	FakeStereo fakeStereo;
-	int lowPassReady;
-	int lowPassL;
-	int lowPassR;
 } DecodeStream;
 
 static void DecodeStreamInit(DecodeStream *stream, InputSource *input,
@@ -4278,20 +4271,6 @@ static void DecodeStreamInit(DecodeStream *stream, InputSource *input,
 	stream->timing = timing;
 }
 
-
-static void DecodeStreamLowPassPair(DecodeStream *stream, short *left, short *right)
-{
-	if (!stream->lowPassReady) {
-		stream->lowPassL = *left;
-		stream->lowPassR = *right;
-		stream->lowPassReady = 1;
-	} else {
-		stream->lowPassL += (((int)*left) - stream->lowPassL) >> 2;
-		stream->lowPassR += (((int)*right) - stream->lowPassR) >> 2;
-	}
-	*left = ClipToS16(stream->lowPassL);
-	*right = ClipToS16(stream->lowPassR);
-}
 
 static int DecodeStreamCopySpill(DecodeStream *stream, signed char *dest,
 	int maxBytes, int *outBytes)
@@ -4649,8 +4628,6 @@ static int DecodeStreamFillPlanarS8(DecodeStream *stream, const DecodeOptions *o
 				wl = pcm[i];
 				wr = pcm[i];
 			}
-			if (opt->lowPass)
-				DecodeStreamLowPassPair(stream, &wl, &wr);
 			left[produced + i] = Sample16ToS8(wl);
 			right[produced + i] = Sample16ToS8(wr);
 		}
