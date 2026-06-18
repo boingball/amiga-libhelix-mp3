@@ -431,7 +431,7 @@ typedef struct HelixAmp3Player {
 } HelixAmp3Player;
 
 struct IntuitionBase *IntuitionBase;
-extern volatile struct CIA ciaa;
+extern struct CIA ciaa;
 struct Library *AslBase;
 struct Library *GadToolsBase;
 struct Library *DiskfontBase;
