@@ -643,10 +643,10 @@ static void PrintUsage(const char *prog)
 	printf("               stereo rates: 8820, 11025, 22050, or PAL-top 28600 Hz\n");
 	printf("               mono rates: 8287 default, 8820, 11025, 22050, or PAL-top 28600 Hz\n");
 	printf("  --fake-stereo  --play pseudo-stereo width from the mono decode (mono CPU cost)\n");
-	printf("               complementary-comb widener; mutually exclusive with --stereo\n");
+	printf("               energy-symmetric cross-delay; mutually exclusive with --stereo\n");
 	printf("  --fake-stereo-delay N  fake-stereo delay in samples (1-%d, default %d)\n",
 		FAKE_STEREO_MAX_DELAY, FAKE_STEREO_DEFAULT_DELAY);
-	printf("  --fake-stereo-shift K  fake-stereo width attenuation >>K (0-8, default %d; lower=wider)\n",
+	printf("  --fake-stereo-shift K  fake-stereo cross-bleed >>K (0-8, default %d; higher=wider, 0=mono)\n",
 		FAKE_STEREO_DEFAULT_SHIFT);
 	printf("  --play-fast-path accepted alias; --play already uses reduced-overhead playback\n");
 	printf("  --decode-then-play decode whole MP3 to RAM, then play (debug for --play)\n");
@@ -4066,10 +4066,14 @@ static int SelftestMulshift(void)
 
 /*
  * Fake-stereo (pseudo-stereo) widener.  Runs on the mono decode path so the
- * stereo impression costs ~mono CPU.  Complementary comb (Lauridsen):
- *   L = mono + (delayed >> shift), R = mono - (delayed >> shift)
- * so L + R == 2*mono before clipping (mono-compatible), while the +/- pair
- * produces frequency-dependent width.  delay is in output samples.
+ * stereo impression costs ~mono CPU.  Energy-symmetric cross-delay:
+ *   L = mono    + (delayed >> shift)
+ *   R = delayed + (mono    >> shift)
+ * Because L and R are symmetric in (mono <-> delayed), E[L^2] == E[R^2] for any
+ * stationary input, so neither channel is louder.  (A plain L=mono+w / R=mono-w
+ * comb instead leans correlated bass into one channel, making the other sound
+ * quieter.)  delay is in output samples; larger shift = less cross-bleed = wider
+ * (shift 0 collapses to mono).
  */
 typedef struct FakeStereo {
 	short hist[FAKE_STEREO_MAX_DELAY];
@@ -4103,12 +4107,20 @@ static void FakeStereoInit(FakeStereo *fs, int enabled, int delay, int shift)
 
 static void FakeStereoProcess(FakeStereo *fs, int mono, short *outL, short *outR)
 {
-	int idx, w, l, r;
+	int idx, d, l, r;
 
 	idx = (fs->pos + FAKE_STEREO_MAX_DELAY - fs->delay) & FAKE_STEREO_DELAY_MASK;
-	w = (int)fs->hist[idx] >> fs->shift;
-	l = mono + w;
-	r = mono - w;
+	d = (int)fs->hist[idx];
+	/*
+	 * Energy-symmetric cross-delay widener.  L leads with the current sample,
+	 * R leads with the delayed sample, each with a >>shift cross-bleed of the
+	 * other.  Because the two channels are symmetric in (mono <-> delayed),
+	 * E[L^2] == E[R^2] for any stationary input, so neither side is louder --
+	 * unlike a plain L=mono+w / R=mono-w comb, where correlated bass leans into
+	 * one channel.  Larger shift = less cross-bleed = wider (shift 0 == mono).
+	 */
+	l = mono + (d >> fs->shift);
+	r = d + (mono >> fs->shift);
 	if (l > 32767) l = 32767; else if (l < -32768) l = -32768;
 	if (r > 32767) r = 32767; else if (r < -32768) r = -32768;
 	*outL = (short)l;
@@ -4120,53 +4132,62 @@ static void FakeStereoProcess(FakeStereo *fs, int mono, short *outL, short *outR
 static int SelftestFakeStereo(void)
 {
 	FakeStereo fs;
-	short mono[512], L[512], R[512];
+	short mono[2048], L[2048], R[2048];
 	int failures = 0;
 	int i;
 	int delay = 64;
 	int shift = 2;
+	long sumL2 = 0, sumR2 = 0, diff, tol;
 	unsigned long seed = 0x1234567UL;
 
-	/* moderate amplitude so the comb sum never clips, keeping the invariants exact */
-	for (i = 0; i < 512; i++) {
+	/* moderate amplitude so the cross-delay sum never clips, keeping it exact */
+	for (i = 0; i < 2048; i++) {
 		seed = seed * 1664525UL + 1013904223UL;
 		mono[i] = (short)(((int)(seed >> 16) & 0x3fff) - 0x2000); /* -8192..8191 */
 	}
 	FakeStereoInit(&fs, 1, delay, shift);
-	for (i = 0; i < 512; i++)
+	for (i = 0; i < 2048; i++)
 		FakeStereoProcess(&fs, mono[i], &L[i], &R[i]);
 
-	/* mono-compatibility: L + R == 2*mono (no clipping at this amplitude) */
-	for (i = 0; i < 512; i++) {
-		if ((int)L[i] + (int)R[i] != 2 * (int)mono[i]) {
-			printf("fake-stereo mono-compat fail %d: L=%d R=%d mono=%d\n",
-				i, L[i], R[i], mono[i]);
+	/* exact cross-delay formula: L = mono + (d>>shift), R = d + (mono>>shift),
+	 * with d = mono[i-delay] (0 during warm-up). */
+	for (i = 0; i < 2048; i++) {
+		int d = (i >= delay) ? (int)mono[i - delay] : 0;
+		int el = mono[i] + (d >> shift);
+		int er = d + ((int)mono[i] >> shift);
+		if ((int)L[i] != el || (int)R[i] != er) {
+			printf("fake-stereo formula fail %d: L=%d/%d R=%d/%d\n",
+				i, L[i], el, R[i], er);
 			failures++;
 			break;
 		}
 	}
-	/* width: L - R == 2*(delayed >> shift), delayed = mono[i-delay] (0 before) */
-	for (i = 0; i < 512; i++) {
-		int delayed = (i >= delay) ? (int)mono[i - delay] : 0;
-		int expect = 2 * (delayed >> shift);
-		if ((int)L[i] - (int)R[i] != expect) {
-			printf("fake-stereo width fail %d: L-R=%d expect=%d\n",
-				i, (int)L[i] - (int)R[i], expect);
+	/* energy balance: neither channel is systematically louder.  Measured over
+	 * the steady state (past the first `delay` warm-up samples, where R has not
+	 * yet seen any delayed history). */
+	for (i = delay; i < 2048; i++) {
+		sumL2 += (long)L[i] * (long)L[i];
+		sumR2 += (long)R[i] * (long)R[i];
+	}
+	diff = (sumL2 > sumR2) ? (sumL2 - sumR2) : (sumR2 - sumL2);
+	tol = sumL2 / 50;	/* within 2% */
+	if (diff > tol) {
+		printf("fake-stereo energy imbalance: sumL2=%ld sumR2=%ld diff=%ld tol=%ld\n",
+			sumL2, sumR2, diff, tol);
+		failures++;
+	}
+	/* width must actually be present (channels differ) */
+	{
+		int differs = 0;
+		for (i = delay; i < 2048; i++)
+			if (L[i] != R[i]) { differs = 1; break; }
+		if (!differs) {
+			printf("fake-stereo produced no stereo width\n");
 			failures++;
-			break;
 		}
 	}
-	/* warm-up: first `delay` samples see zero history, so L==R==mono */
-	for (i = 0; i < delay; i++) {
-		if (L[i] != mono[i] || R[i] != mono[i]) {
-			printf("fake-stereo warm-up fail %d: L=%d R=%d mono=%d\n",
-				i, L[i], R[i], mono[i]);
-			failures++;
-			break;
-		}
-	}
-	printf("fake-stereo selftest delay=%d shift=%d cases=512 failures=%d\n",
-		delay, shift, failures);
+	printf("fake-stereo selftest delay=%d shift=%d cases=2048 sumL2=%ld sumR2=%ld failures=%d\n",
+		delay, shift, sumL2, sumR2, failures);
 	return failures ? 1 : 0;
 }
 

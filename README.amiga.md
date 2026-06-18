@@ -222,13 +222,15 @@ for the selected output format.  For example, `RAM:` with `song.mp3` writes
 - `--fake-stereo` is an opt-in `--play` alternative to true `--stereo` for systems
   that cannot decode real stereo in real time. It decodes a single (mono) channel
   — so it costs about the same CPU as mono playback — then synthesises a stereo
-  impression with a complementary-comb (Lauridsen) pseudo-stereo widener:
-  `L = mono + (delayed >> shift)`, `R = mono - (delayed >> shift)`. Because
-  `L + R == 2*mono` before clipping, the output is mono-compatible, while the
-  +/- pair produces frequency-dependent width. It is mutually exclusive with
-  `--stereo`. `--fake-stereo-delay N` sets the delay line length in output samples
-  (1-256, default 96 ≈ 11 ms at 8820 Hz); `--fake-stereo-shift K` sets the width
-  attenuation `>>K` (0-8, default 2; lower K = wider). It is an effect, not the
+  impression with an energy-symmetric cross-delay widener:
+  `L = mono + (delayed >> shift)`, `R = delayed + (mono >> shift)`. Because the
+  two channels are symmetric in `mono`/`delayed`, `E[L^2] == E[R^2]` for any
+  stationary input, so neither channel is louder than the other (a plain
+  `L=mono+w`/`R=mono-w` comb instead leans correlated bass into one channel,
+  making the other sound quieter). It is mutually exclusive with `--stereo`.
+  `--fake-stereo-delay N` sets the delay line length in output samples (1-256,
+  default 96 ≈ 11 ms at 8820 Hz); `--fake-stereo-shift K` sets the cross-bleed
+  `>>K` (0-8, default 2; higher K = wider, 0 = mono). It is an effect, not the
   real left/right mix, so hard-panned material is not reproduced faithfully.
   In the GUI it is the "Fake-st" checkbox and applies when Mono is also selected.
 - `--selftest-fake-stereo` verifies the widener's mono-compatibility invariant
