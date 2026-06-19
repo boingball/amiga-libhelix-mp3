@@ -57,3 +57,22 @@ Projected fused cost:
 The projected reduction is well above the requested ~1.5x threshold, so the
 compile-gated fused backend is worth implementing as an experimental opt-in
 path.
+
+## Implemented Stage 1 count
+
+The Stage 1 implementation keeps only the `freq_div == 4` fused path live.  Its
+compiled `FusedSubHalfDCT()` body has 12 `FusedMulCosQ29()` butterfly-node
+multiplies, matching the projection.  Its `FusedWindowBand4Sample()` body uses
+four `FusedPolyMulShift26()` dewindow multiplies for each of the same eight
+emitted stride-4 samples per synthesis block.
+
+```text
+(12 FusedSubHalfDCT muls + 8 samples * 4 fused window muls) * 18 blocks
+= (12 + 32) * 18
+= 792 muls.l-equivalent multiplies per granule per channel
+```
+
+The implemented Stage 1 count therefore matches the projected 792 multiplies per
+granule per channel and preserves the projected 2,664 / 792 = 3.36x reduction.
+Stride-2 remains deliberately disabled in the fused dispatcher until the Stage 2
+butterfly depth is implemented and reviewed.

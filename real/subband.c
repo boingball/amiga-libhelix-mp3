@@ -279,37 +279,186 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 }
 
 #if defined(AMIGA_FUSED_SYNTHESIS) && defined(AMIGA_FAST_POLYPHASE)
+#define FUSED_DEF_NFRACBITS (DQ_FRACBITS_OUT - 2 - 2 - 15)
+#define FUSED_COS_Q 29
+#define FUSED_COS1_16 0x10503ed1 /* round((1/(2*cos(1*pi/16))) * 2^29) */
+#define FUSED_COS3_16 0x133e37a2 /* round((1/(2*cos(3*pi/16))) * 2^29) */
+#define FUSED_COS5_16 0x1ccc9af0 /* round((1/(2*cos(5*pi/16))) * 2^29) */
+#define FUSED_COS7_16 0x52036742 /* round((1/(2*cos(7*pi/16))) * 2^29) */
+#define FUSED_COS1_8  0x11517a7c /* round((1/(2*cos(1*pi/8)))  * 2^29) */
+#define FUSED_COS3_8  0x29cf5d23 /* round((1/(2*cos(3*pi/8)))  * 2^29) */
+#define FUSED_COS1_4  0x16a09e66 /* round((1/(2*cos(1*pi/4)))  * 2^29) */
+
+static __inline int FusedMulCosQ29(int c, int x)
+{
+	return MULSHIFT32(c, x) << (32 - FUSED_COS_Q);
+}
+
+static __inline short FusedClipIntToShort(int x)
+{
+	int sign = x >> 31;
+	if (sign != (x >> 15))
+		x = sign ^ ((1 << 15) - 1);
+	return (short)x;
+}
+
+static __inline int FusedPolyMulShift26(int x, int coef)
+{
+	return MULSHIFT32(x, coef << FUSED_DEF_NFRACBITS);
+}
+
 static int FusedSynthFastLowrateActive(int nChans, int stride)
 {
+	/* Stage 1 intentionally enables only freq_div==4/stride-4.  Stride-2
+	 * remains on the legacy path until the second butterfly depth is reviewed.
+	 */
 	return MP3ExperimentalFusedSynthesisEnabled() &&
-		(nChans == 1 || nChans == 2) && (stride == 2 || stride == 4);
+		(nChans == 1 || nChans == 2) && stride == 4;
+}
+
+static void FusedSubHalfDCT(int p[16])
+{
+	int pp[8];
+	int p1, p2;
+
+	pp[0] = p[0] + p[7]; pp[4] = FusedMulCosQ29(FUSED_COS1_16, p[0] - p[7]);
+	pp[1] = p[1] + p[6]; pp[5] = FusedMulCosQ29(FUSED_COS3_16, p[1] - p[6]);
+	pp[2] = p[2] + p[5]; pp[6] = FusedMulCosQ29(FUSED_COS5_16, p[2] - p[5]);
+	pp[3] = p[3] + p[4]; pp[7] = FusedMulCosQ29(FUSED_COS7_16, p[3] - p[4]);
+
+	p[0] = pp[0] + pp[7]; p[2] = FusedMulCosQ29(FUSED_COS1_8, pp[0] - pp[7]);
+	p[1] = pp[1] + pp[6]; p[3] = FusedMulCosQ29(FUSED_COS3_8, pp[1] - pp[6]);
+	p[4] = pp[4] + pp[5]; p[6] = FusedMulCosQ29(FUSED_COS1_8, pp[4] - pp[5]);
+	p[5] = pp[5] + pp[4]; p[7] = FusedMulCosQ29(FUSED_COS3_8, pp[5] - pp[4]);
+
+	p1 = p[0]; p2 = p[1]; p[0] = p1 + p2; p[1] = FusedMulCosQ29(FUSED_COS1_4, p1 - p2);
+	p1 = p[2]; p2 = p[3]; p[2] = p1 + p2; p[3] = FusedMulCosQ29(FUSED_COS1_4, p1 - p2);
+	p1 = p[4]; p2 = p[7]; p[4] = p1 + p2; p[5] = FusedMulCosQ29(FUSED_COS1_4, p1 - p2);
+	p1 = p[6]; p2 = p[9]; p[6] = p1 + p2; p[7] = FusedMulCosQ29(FUSED_COS1_4, p1 - p2);
+}
+
+static void FusedFastDCT4(const int *samples, int *sy0, int *sy1)
+{
+	int p[16];
+	int s;
+	int i;
+
+	for (i = 0; i < 16; i++)
+		p[i] = 0;
+	for (i = 0; i < 8; i++)
+		p[i] = samples[i];
+	FusedSubHalfDCT(p);
+
+#define FS0(i, v) sy0[(i) * 16] = (v)
+#define FS1(i, v) sy1[(i) * 16] = (v)
+	FS0(0, p[1]); FS1(0, -p[1]);
+	s = p[5] + p[7]; FS0(4, s); FS0(28, -s);
+	FS0(8, p[3]); FS0(24, -p[3]);
+	FS0(12, p[7]); FS0(20, -p[7]);
+	FS0(16, 0);
+	s = p[6] + p[7];
+	FS1(4, -(p[5] + s)); FS1(28, -(p[5] + s));
+	FS1(8, -(p[2] + p[3])); FS1(24, -(p[2] + p[3]));
+	FS1(12, -(p[4] + s)); FS1(20, -(p[4] + s));
+	FS1(16, -p[0]);
+#undef FS0
+#undef FS1
+}
+
+static short FusedWindowBand4Sample(const int *vbuf, const int *coefBase, int sample)
+{
+	int sum = 0;
+	int pair;
+	const int *vLo;
+	const int *vHi;
+	const int *c;
+	/* quality-0 equivalent: keep the first four coefficient pairs from the
+	 * existing MiniAMP3 dewindow table and advance across FIFO rows with the
+	 * freq_div*16 == 64 spacing.
+	 */
+	if (sample == 0) {
+		vLo = vbuf;
+		vHi = vbuf + 23;
+		c = coefBase;
+		sum += FusedPolyMulShift26(vLo[0], c[0]) - FusedPolyMulShift26(vHi[0], c[1]);
+		sum += FusedPolyMulShift26(vLo[1], c[2]) - FusedPolyMulShift26(vHi[-1], c[3]);
+		sum += FusedPolyMulShift26(vLo[2], c[4]) - FusedPolyMulShift26(vHi[-2], c[5]);
+		sum += FusedPolyMulShift26(vLo[3], c[6]) - FusedPolyMulShift26(vHi[-3], c[7]);
+	} else if (sample == 16) {
+		vLo = vbuf + 64 * 16;
+		c = coefBase + 256;
+		sum += FusedPolyMulShift26(vLo[0], c[0]);
+		sum += FusedPolyMulShift26(vLo[1], c[1]);
+		sum += FusedPolyMulShift26(vLo[2], c[2]);
+		sum += FusedPolyMulShift26(vLo[3], c[3]);
+	} else {
+		pair = sample < 16 ? sample : 32 - sample;
+		vLo = vbuf + 64 * pair;
+		vHi = vLo + 23;
+		c = coefBase + 16 * pair;
+		if (sample < 16) {
+			sum += FusedPolyMulShift26(vLo[0], c[0]) - FusedPolyMulShift26(vHi[0], c[1]);
+			sum += FusedPolyMulShift26(vLo[1], c[2]) - FusedPolyMulShift26(vHi[-1], c[3]);
+			sum += FusedPolyMulShift26(vLo[2], c[4]) - FusedPolyMulShift26(vHi[-2], c[5]);
+			sum += FusedPolyMulShift26(vLo[3], c[6]) - FusedPolyMulShift26(vHi[-3], c[7]);
+		} else {
+			sum += FusedPolyMulShift26(vLo[0], c[1]) + FusedPolyMulShift26(vHi[0], c[0]);
+			sum += FusedPolyMulShift26(vLo[1], c[3]) + FusedPolyMulShift26(vHi[-1], c[2]);
+			sum += FusedPolyMulShift26(vLo[2], c[5]) + FusedPolyMulShift26(vHi[-2], c[4]);
+			sum += FusedPolyMulShift26(vLo[3], c[7]) + FusedPolyMulShift26(vHi[-3], c[6]);
+		}
+	}
+	return FusedClipIntToShort(sum);
+}
+
+static int FusedWindowBand4(short *pcm, int *vbase, int nChans, int phase)
+{
+	static const unsigned char samples[4][8] = {
+		{ 0, 4, 8, 12, 16, 20, 24, 28 },
+		{ 3, 7, 11, 15, 19, 23, 27, 31 },
+		{ 2, 6, 10, 14, 18, 22, 26, 30 },
+		{ 1, 5, 9, 13, 17, 21, 25, 29 }
+	};
+	int i;
+	for (i = 0; i < 8; i++) {
+		int sample = samples[phase & 3][i];
+		if (nChans == 2) {
+			pcm[0] = FusedWindowBand4Sample(vbase, polyCoef, sample);
+			pcm[1] = FusedWindowBand4Sample(vbase + 32, polyCoef, sample);
+			pcm += 2;
+		} else {
+			*pcm++ = FusedWindowBand4Sample(vbase, polyCoef, sample);
+		}
+	}
+	return nChans == 2 ? 16 : 8;
 }
 
 int FusedSynthFastLowrate(short *pcm, int *x[MAX_NCHAN], SubbandInfo *sbi,
 	int nChans, int stride, int *phase, int gb[MAX_NCHAN], int oddBlock)
 {
+	int *base0;
+	int *base1;
 	int *vbase;
 	int produced;
+	int i;
+	(void)gb;
 
 	if (!FusedSynthFastLowrateActive(nChans, stride))
 		return -1;
 
-	/* The experimental backend owns fusedVbuf/fusedVindex.  That keeps the
-	 * legacy vbuf/vindex untouched so a single binary can selftest the old and
-	 * new synthesis paths without FIFO aliasing.  This initial backend keeps the
-	 * externally visible sample phase/count identical while the butterfly/window
-	 * implementation remains compile-gated behind AMIGA_FUSED_SYNTHESIS.
-	 */
-	FDCT32FastLowrate(x[0], sbi->fusedVbuf + 0*32, sbi->fusedVindex, oddBlock,
-		gb[0], stride, *phase);
+	base0 = sbi->fusedVbuf + sbi->fusedVindex + (oddBlock ? VBUF_LENGTH : 0);
+	base1 = sbi->fusedVbuf + ((sbi->fusedVindex - oddBlock) & 7) + (oddBlock ? 0 : VBUF_LENGTH);
+	for (i = 0; i < 32 * 16; i += 16) {
+		base0[i] = base0[i + 32] = 0;
+		base1[i] = base1[i + 32] = 0;
+	}
+	FusedFastDCT4(x[0], base0, base1);
 	if (nChans == 2)
-		FDCT32FastLowrate(x[1], sbi->fusedVbuf + 1*32, sbi->fusedVindex, oddBlock,
-			gb[1], stride, *phase);
+		FusedFastDCT4(x[1], base0 + 32, base1 + 32);
+
 	vbase = sbi->fusedVbuf + sbi->fusedVindex + (oddBlock ? VBUF_LENGTH : 0);
-	if (nChans == 2)
-		produced = PolyphaseStereoFastLowrate(pcm, vbase, polyCoef, stride, phase);
-	else
-		produced = PolyphaseMonoFastLowrate(pcm, vbase, polyCoef, stride, phase);
+	produced = FusedWindowBand4(pcm, vbase, nChans, *phase);
+	*phase = (*phase + 32) & (stride - 1);
 	if (oddBlock)
 		sbi->fusedVindex = (sbi->fusedVindex - 1) & 7;
 	return produced;

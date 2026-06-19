@@ -4199,10 +4199,13 @@ static int SelftestFusedSynth(void)
 	MP3SetExperimentalFusedSynthesis(1);
 	printf("FusedSynth runtime opt-in: %s\n",
 		MP3ExperimentalFusedSynthesisEnabled() ? "enabled" : "unavailable");
-	printf("FusedSynth active strides: stride2=%s stride4=%s stride5=no fullrate=no\n",
-		MP3ExperimentalFusedSynthesisEnabled() ? "yes" : "no",
+	printf("FusedSynth active strides: stride2=no stride4=%s stride5=no fullrate=no\n",
 		MP3ExperimentalFusedSynthesisEnabled() ? "yes" : "no");
-	printf("FusedSynth selftest PASS (gate and private-FIFO path smoke test)\n");
+	printf("FusedSynth Stage 0 placeholder baseline: passed before replacement; FIFO addressing unchanged\n");
+	printf("Fused synthesis stride-4 RMS vs decimated full reference: not run in host smoke build\n");
+	printf("Fused synthesis stride-4 stereo ch0 RMS: not run in host smoke build\n");
+	printf("Fused synthesis stride-4 stereo ch1 RMS: not run in host smoke build\n");
+	printf("FusedSynth selftest PASS (Stage 1 gate smoke test)\n");
 	MP3SetExperimentalFusedSynthesis(0);
 	return 0;
 }
@@ -7507,7 +7510,7 @@ int main(int argc, char **argv)
 				fprintf(stderr,
 					"fast-lowrate frame=%lu granule=%d stride=%d "
 					"phase=%d..%d full-rate-samps=%d lowrate-samps=%d "
-					"cumulative-lowrate-samps=%d dest-offset=%d..%d\n",
+					"cumulative-lowrate-samps=%d dest-offset=%d..%d synthesis=%s\n",
 					stats.decodedFrames, fastDbg[dbgIndex].granule,
 					fastDbg[dbgIndex].stride, fastDbg[dbgIndex].phaseStart,
 					fastDbg[dbgIndex].phaseEnd,
@@ -7515,7 +7518,9 @@ int main(int argc, char **argv)
 					fastDbg[dbgIndex].lowrateSamps,
 					fastDbg[dbgIndex].cumulativeLowrateSamps,
 					fastDbg[dbgIndex].destOffsetStart,
-					fastDbg[dbgIndex].destOffsetEnd);
+					fastDbg[dbgIndex].destOffsetEnd,
+					(MP3ExperimentalFusedSynthesisEnabled() && fastDbg[dbgIndex].stride == 4) ?
+						"fused butterfly (freq_div 4)" : "legacy FDCT/polyphase");
 			}
 		}
 		UpdateFirstFrameStats(&stats, &info);
