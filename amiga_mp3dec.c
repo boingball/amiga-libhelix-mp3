@@ -3890,7 +3890,7 @@ static int SelftestReducedTaps(void)
 		}
 
 		for (j = 0; j < AMIGA_POLYPHASE_VBUF_LENGTH; j++)
-			independenceVbuf[j] = (j < 32) ? vbuf[j] : 0;
+			independenceVbuf[j] = ((j & 63) < 32) ? vbuf[j] : 0;
 		for (j = 0; j < AMIGA_POLYPHASE_NBANDS * 2; j++)
 			independencePcm[j] = 0;
 		if (AMIGA_POLYPHASE_STEREO_FAST_STRIDE2_REDUCED_TEST_ACTIVE(
@@ -3900,7 +3900,7 @@ static int SelftestReducedTaps(void)
 					stride2StereoIndependenceMismatches++;
 		}
 		for (j = 0; j < AMIGA_POLYPHASE_VBUF_LENGTH; j++)
-			independenceVbuf[j] = (j < 32) ? 0 : vbuf[j];
+			independenceVbuf[j] = ((j & 63) >= 32) ? vbuf[j] : 0;
 		for (j = 0; j < AMIGA_POLYPHASE_NBANDS * 2; j++)
 			independencePcm[j] = 0;
 		if (AMIGA_POLYPHASE_STEREO_FAST_STRIDE2_REDUCED_TEST_ACTIVE(
