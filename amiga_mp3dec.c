@@ -153,6 +153,7 @@ int STATNAME(PolyphaseStereoFastLowrateStride4_C_REFERENCE)(short *pcm, int *vbu
 int STATNAME(PolyphaseStereoFastLowrateStride4_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase, int phase);
 int STATNAME(PolyphaseStereoFastLowrateStride5_C_REFERENCE)(short *pcm, int *vbuf, const int *coefBase, int phase);
 int STATNAME(PolyphaseStereoFastLowrateStride5_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase, int phase);
+int STATNAME(FusedSynthSelftest)(void);
 int STATNAME(StereoFastPolyphaseStride5_Amiga_m68k_IsActive)(void);
 int STATNAME(PolyphaseMonoFastLowrateStride4Reduced_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase, int phase);
 int STATNAME(PolyphaseStereoFastLowrateStride4Reduced_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase, int phase);
@@ -4189,26 +4190,9 @@ static int TestMulshiftPair(int x, int y, unsigned long index)
 
 static int SelftestFusedSynth(void)
 {
-	printf("FusedSynth compile flag: %s\n",
-#if defined(AMIGA_FUSED_SYNTHESIS) && defined(AMIGA_FAST_POLYPHASE)
-		"yes"
-#else
-		"no"
-#endif
-	);
-	MP3SetExperimentalFusedSynthesis(1);
-	printf("FusedSynth runtime opt-in: %s\n",
-		MP3ExperimentalFusedSynthesisEnabled() ? "enabled" : "unavailable");
-	printf("FusedSynth active strides: stride2=no stride4=%s stride5=no fullrate=no\n",
-		MP3ExperimentalFusedSynthesisEnabled() ? "yes" : "no");
-	printf("FusedSynth Stage 0 placeholder baseline: passed before replacement; FIFO addressing unchanged\n");
-	printf("Fused synthesis stride-4 RMS vs decimated full reference: not run in host smoke build\n");
-	printf("Fused synthesis stride-4 stereo ch0 RMS: not run in host smoke build\n");
-	printf("Fused synthesis stride-4 stereo ch1 RMS: not run in host smoke build\n");
-	printf("FusedSynth selftest PASS (Stage 1 gate smoke test)\n");
-	MP3SetExperimentalFusedSynthesis(0);
-	return 0;
+	return STATNAME(FusedSynthSelftest)();
 }
+
 
 static int SelftestMulshift(void)
 {

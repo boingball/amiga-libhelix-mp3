@@ -126,6 +126,7 @@
 #define AmigaM68KPolyphaseMonoFast_IsActive STATNAME(AmigaM68KPolyphaseMonoFast_IsActive)
 #define AmigaM68KPolyphaseMonoFastStride2_IsActive STATNAME(AmigaM68KPolyphaseMonoFastStride2_IsActive)
 #define MonoFastPolyphaseStride4_Amiga_m68k_IsActive STATNAME(MonoFastPolyphaseStride4_Amiga_m68k_IsActive)
+#define FusedSynthSelftest STATNAME(FusedSynthSelftest)
 #define FDCT32				STATNAME(FDCT32)
 #define FDCT32Half			STATNAME(FDCT32Half)
 #define FDCT32Quarter			STATNAME(FDCT32Quarter)
@@ -336,6 +337,7 @@ void FDCT32FastLowrate(int *x, int *d, int offset, int oddBlock, int gb,
 	int stride, int phase);
 int FusedSynthFastLowrate(short *pcm, int *x[MAX_NCHAN], SubbandInfo *sbi,
 	int nChans, int stride, int *phase, int gb[MAX_NCHAN], int oddBlock);
+int FusedSynthSelftest(void);
 void FDCT32_C_REFERENCE(int *x, int *d, int offset, int oddBlock, int gb);
 int FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 void FDCT32Half_TEST_ACTIVE(int *x, int *d, int offset, int oddBlock, int gb);

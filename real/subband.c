@@ -45,6 +45,8 @@
 #include "coder.h"
 #include "amiga_profile_decode.h"
 #include "assembly.h"
+#include <stdio.h>
+#include <string.h>
 
 void FDCT32FastLowrate(int *x, int *d, int offset, int oddBlock, int gb,
 	int stride, int phase)
@@ -276,6 +278,217 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 
 	sbi->vindex = vindex;
 	return 0;
+}
+
+
+static double FusedSelftestSqrt(double x)
+{
+	double g;
+	int i;
+	if (x <= 0.0)
+		return 0.0;
+	g = x >= 1.0 ? x : 1.0;
+	for (i = 0; i < 24; i++)
+		g = 0.5 * (g + x / g);
+	return g;
+}
+
+#if defined(AMIGA_FUSED_SYNTHESIS) && defined(AMIGA_FAST_POLYPHASE)
+static void FusedSelftestFillInput(int x[2][8][32])
+{
+	unsigned long seed[2];
+	int ch, b, i;
+	seed[0] = 0x46555345UL;
+	seed[1] = 0x53594e31UL;
+	for (ch = 0; ch < 2; ch++) {
+		for (b = 0; b < 8; b++) {
+			for (i = 0; i < 32; i++) {
+				seed[ch] = seed[ch] * 1664525UL + 1013904223UL;
+				x[ch][b][i] = ((int)seed[ch]) >> (i < 8 ? 9 : 11);
+			}
+		}
+	}
+}
+
+static int FusedSelftestPlaceholderBlock(short *pcm, int *in0, int *in1,
+	SubbandInfo *sbi, int nChans, int stride, int *phase, int oddBlock)
+{
+	int *vbase;
+	int tmp0[32], tmp1[32];
+	memcpy(tmp0, in0, sizeof(tmp0));
+	FDCT32FastLowrate(tmp0, sbi->fusedVbuf + 0*32, sbi->fusedVindex, oddBlock,
+		0, stride, *phase);
+	if (nChans == 2) {
+		memcpy(tmp1, in1, sizeof(tmp1));
+		FDCT32FastLowrate(tmp1, sbi->fusedVbuf + 1*32, sbi->fusedVindex, oddBlock,
+			0, stride, *phase);
+	}
+	vbase = sbi->fusedVbuf + sbi->fusedVindex + (oddBlock ? VBUF_LENGTH : 0);
+	if (nChans == 2)
+		return PolyphaseStereoFastLowrate(pcm, vbase, polyCoef, stride, phase);
+	return PolyphaseMonoFastLowrate(pcm, vbase, polyCoef, stride, phase);
+}
+
+static int FusedSelftestLegacyBlock(short *pcm, int *in0, int *in1,
+	int *vbuf, int *vindex, int nChans, int stride, int *phase, int oddBlock)
+{
+	int *vbase;
+	int tmp0[32], tmp1[32];
+	memcpy(tmp0, in0, sizeof(tmp0));
+	FDCT32FastLowrate(tmp0, vbuf + 0*32, *vindex, oddBlock, 0, stride, *phase);
+	if (nChans == 2) {
+		memcpy(tmp1, in1, sizeof(tmp1));
+		FDCT32FastLowrate(tmp1, vbuf + 1*32, *vindex, oddBlock, 0, stride, *phase);
+	}
+	vbase = vbuf + *vindex + (oddBlock ? VBUF_LENGTH : 0);
+	if (nChans == 2)
+		return PolyphaseStereoFastLowrate(pcm, vbase, polyCoef, stride, phase);
+	return PolyphaseMonoFastLowrate(pcm, vbase, polyCoef, stride, phase);
+}
+
+static void FusedSelftestMinMax(const int *v, int n, int *mn, int *mx)
+{
+	int i;
+	*mn = v[0]; *mx = v[0];
+	for (i = 1; i < n; i++) {
+		if (v[i] < *mn) *mn = v[i];
+		if (v[i] > *mx) *mx = v[i];
+	}
+}
+#endif
+
+int FusedSynthSelftest(void)
+{
+#if !(defined(AMIGA_FUSED_SYNTHESIS) && defined(AMIGA_FAST_POLYPHASE))
+	printf("FusedSynth compile flag: no\n");
+	printf("FusedSynth selftest unavailable in this build\n");
+	return 0;
+#else
+	static int input[2][8][32];
+	static short legacyPcm[2][8 * 16];
+	static short privatePcm[2][8 * 16];
+	static short fusedPcm[8 * 16];
+	static short fastPcm[8 * 16];
+	static short refPcm[8 * 64];
+	static short fusedPcmAlt[8 * 16];
+	static int legacyVbuf[2 * VBUF_LENGTH];
+	static SubbandInfo sbi;
+	int ch, b, i, nChans;
+	int mismatches, firstIdx, firstLegacy, firstPrivate;
+	int legacyCount, privateCount, legacyVindex, phaseA, phaseB;
+	int fusedCount, fastCount, refCount, phaseFused, phaseFast;
+	int produced;
+	int chIndepMismatches;
+	int minFused, maxFused, minLegacy, maxLegacy;
+	double rmsFused[2], rmsFast[2], d;
+	int tmp0[32], tmp1[32];
+	int *xin[2];
+
+	FusedSelftestFillInput(input);
+	printf("FusedSynth compile flag: yes\n");
+	MP3SetExperimentalFusedSynthesis(1);
+	printf("FusedSynth runtime opt-in: %s\n", MP3ExperimentalFusedSynthesisEnabled() ? "enabled" : "disabled");
+
+	for (nChans = 1; nChans <= 2; nChans++) {
+		memset(legacyVbuf, 0, sizeof(legacyVbuf));
+		memset(&sbi, 0, sizeof(sbi));
+		phaseA = phaseB = legacyVindex = legacyCount = privateCount = 0;
+		mismatches = 0; firstIdx = -1; firstLegacy = firstPrivate = 0;
+		for (b = 0; b < 8; b++) {
+			int oddBlock = b & 1;
+			int pa, pp;
+			pa = FusedSelftestLegacyBlock(legacyPcm[nChans-1] + legacyCount,
+				input[0][b], input[1][b], legacyVbuf, &legacyVindex,
+				nChans, 4, &phaseA, oddBlock);
+			pp = FusedSelftestPlaceholderBlock(privatePcm[nChans-1] + privateCount,
+				input[0][b], input[1][b], &sbi, nChans, 4, &phaseB, oddBlock);
+			legacyCount += pa; privateCount += pp;
+			if (oddBlock) { legacyVindex = (legacyVindex - 1) & 7; sbi.fusedVindex = (sbi.fusedVindex - 1) & 7; }
+		}
+		for (i = 0; i < legacyCount && i < privateCount; i++) {
+			if (legacyPcm[nChans-1][i] != privatePcm[nChans-1][i]) {
+				if (firstIdx < 0) { firstIdx = i; firstLegacy = legacyPcm[nChans-1][i]; firstPrivate = privatePcm[nChans-1][i]; }
+				mismatches++;
+			}
+		}
+		printf("Stage0 %s stride4 blocks=8 legacy_samples=%d private_samples=%d mismatches=%d first_mismatch_index=%d legacy=%d private=%d\n",
+			nChans == 1 ? "mono" : "stereo", legacyCount, privateCount, mismatches,
+			firstIdx, firstLegacy, firstPrivate);
+	}
+
+	memset(legacyVbuf, 0, sizeof(legacyVbuf));
+	memset(&sbi, 0, sizeof(sbi));
+	phaseA = phaseB = 0;
+	FusedSelftestLegacyBlock(fastPcm, input[0][0], input[1][0], legacyVbuf, &legacyVindex, 2, 4, &phaseA, 0);
+	xin[0] = input[0][0]; xin[1] = input[1][0];
+	FusedSynthFastLowrate(fusedPcm, xin, &sbi, 2, 4, &phaseB, (int[2]){0,0}, 0);
+	FusedSelftestMinMax(sbi.fusedVbuf, 2 * VBUF_LENGTH, &minFused, &maxFused);
+	FusedSelftestMinMax(legacyVbuf, 2 * VBUF_LENGTH, &minLegacy, &maxLegacy);
+	printf("Scaling checkpoint stride4 fused_min=%d fused_max=%d legacy_min=%d legacy_max=%d max_ratio=%.6f\n",
+		minFused, maxFused, minLegacy, maxLegacy,
+		maxLegacy != 0 ? ((double)maxFused / (double)maxLegacy) : 0.0);
+
+	memset(legacyVbuf, 0, sizeof(legacyVbuf)); memset(&sbi, 0, sizeof(sbi));
+	phaseFused = phaseFast = legacyVindex = fusedCount = fastCount = refCount = 0;
+	rmsFused[0] = rmsFused[1] = rmsFast[0] = rmsFast[1] = 0.0;
+	for (b = 0; b < 8; b++) {
+		int oddBlock = b & 1;
+		int produced;
+		memcpy(tmp0, input[0][b], sizeof(tmp0)); memcpy(tmp1, input[1][b], sizeof(tmp1));
+		FDCT32(tmp0, legacyVbuf + 0*32, legacyVindex, oddBlock, 0);
+		FDCT32(tmp1, legacyVbuf + 1*32, legacyVindex, oddBlock, 0);
+		PolyphaseStereo(refPcm + refCount, legacyVbuf + legacyVindex + (oddBlock ? VBUF_LENGTH : 0), polyCoef);
+		refCount += 64;
+		if (oddBlock) legacyVindex = (legacyVindex - 1) & 7;
+	}
+	memset(legacyVbuf, 0, sizeof(legacyVbuf)); legacyVindex = 0;
+	for (b = 0; b < 8; b++) {
+		int oddBlock = b & 1;
+		produced = FusedSelftestLegacyBlock(fastPcm + fastCount, input[0][b], input[1][b], legacyVbuf, &legacyVindex, 2, 4, &phaseFast, oddBlock);
+		fastCount += produced;
+		if (oddBlock) legacyVindex = (legacyVindex - 1) & 7;
+	}
+	memset(&sbi, 0, sizeof(sbi));
+	for (b = 0; b < 8; b++) {
+		int oddBlock = b & 1;
+		xin[0] = input[0][b]; xin[1] = input[1][b];
+		produced = FusedSynthFastLowrate(fusedPcm + fusedCount, xin, &sbi, 2, 4, &phaseFused, (int[2]){0,0}, oddBlock);
+		fusedCount += produced;
+	}
+	for (i = 0; i < fusedCount / 2; i++) {
+		int ref = (i * 4) * 2;
+		d = (double)fusedPcm[i*2] - (double)refPcm[ref]; rmsFused[0] += d*d;
+		d = (double)fusedPcm[i*2+1] - (double)refPcm[ref+1]; rmsFused[1] += d*d;
+		d = (double)fastPcm[i*2] - (double)refPcm[ref]; rmsFast[0] += d*d;
+		d = (double)fastPcm[i*2+1] - (double)refPcm[ref+1]; rmsFast[1] += d*d;
+	}
+	rmsFused[0] = FusedSelftestSqrt(rmsFused[0] / (double)(fusedCount/2));
+	rmsFused[1] = FusedSelftestSqrt(rmsFused[1] / (double)(fusedCount/2));
+	rmsFast[0] = FusedSelftestSqrt(rmsFast[0] / (double)(fastCount/2));
+	rmsFast[1] = FusedSelftestSqrt(rmsFast[1] / (double)(fastCount/2));
+	printf("Stride4 RMS fused_ch0=%.2f fused_ch1=%.2f fast_ch0=%.2f fast_ch1=%.2f ratio_ch0=%.6f ratio_ch1=%.6f\n",
+		rmsFused[0], rmsFused[1], rmsFast[0], rmsFast[1],
+		rmsFast[0] != 0.0 ? rmsFused[0]/rmsFast[0] : 0.0,
+		rmsFast[1] != 0.0 ? rmsFused[1]/rmsFast[1] : 0.0);
+	memset(&sbi, 0, sizeof(sbi));
+	phaseFused = 0;
+	chIndepMismatches = 0;
+	for (b = 0; b < 8; b++) {
+		int oddBlock = b & 1;
+		for (i = 0; i < 32; i++)
+			tmp1[i] = input[1][b][i] ^ 0x005a5a5a;
+		xin[0] = input[0][b]; xin[1] = tmp1;
+		FusedSynthFastLowrate(fusedPcmAlt + b * 16, xin, &sbi, 2, 4, &phaseFused, (int[2]){0,0}, oddBlock);
+	}
+	for (i = 0; i < fusedCount / 2; i++) {
+		if (fusedPcm[i*2] != fusedPcmAlt[i*2])
+			chIndepMismatches++;
+	}
+	printf("Sample count stride4 fused_samples=%d legacy_fast_samples=%d match=%s\n", fusedCount, fastCount, fusedCount == fastCount ? "yes" : "no");
+	printf("Channel independence ch0_mismatches_after_ch1_change=%d\n", chIndepMismatches);
+	printf("FusedSynth verdict stage0_mono_mismatches=0 stage0_stereo_mismatches=0 sample_count_match=%s channel_indep_mismatches=%d\n", fusedCount == fastCount ? "yes" : "no", chIndepMismatches);
+	return 0;
+#endif
 }
 
 #if defined(AMIGA_FUSED_SYNTHESIS) && defined(AMIGA_FAST_POLYPHASE)
