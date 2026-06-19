@@ -146,11 +146,18 @@ int STATNAME(PolyphaseMonoFastLowrateStride4_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
 int STATNAME(PolyphaseStereoFastLowrateStride2_C_REFERENCE)(short *pcm, int *vbuf, const int *coefBase);
 int STATNAME(PolyphaseStereoFastLowrateStride2_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase);
 int STATNAME(PolyphaseStereoFastLowrateStride2Reduced_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase);
+int STATNAME(PolyphaseMonoFastLowrateStride2Reduced_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase);
 int STATNAME(StereoFastPolyphaseStride2_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
 int STATNAME(StereoFastPolyphaseStride4_HAS_AMIGA_M68K_ASM_RUNTIME)(void);
+void MP3GetStereoStride2PolyphaseCounters(unsigned long *asmCalls, unsigned long *cCalls,
+	unsigned long *reducedCalls);
+void MP3ResetStereoStride2PolyphaseCounters(void);
 void MP3GetStereoStride4PolyphaseCounters(unsigned long *asmCalls, unsigned long *cCalls,
 	unsigned long *reducedCalls);
 void MP3ResetStereoStride4PolyphaseCounters(void);
+void MP3GetMonoStride2PolyphaseCounters(unsigned long *asmCalls, unsigned long *cCalls,
+	unsigned long *reducedCalls);
+void MP3ResetMonoStride2PolyphaseCounters(void);
 int STATNAME(PolyphaseStereoFastLowrateStride4_C_REFERENCE)(short *pcm, int *vbuf, const int *coefBase, int phase);
 int STATNAME(PolyphaseStereoFastLowrateStride4_TEST_ACTIVE)(short *pcm, int *vbuf, const int *coefBase, int phase);
 int STATNAME(PolyphaseStereoFastLowrateStride5_C_REFERENCE)(short *pcm, int *vbuf, const int *coefBase, int phase);
@@ -216,6 +223,7 @@ extern const int STATNAME(polyCoef)[264];
 #define AMIGA_POLYPHASE_STEREO_FAST_STRIDE2_C_REFERENCE STATNAME(PolyphaseStereoFastLowrateStride2_C_REFERENCE)
 #define AMIGA_POLYPHASE_STEREO_FAST_STRIDE2_TEST_ACTIVE STATNAME(PolyphaseStereoFastLowrateStride2_TEST_ACTIVE)
 #define AMIGA_POLYPHASE_STEREO_FAST_STRIDE2_REDUCED_TEST_ACTIVE STATNAME(PolyphaseStereoFastLowrateStride2Reduced_TEST_ACTIVE)
+#define AMIGA_POLYPHASE_MONO_FAST_STRIDE2_REDUCED_TEST_ACTIVE STATNAME(PolyphaseMonoFastLowrateStride2Reduced_TEST_ACTIVE)
 #define AMIGA_POLYPHASE_STEREO_FAST_STRIDE2_HAS_ASM STATNAME(StereoFastPolyphaseStride2_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define AMIGA_POLYPHASE_STEREO_FAST_STRIDE4_HAS_ASM STATNAME(StereoFastPolyphaseStride4_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define AMIGA_POLYPHASE_STEREO_FAST_STRIDE4_C_REFERENCE STATNAME(PolyphaseStereoFastLowrateStride4_C_REFERENCE)
@@ -681,7 +689,7 @@ static void PrintUsage(const char *prog)
 	printf("  --exp-poly  use experimental 68030 asm mono polyphase when compiled in\n");
 	printf("  --exp-huff  use experimental 68030 inline-asm Huffman pair refill when compiled in\n");
 	printf("  --exp-imdct-thin request experimental fast-lowrate IMDCT output thinning\n");
-	printf("  --exp-reduced-taps use experimental 8-segment stride-4 low-rate dewindow\n");
+	printf("  --exp-reduced-taps use experimental reduced-tap fast-lowrate dewindow\n");
 	printf("  --exp-fdct32-quarter use experimental stride-4 quarter-rate FDCT32 approximation\n");
 	printf("  --selftest-mulshift compare C and optional asm MULSHIFT32 helpers\n");
 	printf("  --selftest-clz compare C and optional m68k bfffo CLZ helpers\n");
@@ -3786,6 +3794,8 @@ static int SelftestReducedTaps(void)
 	static short reducedMono[AMIGA_POLYPHASE_NBANDS];
 	static short fullStereo[AMIGA_POLYPHASE_NBANDS * 2];
 	static short reducedStereo[AMIGA_POLYPHASE_NBANDS * 2];
+	static short fullStride2Mono[AMIGA_POLYPHASE_NBANDS];
+	static short reducedStride2Mono[AMIGA_POLYPHASE_NBANDS];
 	static short fullStride2Stereo[AMIGA_POLYPHASE_NBANDS * 2];
 	static short reducedStride2Stereo[AMIGA_POLYPHASE_NBANDS * 2];
 	static int independenceVbuf[AMIGA_POLYPHASE_VBUF_LENGTH];
@@ -3795,28 +3805,34 @@ static int SelftestReducedTaps(void)
 	unsigned long monoCountMismatches;
 	unsigned long stereoCountMismatches;
 	unsigned long stride2StereoCountMismatches;
+	unsigned long stride2MonoCountMismatches;
 	unsigned long stride2StereoIndependenceMismatches;
 	double monoSquares;
 	double stereoSquares;
 	double stride2StereoSquares[2];
+	double stride2MonoSquares;
 	double monoSamples;
 	double stereoSamples;
 	double stride2StereoSamples[2];
+	double stride2MonoSamples;
 	int j;
 
 	seed = 0x8a7c4d11UL;
 	monoCountMismatches = 0;
 	stereoCountMismatches = 0;
 	stride2StereoCountMismatches = 0;
+	stride2MonoCountMismatches = 0;
 	stride2StereoIndependenceMismatches = 0;
 	monoSquares = 0.0;
 	stereoSquares = 0.0;
 	stride2StereoSquares[0] = 0.0;
 	stride2StereoSquares[1] = 0.0;
+	stride2MonoSquares = 0.0;
 	monoSamples = 0.0;
 	stereoSamples = 0.0;
 	stride2StereoSamples[0] = 0.0;
 	stride2StereoSamples[1] = 0.0;
+	stride2MonoSamples = 0.0;
 
 	for (i = 0; i < CASES; i++) {
 		int phase;
@@ -3826,6 +3842,8 @@ static int SelftestReducedTaps(void)
 		int reducedStereoCount;
 		int fullStride2StereoCount;
 		int reducedStride2StereoCount;
+		int fullStride2MonoCount;
+		int reducedStride2MonoCount;
 
 		phase = (int)(i & 3UL);
 		for (j = 0; j < AMIGA_POLYPHASE_VBUF_LENGTH; j++) {
@@ -3835,6 +3853,8 @@ static int SelftestReducedTaps(void)
 		for (j = 0; j < AMIGA_POLYPHASE_NBANDS; j++) {
 			fullMono[j] = (short)(0x7300 + j);
 			reducedMono[j] = (short)(0x7400 + j);
+			fullStride2Mono[j] = (short)(0x7900 + j);
+			reducedStride2Mono[j] = (short)(0x7a00 + j);
 		}
 		for (j = 0; j < AMIGA_POLYPHASE_NBANDS * 2; j++) {
 			fullStereo[j] = (short)(0x7500 + j);
@@ -3855,6 +3875,10 @@ static int SelftestReducedTaps(void)
 			fullStride2Stereo, vbuf, AMIGA_POLY_COEF);
 		reducedStride2StereoCount = AMIGA_POLYPHASE_STEREO_FAST_STRIDE2_REDUCED_TEST_ACTIVE(
 			reducedStride2Stereo, vbuf, AMIGA_POLY_COEF);
+		fullStride2MonoCount = AMIGA_POLYPHASE_MONO_FAST_STRIDE2_C_REFERENCE(
+			fullStride2Mono, vbuf, AMIGA_POLY_COEF);
+		reducedStride2MonoCount = AMIGA_POLYPHASE_MONO_FAST_STRIDE2_REDUCED_TEST_ACTIVE(
+			reducedStride2Mono, vbuf, AMIGA_POLY_COEF);
 
 		if (fullMonoCount != 8 || reducedMonoCount != 8)
 			monoCountMismatches++;
@@ -3862,6 +3886,8 @@ static int SelftestReducedTaps(void)
 			stereoCountMismatches++;
 		if (fullStride2StereoCount != 32 || reducedStride2StereoCount != 32)
 			stride2StereoCountMismatches++;
+		if (fullStride2MonoCount != 16 || reducedStride2MonoCount != 16)
+			stride2MonoCountMismatches++;
 		if (reducedMonoCount == 8) {
 			for (j = 0; j < 8; j++) {
 				double d = (double)((int)fullMono[j] - (int)reducedMono[j]);
@@ -3874,6 +3900,14 @@ static int SelftestReducedTaps(void)
 				double d = (double)((int)fullStereo[j] - (int)reducedStereo[j]);
 				stereoSquares += d * d;
 				stereoSamples += 1.0;
+			}
+		}
+		if (reducedStride2MonoCount == 16) {
+			for (j = 0; j < 16; j++) {
+				double d = (double)((int)fullStride2Mono[j] -
+					(int)reducedStride2Mono[j]);
+				stride2MonoSquares += d * d;
+				stride2MonoSamples += 1.0;
 			}
 		}
 		if (reducedStride2StereoCount == 32) {
@@ -3925,18 +3959,24 @@ static int SelftestReducedTaps(void)
 		stereoCountMismatches);
 	printf("Reduced taps stride2 stereo output frames per call: 16 (32 shorts, mismatches: %lu)\n",
 		stride2StereoCountMismatches);
+	printf("Reduced taps stride2 mono output samples per call: 16 (mismatches: %lu)\n",
+		stride2MonoCountMismatches);
 	printf("Reduced taps stride2 stereo channel-independence mismatches: %lu\n",
 		stride2StereoIndependenceMismatches);
 	printf("Reduced taps mono RMS difference: %.2f counts (target < 500)\n",
 		SqrtApprox(monoSquares / (monoSamples > 0.0 ? monoSamples : 1.0)));
 	printf("Reduced taps stereo RMS difference: %.2f counts (target < 500)\n",
 		SqrtApprox(stereoSquares / (stereoSamples > 0.0 ? stereoSamples : 1.0)));
+	printf("Reduced taps stride2 mono RMS difference: %.2f counts (informational)\n",
+		SqrtApprox(stride2MonoSquares / (stride2MonoSamples > 0.0 ?
+			stride2MonoSamples : 1.0)));
 	printf("Reduced taps stride2 stereo RMS difference: L=%.2f R=%.2f counts (informational)\n",
 		SqrtApprox(stride2StereoSquares[0] / (stride2StereoSamples[0] > 0.0 ?
 			stride2StereoSamples[0] : 1.0)),
 		SqrtApprox(stride2StereoSquares[1] / (stride2StereoSamples[1] > 0.0 ?
 			stride2StereoSamples[1] : 1.0)));
-	if (stride2StereoCountMismatches || stride2StereoIndependenceMismatches) {
+	if (stride2StereoCountMismatches || stride2MonoCountMismatches ||
+		stride2StereoIndependenceMismatches) {
 		printf("Reduced taps selftest FAIL\n");
 		return 1;
 	}
@@ -7297,6 +7337,7 @@ int main(int argc, char **argv)
 	MP3SetForceStereoStride2PolyphaseC(opt.forceCPolyphaseStride2Stereo);
 	MP3ResetStereoStride2PolyphaseCounters();
 	MP3ResetStereoStride4PolyphaseCounters();
+	MP3ResetMonoStride2PolyphaseCounters();
 	MP3SetExperimentalHuffman(opt.expHuff);
 	MP3SetExperimentalIMDCTThin(decoder, opt.expImdctThin);
 	MP3SetExperimentalReducedTaps(opt.expReducedTaps);
@@ -7304,8 +7345,8 @@ int main(int argc, char **argv)
 		(opt.superfastLowrate && opt.outputRate == 11025));
 	if (opt.fastLowrate) {
 		int stride = FastLowrateStrideForOutputRate(opt.outputRate);
-		if (opt.expReducedTaps && stride != 4)
-			fprintf(stderr, "warning: --exp-reduced-taps only affects 11025 Hz stride-4 fast-lowrate output\n");
+		if (opt.expReducedTaps && stride != 2 && stride != 4)
+			fprintf(stderr, "warning: --exp-reduced-taps only affects 22050/11025 Hz stride-2/stride-4 fast-lowrate output\n");
 		if (opt.expFdct32Quarter && stride != 4)
 			fprintf(stderr, "warning: --exp-fdct32-quarter only affects 11025 Hz stride-4 fast-lowrate output\n");
 		MP3SetFastLowrate(decoder, stride);
@@ -7319,7 +7360,7 @@ int main(int argc, char **argv)
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE)
 		if (opt.expReducedTaps) {
 #if defined(AMIGA_FAST_REDUCED_TAPS)
-			fprintf(stderr, "warning: --exp-reduced-taps enables lossy 8-segment stride-4 dewindowing\n");
+			fprintf(stderr, "warning: --exp-reduced-taps enables lossy reduced-tap fast-lowrate dewindowing\n");
 #else
 			fprintf(stderr, "warning: --exp-reduced-taps requested, but this build lacks AMIGA_FAST_REDUCED_TAPS\n");
 #endif
@@ -7745,6 +7786,14 @@ int main(int argc, char **argv)
 					ClocksToSeconds(coreProfile.subbandDct32));
 				printf("timing core polyphase: %.3f s\n",
 					ClocksToSeconds(coreProfile.polyphase));
+				{
+					unsigned long m2Asm = 0, m2C = 0, m2Reduced = 0;
+					MP3GetMonoStride2PolyphaseCounters(&m2Asm, &m2C, &m2Reduced);
+					printf("mono stride-2 polyphase: %s\n",
+						m2Reduced ? "reduced" : (m2Asm ? "asm" : "C"));
+					printf("mono stride-2 polyphase calls: asm=%lu C=%lu reduced=%lu\n",
+						m2Asm, m2C, m2Reduced);
+				}
 				{
 					unsigned long s2Asm = 0, s2C = 0, s2Reduced = 0;
 					MP3GetStereoStride2PolyphaseCounters(&s2Asm, &s2C, &s2Reduced);

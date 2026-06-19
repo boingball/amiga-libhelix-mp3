@@ -115,6 +115,7 @@
 #define PolyphaseStereoFastLowrateStride2_C_REFERENCE STATNAME(PolyphaseStereoFastLowrateStride2_C_REFERENCE)
 #define PolyphaseStereoFastLowrateStride2_TEST_ACTIVE STATNAME(PolyphaseStereoFastLowrateStride2_TEST_ACTIVE)
 #define PolyphaseStereoFastLowrateStride2Reduced_TEST_ACTIVE STATNAME(PolyphaseStereoFastLowrateStride2Reduced_TEST_ACTIVE)
+#define PolyphaseMonoFastLowrateStride2Reduced_TEST_ACTIVE STATNAME(PolyphaseMonoFastLowrateStride2Reduced_TEST_ACTIVE)
 #define StereoFastPolyphaseStride2_HAS_AMIGA_M68K_ASM_RUNTIME STATNAME(StereoFastPolyphaseStride2_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define StereoFastPolyphaseStride4_HAS_AMIGA_M68K_ASM_RUNTIME STATNAME(StereoFastPolyphaseStride4_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define PolyphaseStereoFastLowrateStride4_C_REFERENCE STATNAME(PolyphaseStereoFastLowrateStride4_C_REFERENCE)
@@ -362,6 +363,7 @@ int PolyphaseMonoFastLowrateStride4_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 int PolyphaseStereoFastLowrateStride2_C_REFERENCE(short *pcm, int *vbuf, const int *coefBase);
 int PolyphaseStereoFastLowrateStride2_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase);
 int PolyphaseStereoFastLowrateStride2Reduced_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase);
+int PolyphaseMonoFastLowrateStride2Reduced_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase);
 int StereoFastPolyphaseStride2_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 int StereoFastPolyphaseStride4_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 void MP3SetForceStereoStride2PolyphaseC(int enabled);
@@ -369,6 +371,9 @@ int MP3ForceStereoStride2PolyphaseC(void);
 void MP3GetStereoStride2PolyphaseCounters(unsigned long *asmCalls, unsigned long *cCalls,
 	unsigned long *reducedCalls);
 void MP3ResetStereoStride2PolyphaseCounters(void);
+void MP3GetMonoStride2PolyphaseCounters(unsigned long *asmCalls, unsigned long *cCalls,
+	unsigned long *reducedCalls);
+void MP3ResetMonoStride2PolyphaseCounters(void);
 void MP3GetStereoStride4PolyphaseCounters(unsigned long *asmCalls, unsigned long *cCalls,
 	unsigned long *reducedCalls);
 void MP3ResetStereoStride4PolyphaseCounters(void);

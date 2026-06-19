@@ -68,6 +68,9 @@ static int gForceStereoStride2C;
 static unsigned long gStereoStride2AsmCalls;
 static unsigned long gStereoStride2CCalls;
 static unsigned long gStereoStride2ReducedCalls;
+static unsigned long gMonoStride2AsmCalls;
+static unsigned long gMonoStride2CCalls;
+static unsigned long gMonoStride2ReducedCalls;
 static unsigned long gStereoStride4AsmCalls;
 static unsigned long gStereoStride4CCalls;
 static unsigned long gStereoStride4ReducedCalls;
@@ -114,6 +117,24 @@ void MP3ResetStereoStride2PolyphaseCounters(void)
 	gStereoStride2AsmCalls = 0;
 	gStereoStride2CCalls = 0;
 	gStereoStride2ReducedCalls = 0;
+}
+
+void MP3GetMonoStride2PolyphaseCounters(unsigned long *asmCalls, unsigned long *cCalls,
+	unsigned long *reducedCalls)
+{
+	if (asmCalls)
+		*asmCalls = gMonoStride2AsmCalls;
+	if (cCalls)
+		*cCalls = gMonoStride2CCalls;
+	if (reducedCalls)
+		*reducedCalls = gMonoStride2ReducedCalls;
+}
+
+void MP3ResetMonoStride2PolyphaseCounters(void)
+{
+	gMonoStride2AsmCalls = 0;
+	gMonoStride2CCalls = 0;
+	gMonoStride2ReducedCalls = 0;
 }
 
 void MP3GetStereoStride4PolyphaseCounters(unsigned long *asmCalls, unsigned long *cCalls,
@@ -180,6 +201,7 @@ void AmigaResetPolyphaseStatics(void)
 	gForceStereoStride2C = 0;
 	MP3ResetStereoStride2PolyphaseCounters();
 	MP3ResetStereoStride4PolyphaseCounters();
+	MP3ResetMonoStride2PolyphaseCounters();
 #if defined(AMIGA_FAST_REDUCED_TAPS)
 	gExperimentalReducedTapsEnabled = 0;
 #endif
@@ -220,6 +242,21 @@ void MP3GetStereoStride2PolyphaseCounters(unsigned long *asmCalls, unsigned long
 }
 
 void MP3ResetStereoStride2PolyphaseCounters(void)
+{
+}
+
+void MP3GetMonoStride2PolyphaseCounters(unsigned long *asmCalls, unsigned long *cCalls,
+	unsigned long *reducedCalls)
+{
+	if (asmCalls)
+		*asmCalls = 0;
+	if (cCalls)
+		*cCalls = 0;
+	if (reducedCalls)
+		*reducedCalls = 0;
+}
+
+void MP3ResetMonoStride2PolyphaseCounters(void)
 {
 }
 
@@ -1067,6 +1104,19 @@ static int PolyphaseMonoFastLowrateStride4(short *pcm, int *vbuf,
 }
 
 #if defined(AMIGA_FAST_REDUCED_TAPS)
+static int PolyphaseMonoFastLowrateStride2Reduced(short *pcm, int *vbuf,
+	const int *coefBase)
+{
+	const unsigned char *samples;
+	int remaining;
+
+	samples = fastLowrateStride2Samples;
+	remaining = 16;
+	while (remaining-- > 0)
+		*pcm++ = PolyphaseMonoFastCompactSampleReduced(*samples++, vbuf, coefBase);
+	return 16;
+}
+
 static int PolyphaseMonoFastLowrateStride4Reduced(short *pcm, int *vbuf,
 	const int *coefBase, int phase)
 {
@@ -1620,6 +1670,19 @@ int PolyphaseStereoFastLowrateStride5_TEST_ACTIVE(short *pcm, int *vbuf,
 	return PolyphaseStereoFastLowrateStride5_C_REFERENCE(pcm, vbuf, coefBase, phase);
 }
 
+int PolyphaseMonoFastLowrateStride2Reduced_TEST_ACTIVE(short *pcm, int *vbuf,
+	const int *coefBase)
+{
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_FAST_REDUCED_TAPS)
+	return PolyphaseMonoFastLowrateStride2Reduced(pcm, vbuf, coefBase);
+#else
+	(void)pcm;
+	(void)vbuf;
+	(void)coefBase;
+	return 0;
+#endif
+}
+
 int PolyphaseMonoFastLowrateStride4Reduced_TEST_ACTIVE(short *pcm, int *vbuf,
 	const int *coefBase, int phase)
 {
@@ -1677,12 +1740,20 @@ int PolyphaseMonoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int str
 	localPhase = *phase;
 	if (stride == 2 && localPhase == 0) {
 		*phase = PolyphaseAdvanceLowratePhase(localPhase, stride);
+#if defined(AMIGA_FAST_REDUCED_TAPS)
+		if (MP3ExperimentalReducedTapsEnabled()) {
+			gMonoStride2ReducedCalls++;
+			return PolyphaseMonoFastLowrateStride2Reduced(pcm, vbuf, coefBase);
+		}
+#endif
 #if defined(AMIGA_M68K_ASM_POLYPHASE)
 		if (AmigaM68KPolyphaseMonoFastStride2_IsActive()) {
+			gMonoStride2AsmCalls++;
 			AmigaM68KPolyphaseMonoFastStride2(pcm, vbuf, PolyAsmCoef(coefBase));
 			return 16;
 		}
 #endif
+		gMonoStride2CCalls++;
 		return PolyphaseMonoFastLowrateList(pcm, vbuf, coefBase,
 			fastLowrateStride2Samples, 16);
 	}
