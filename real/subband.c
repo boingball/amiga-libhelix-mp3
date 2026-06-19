@@ -372,11 +372,13 @@ int FusedSynthSelftest(void)
 	static short refPcm[8 * 64];
 	static short fusedPcmAlt[8 * 16];
 	static int legacyVbuf[2 * VBUF_LENGTH];
+	static int fastMonoVbuf[2][2 * VBUF_LENGTH];
 	static SubbandInfo sbi;
 	int ch, b, i, nChans;
 	int mismatches, firstIdx, firstLegacy, firstPrivate;
 	int legacyCount, privateCount, legacyVindex, phaseA, phaseB;
 	int fusedCount, fastCount, refCount, phaseFused, phaseFast;
+	int phaseFastCh[2], vindexFastCh[2];
 	int produced;
 	int chIndepMismatches;
 	int minFused, maxFused, minLegacy, maxLegacy;
@@ -441,14 +443,25 @@ int FusedSynthSelftest(void)
 		refCount += 64;
 		if (oddBlock) legacyVindex = (legacyVindex - 1) & 7;
 	}
-	memset(legacyVbuf, 0, sizeof(legacyVbuf)); legacyVindex = 0;
+	memset(fastMonoVbuf, 0, sizeof(fastMonoVbuf));
+	phaseFastCh[0] = phaseFastCh[1] = 0;
+	vindexFastCh[0] = vindexFastCh[1] = 0;
 	MP3SetExperimentalFDCT32Quarter(1);
 	MP3SetExperimentalReducedTaps(1);
 	for (b = 0; b < 8; b++) {
 		int oddBlock = b & 1;
-		produced = FusedSelftestLegacyBlock(fastPcm + fastCount, input[0][b], input[1][b], legacyVbuf, &legacyVindex, 2, 4, &phaseFast, oddBlock);
-		fastCount += produced;
-		if (oddBlock) legacyVindex = (legacyVindex - 1) & 7;
+		short mono0[8], mono1[8];
+		int pc0, pc1;
+		pc0 = FusedSelftestLegacyBlock(mono0, input[0][b], input[1][b], fastMonoVbuf[0], &vindexFastCh[0], 1, 4, &phaseFastCh[0], oddBlock);
+		pc1 = FusedSelftestLegacyBlock(mono1, input[1][b], input[0][b], fastMonoVbuf[1], &vindexFastCh[1], 1, 4, &phaseFastCh[1], oddBlock);
+		for (i = 0; i < pc0 && i < pc1; i++) {
+			fastPcm[fastCount++] = mono0[i];
+			fastPcm[fastCount++] = mono1[i];
+		}
+		if (oddBlock) {
+			vindexFastCh[0] = (vindexFastCh[0] - 1) & 7;
+			vindexFastCh[1] = (vindexFastCh[1] - 1) & 7;
+		}
 	}
 	MP3SetExperimentalReducedTaps(0);
 	MP3SetExperimentalFDCT32Quarter(0);
