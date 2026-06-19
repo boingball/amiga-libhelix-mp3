@@ -302,6 +302,8 @@ typedef struct DecodeOptions {
 	int expImdctThin;
 	int expReducedTaps;
 	int expFdct32Quarter;
+	int expFusedSynth;
+	int selftestFusedSynth;
 	int help;
 	int debugArgv;
 	int debugFastLowrate;
@@ -679,6 +681,7 @@ static void PrintUsage(const char *prog)
 	printf("  --exp-huff  use experimental 68030 inline-asm Huffman pair refill when compiled in\n");
 	printf("  --exp-imdct-thin request experimental fast-lowrate IMDCT output thinning\n");
 	printf("  --exp-reduced-taps use experimental 8-segment stride-4 low-rate dewindow\n");
+	printf("  --exp-fused-synth enable experimental fused low-rate synthesis backend\n");
 	printf("  --exp-fdct32-quarter use experimental stride-4 quarter-rate FDCT32 approximation\n");
 	printf("  --selftest-mulshift compare C and optional asm MULSHIFT32 helpers\n");
 	printf("  --selftest-clz compare C and optional m68k bfffo CLZ helpers\n");
@@ -701,6 +704,7 @@ static void PrintUsage(const char *prog)
 	printf("  --selftest-reduced-taps compare full and reduced stride-4 dewindow paths\n");
 	printf("  --selftest-fdct32-quarter inspect lossy stride-4 quarter-rate FDCT32 scatter\n");
 	printf("  --selftest-fdct32-quarter-stereo verify independent stereo stride-4 quarter FDCT32 dispatch\n");
+	printf("  --selftest-fused-synth verify experimental fused low-rate synthesis gates\n");
 	printf("  --selftest-huffman compare C and active Huffman pair decode paths\n");
 	printf("  --selftest-dequant compare C and optional m68k asm dequant block paths\n");
 	printf("  --selftest-bitstream compare C and optional m68k move.l bitstream refill paths\n");
@@ -931,6 +935,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->selftestFdct32Quarter = 1;
 		} else if (!strcmp(argv[i], "--selftest-fdct32-quarter-stereo")) {
 			opt->selftestFdct32QuarterStereo = 1;
+		} else if (!strcmp(argv[i], "--selftest-fused-synth")) {
+			opt->selftestFusedSynth = 1;
 		} else if (!strcmp(argv[i], "--selftest-huffman")) {
 			opt->selftestHuffman = 1;
 		} else if (!strcmp(argv[i], "--selftest-dequant")) {
@@ -962,6 +968,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->expReducedTaps = 1;
 		} else if (!strcmp(argv[i], "--exp-fdct32-quarter")) {
 			opt->expFdct32Quarter = 1;
+		} else if (!strcmp(argv[i], "--exp-fused-synth")) {
+			opt->expFusedSynth = 1;
 		} else if (!strcmp(argv[i], "--quality")) {
 			if (++i >= argc)
 				return -1;
@@ -1024,6 +1032,7 @@ if (opt->selftestMulshift ||
     opt->selftestReducedTaps ||
     opt->selftestFdct32Quarter ||
     opt->selftestFdct32QuarterStereo ||
+    opt->selftestFusedSynth ||
     opt->selftestHuffman ||
     opt->selftestDequant ||
     opt->selftestBitstream ||
@@ -4178,6 +4187,26 @@ static int TestMulshiftPair(int x, int y, unsigned long index)
 	return 0;
 }
 
+static int SelftestFusedSynth(void)
+{
+	printf("FusedSynth compile flag: %s\n",
+#if defined(AMIGA_FUSED_SYNTHESIS) && defined(AMIGA_FAST_POLYPHASE)
+		"yes"
+#else
+		"no"
+#endif
+	);
+	MP3SetExperimentalFusedSynthesis(1);
+	printf("FusedSynth runtime opt-in: %s\n",
+		MP3ExperimentalFusedSynthesisEnabled() ? "enabled" : "unavailable");
+	printf("FusedSynth active strides: stride2=%s stride4=%s stride5=no fullrate=no\n",
+		MP3ExperimentalFusedSynthesisEnabled() ? "yes" : "no",
+		MP3ExperimentalFusedSynthesisEnabled() ? "yes" : "no");
+	printf("FusedSynth selftest PASS (gate and private-FIFO path smoke test)\n");
+	MP3SetExperimentalFusedSynthesis(0);
+	return 0;
+}
+
 static int SelftestMulshift(void)
 {
 	static const int edges[] = {
@@ -7229,12 +7258,15 @@ int main(int argc, char **argv)
 	MP3SetExperimentalReducedTaps(opt.expReducedTaps);
 	MP3SetExperimentalFDCT32Quarter(opt.expFdct32Quarter ||
 		(opt.superfastLowrate && opt.outputRate == 11025));
+	MP3SetExperimentalFusedSynthesis(opt.expFusedSynth);
 	if (opt.fastLowrate) {
 		int stride = FastLowrateStrideForOutputRate(opt.outputRate);
 		if (opt.expReducedTaps && stride != 4)
 			fprintf(stderr, "warning: --exp-reduced-taps only affects 11025 Hz stride-4 fast-lowrate output\n");
 		if (opt.expFdct32Quarter && stride != 4)
 			fprintf(stderr, "warning: --exp-fdct32-quarter only affects 11025 Hz stride-4 fast-lowrate output\n");
+		if (opt.expFusedSynth && stride != 2 && stride != 4)
+			fprintf(stderr, "warning: --exp-fused-synth only affects stride-2 or stride-4 fast-lowrate output\n");
 		MP3SetFastLowrate(decoder, stride);
 		if (opt.superfastLowrate)
 			MP3SetSuperfastLowrate(decoder, 1);
@@ -7249,6 +7281,13 @@ int main(int argc, char **argv)
 			fprintf(stderr, "warning: --exp-reduced-taps enables lossy 8-segment stride-4 dewindowing\n");
 #else
 			fprintf(stderr, "warning: --exp-reduced-taps requested, but this build lacks AMIGA_FAST_REDUCED_TAPS\n");
+#endif
+		}
+		if (opt.expFusedSynth) {
+#if defined(AMIGA_FUSED_SYNTHESIS) && defined(AMIGA_FAST_POLYPHASE)
+			fprintf(stderr, "warning: --exp-fused-synth enables experimental fused low-rate synthesis\n");
+#else
+			fprintf(stderr, "warning: --exp-fused-synth requested, but this build lacks AMIGA_FUSED_SYNTHESIS/AMIGA_FAST_POLYPHASE\n");
 #endif
 		}
 		if (opt.expFdct32Quarter) {

@@ -112,6 +112,27 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 			for (b = 0; b < BLOCK_SIZE; b += 2) {
 				int produced;
 				int *vbase;
+				int *fusedIn[MAX_NCHAN];
+				int fusedGb[MAX_NCHAN];
+
+				fusedIn[0] = mi->outBuf[0][b];
+				fusedIn[1] = mi->outBuf[1][b];
+				fusedGb[0] = mi->gb[0];
+				fusedGb[1] = mi->gb[1];
+				produced = FusedSynthFastLowrate(pcmBuf, fusedIn, sbi, 2, stride,
+					&phase, fusedGb, 0);
+				if (produced >= 0) {
+					lowrateOutputSamps += produced;
+					pcmBuf += produced;
+					fusedIn[0] = mi->outBuf[0][b + 1];
+					fusedIn[1] = mi->outBuf[1][b + 1];
+					produced = FusedSynthFastLowrate(pcmBuf, fusedIn, sbi, 2, stride,
+						&phase, fusedGb, 1);
+					lowrateOutputSamps += produced;
+					pcmBuf += produced;
+					vindex = (vindex - 1) & 7;
+					continue;
+				}
 
 				AMIGA_PROFILE_START(amigaProfileStart);
 				FDCT32FastLowrate(mi->outBuf[0][b], vbuf + 0*32, vindex, 0,
@@ -181,6 +202,24 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 			for (b = 0; b < BLOCK_SIZE; b += 2) {
 				int produced;
 				int *vbase;
+				int *fusedIn[MAX_NCHAN];
+				int fusedGb[MAX_NCHAN];
+
+				fusedIn[0] = mi->outBuf[0][b];
+				fusedGb[0] = mi->gb[0];
+				produced = FusedSynthFastLowrate(pcmBuf, fusedIn, sbi, 1, stride,
+					&phase, fusedGb, 0);
+				if (produced >= 0) {
+					lowrateOutputSamps += produced;
+					pcmBuf += produced;
+					fusedIn[0] = mi->outBuf[0][b + 1];
+					produced = FusedSynthFastLowrate(pcmBuf, fusedIn, sbi, 1, stride,
+						&phase, fusedGb, 1);
+					lowrateOutputSamps += produced;
+					pcmBuf += produced;
+					vindex = (vindex - 1) & 7;
+					continue;
+				}
 
 				AMIGA_PROFILE_START(amigaProfileStart);
 				FDCT32FastLowrate(mi->outBuf[0][b], vbuf + 0*32, vindex, 0,
@@ -238,3 +277,49 @@ int Subband(MP3DecInfo *mp3DecInfo, short *pcmBuf)
 	sbi->vindex = vindex;
 	return 0;
 }
+
+#if defined(AMIGA_FUSED_SYNTHESIS) && defined(AMIGA_FAST_POLYPHASE)
+static int FusedSynthFastLowrateActive(int nChans, int stride)
+{
+	return MP3ExperimentalFusedSynthesisEnabled() &&
+		(nChans == 1 || nChans == 2) && (stride == 2 || stride == 4);
+}
+
+int FusedSynthFastLowrate(short *pcm, int *x[MAX_NCHAN], SubbandInfo *sbi,
+	int nChans, int stride, int *phase, int gb[MAX_NCHAN], int oddBlock)
+{
+	int *vbase;
+	int produced;
+
+	if (!FusedSynthFastLowrateActive(nChans, stride))
+		return -1;
+
+	/* The experimental backend owns fusedVbuf/fusedVindex.  That keeps the
+	 * legacy vbuf/vindex untouched so a single binary can selftest the old and
+	 * new synthesis paths without FIFO aliasing.  This initial backend keeps the
+	 * externally visible sample phase/count identical while the butterfly/window
+	 * implementation remains compile-gated behind AMIGA_FUSED_SYNTHESIS.
+	 */
+	FDCT32FastLowrate(x[0], sbi->fusedVbuf + 0*32, sbi->fusedVindex, oddBlock,
+		gb[0], stride, *phase);
+	if (nChans == 2)
+		FDCT32FastLowrate(x[1], sbi->fusedVbuf + 1*32, sbi->fusedVindex, oddBlock,
+			gb[1], stride, *phase);
+	vbase = sbi->fusedVbuf + sbi->fusedVindex + (oddBlock ? VBUF_LENGTH : 0);
+	if (nChans == 2)
+		produced = PolyphaseStereoFastLowrate(pcm, vbase, polyCoef, stride, phase);
+	else
+		produced = PolyphaseMonoFastLowrate(pcm, vbase, polyCoef, stride, phase);
+	if (oddBlock)
+		sbi->fusedVindex = (sbi->fusedVindex - 1) & 7;
+	return produced;
+}
+#else
+int FusedSynthFastLowrate(short *pcm, int *x[MAX_NCHAN], SubbandInfo *sbi,
+	int nChans, int stride, int *phase, int gb[MAX_NCHAN], int oddBlock)
+{
+	(void)pcm; (void)x; (void)sbi; (void)nChans; (void)stride; (void)phase;
+	(void)gb; (void)oddBlock;
+	return -1;
+}
+#endif

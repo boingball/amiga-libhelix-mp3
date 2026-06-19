@@ -303,6 +303,10 @@ typedef struct _ScaleFactorInfo {
 typedef struct _SubbandInfo {
 	int vbuf[MAX_NCHAN * VBUF_LENGTH];		/* vbuf for fast DCT-based synthesis PQMF - double size for speed (no modulo indexing) */
 	int vindex;								/* internal index for tracking position in vbuf */
+#if defined(AMIGA_FUSED_SYNTHESIS) && defined(AMIGA_FAST_POLYPHASE)
+	int fusedVbuf[MAX_NCHAN * VBUF_LENGTH];	/* private FIFO for experimental fused low-rate synthesis */
+	int fusedVindex;							/* private index so selftests can compare both paths safely */
+#endif
 } SubbandInfo;
 
 /* bitstream.c */
@@ -330,6 +334,8 @@ void FDCT32Half(int *x, int *d, int offset, int oddBlock, int gb);
 void FDCT32Quarter(int *x, int *d, int offset, int oddBlock, int gb, int phase, int stride);
 void FDCT32FastLowrate(int *x, int *d, int offset, int oddBlock, int gb,
 	int stride, int phase);
+int FusedSynthFastLowrate(short *pcm, int *x[MAX_NCHAN], SubbandInfo *sbi,
+	int nChans, int stride, int *phase, int gb[MAX_NCHAN], int oddBlock);
 void FDCT32_C_REFERENCE(int *x, int *d, int offset, int oddBlock, int gb);
 int FDCT32_HAS_AMIGA_M68K_ASM_RUNTIME(void);
 void FDCT32Half_TEST_ACTIVE(int *x, int *d, int offset, int oddBlock, int gb);

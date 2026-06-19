@@ -75,6 +75,9 @@ static int gExperimentalReducedTapsEnabled;
 #if defined(AMIGA_FAST_FDCT32_QUARTER)
 static int gExperimentalFDCT32QuarterEnabled;
 #endif
+#if defined(AMIGA_FUSED_SYNTHESIS)
+static int gExperimentalFusedSynthesisEnabled;
+#endif
 
 void MP3SetExperimentalPolyphase(int enabled)
 {
@@ -160,6 +163,24 @@ int MP3ExperimentalFDCT32QuarterEnabled(void)
 #endif
 }
 
+void MP3SetExperimentalFusedSynthesis(int enabled)
+{
+#if defined(AMIGA_FUSED_SYNTHESIS)
+	gExperimentalFusedSynthesisEnabled = enabled ? 1 : 0;
+#else
+	(void)enabled;
+#endif
+}
+
+int MP3ExperimentalFusedSynthesisEnabled(void)
+{
+#if defined(AMIGA_FUSED_SYNTHESIS)
+	return gExperimentalFusedSynthesisEnabled;
+#else
+	return 0;
+#endif
+}
+
 void AmigaResetPolyphaseStatics(void)
 {
 	/* The synthesis FIFO lives in SubbandInfo and is freshly allocated by
@@ -175,6 +196,9 @@ void AmigaResetPolyphaseStatics(void)
 #endif
 #if defined(AMIGA_FAST_FDCT32_QUARTER)
 	gExperimentalFDCT32QuarterEnabled = 0;
+#endif
+#if defined(AMIGA_FUSED_SYNTHESIS)
+	gExperimentalFusedSynthesisEnabled = 0;
 #endif
 }
 #else
@@ -238,6 +262,16 @@ void MP3SetExperimentalFDCT32Quarter(int enabled)
 }
 
 int MP3ExperimentalFDCT32QuarterEnabled(void)
+{
+	return 0;
+}
+
+void MP3SetExperimentalFusedSynthesis(int enabled)
+{
+	(void)enabled;
+}
+
+int MP3ExperimentalFusedSynthesisEnabled(void)
 {
 	return 0;
 }
