@@ -314,6 +314,10 @@ typedef struct _SubbandInfo {
 	int vindex;								/* internal index for tracking position in vbuf */
 } SubbandInfo;
 
+/* mp3dec.c */
+int MP3FastLowrateActiveSubbandsForStride(int stride);
+int MP3FastLowrateActiveCoeffLimit(const MP3DecInfo *mp3DecInfo);
+
 /* bitstream.c */
 void SetBitstreamPointer(BitStreamInfo *bsi, int nBytes, unsigned char *buf);
 unsigned int GetBits(BitStreamInfo *bsi, int nBits);

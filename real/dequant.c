@@ -43,9 +43,90 @@
  **************************************************************************************/
 
 #include "coder.h"
+#include "string.h"
 #include "assembly.h"
 #include "amiga_profile_decode.h"
 
+
+static int DequantRoundCapToCriticalBand(FrameHeader *fh, SideInfoSub *sis, int capCoeffs)
+{
+	int cb, i, nSamps;
+	int cbEndL, cbStartS, cbEndS;
+
+	if (!fh || !sis || capCoeffs >= MAX_NSAMP)
+		return MAX_NSAMP;
+	if (capCoeffs <= 0)
+		return 0;
+
+	if (sis->blockType == 2) {
+		if (sis->mixedBlock) {
+			cbEndL = (fh->ver == MPEG1 ? 8 : 6);
+			cbStartS = 3;
+		} else {
+			cbEndL = 0;
+			cbStartS = 0;
+		}
+		cbEndS = 13;
+	} else {
+		cbEndL = 22;
+		cbStartS = 13;
+		cbEndS = 13;
+	}
+
+	i = 0;
+	for (cb = 0; cb < cbEndL; cb++) {
+		i = fh->sfBand->l[cb + 1];
+		if (i >= capCoeffs)
+			return MIN(i, MAX_NSAMP);
+	}
+	for (cb = cbStartS; cb < cbEndS; cb++) {
+		nSamps = fh->sfBand->s[cb + 1] - fh->sfBand->s[cb];
+		i += 3 * nSamps;
+		if (i >= capCoeffs)
+			return MIN(i, MAX_NSAMP);
+	}
+
+	return MAX_NSAMP;
+}
+
+static int DequantApplyInputCap(MP3DecInfo *mp3DecInfo, FrameHeader *fh,
+	SideInfoSub *sis, int *nonZeroBound)
+{
+	int capCoeffs, workLimit;
+
+#if !defined(AMIGA_FAST_SUBBAND_CAP)
+	return MAX_NSAMP;
+#endif
+	capCoeffs = MP3FastLowrateActiveCoeffLimit(mp3DecInfo);
+	if (capCoeffs >= MAX_NSAMP)
+		return MAX_NSAMP;
+
+	workLimit = DequantRoundCapToCriticalBand(fh, sis, capCoeffs);
+	if (*nonZeroBound > workLimit)
+		*nonZeroBound = workLimit;
+	return capCoeffs;
+}
+
+static void DequantClampToInputCap(MP3DecInfo *mp3DecInfo, HuffmanInfo *hi)
+{
+	int ch, capCoeffs;
+
+#if !defined(AMIGA_FAST_SUBBAND_CAP)
+	return;
+#endif
+	capCoeffs = MP3FastLowrateActiveCoeffLimit(mp3DecInfo);
+	if (!hi || capCoeffs >= MAX_NSAMP)
+		return;
+	if (capCoeffs < 0)
+		capCoeffs = 0;
+
+	for (ch = 0; ch < MAX_NCHAN; ch++) {
+		if (hi->nonZeroBound[ch] > capCoeffs)
+			hi->nonZeroBound[ch] = capCoeffs;
+		memset(hi->huffDecBuf[ch] + capCoeffs, 0,
+			(MAX_NSAMP - capCoeffs) * sizeof(hi->huffDecBuf[ch][0]));
+	}
+}
 
 static void CollapseStereoToMono(int x[MAX_NCHAN][MAX_NSAMP], int nSamps,
 	int *nonZeroBound, int *gb)
@@ -127,6 +208,7 @@ int Dequantize(MP3DecInfo *mp3DecInfo, int gr)
 	/* dequantize all samples needed by the synthesis path */
 	AMIGA_PROFILE_START(amigaProfileStart);
 	while (ch-- > 0) {
+		DequantApplyInputCap(mp3DecInfo, fh, &si->sis[gr][ch], &hi->nonZeroBound[ch]);
 		hi->gb[ch] = DequantChannel(hi->huffDecBuf[ch], di->workBuf, &hi->nonZeroBound[ch], fh,
 			&si->sis[gr][ch], &sfi->sfis[gr][ch], &cbi[ch]);
 	}
@@ -208,6 +290,8 @@ int Dequantize(MP3DecInfo *mp3DecInfo, int gr)
 			CollapseStereoToMono(hi->huffDecBuf, nSamps, hi->nonZeroBound, hi->gb);
 		}
 	}
+
+	DequantClampToInputCap(mp3DecInfo, hi);
 
 	AMIGA_PROFILE_STOP(MP3_DECODE_CORE_PROFILE_STEREO_POST, amigaProfileStart);
 
