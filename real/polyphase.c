@@ -312,6 +312,9 @@ extern void AmigaM68KPolyphaseMonoFast(short *pcm, int *vbuf,
 extern void AmigaM68KPolyphaseMonoFastStride2(short *pcm, int *vbuf,
 	const int *coefBase) __asm__("AmigaM68KPolyphaseMonoFastStride2")
 	__attribute__((weak));
+extern void AmigaM68KPolyphaseMonoFastStride2Reduced(short *pcm, int *vbuf,
+	const int *coefBase) __asm__("AmigaM68KPolyphaseMonoFastStride2Reduced")
+	__attribute__((weak));
 extern void MonoFastPolyphaseStride4_Amiga_m68k(short *pcm, int *vbuf,
 	const int *coefBase) __asm__("MonoFastPolyphaseStride4_Amiga_m68k")
 	__attribute__((weak));
@@ -1444,6 +1447,15 @@ int AmigaM68KPolyphaseMonoFastStride2_IsActive(void)
 #endif
 }
 
+int AmigaM68KPolyphaseMonoFastStride2Reduced_IsActive(void)
+{
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
+	return AmigaM68KPolyphaseMonoFastStride2Reduced ? 1 : 0;
+#else
+	return 0;
+#endif
+}
+
 int MonoFastPolyphaseStride4_Amiga_m68k_IsActive(void)
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
@@ -1563,6 +1575,11 @@ int PolyphaseMonoFastLowrateStride2_HAS_AMIGA_M68K_ASM_RUNTIME(void)
 	return AmigaM68KPolyphaseMonoFastStride2_IsActive();
 }
 
+int PolyphaseMonoFastLowrateStride2Reduced_HAS_AMIGA_M68K_ASM_RUNTIME(void)
+{
+	return AmigaM68KPolyphaseMonoFastStride2Reduced_IsActive();
+}
+
 int PolyphaseMonoFastLowrateStride4_HAS_AMIGA_M68K_ASM_RUNTIME(void)
 {
 	return MonoFastPolyphaseStride4_Amiga_m68k_IsActive();
@@ -1595,8 +1612,15 @@ int PolyphaseMonoFastLowrateStride2_C_REFERENCE(short *pcm, int *vbuf, const int
 int PolyphaseMonoFastLowrateStride2_TEST_ACTIVE(short *pcm, int *vbuf, const int *coefBase)
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_FAST_REDUCED_TAPS)
-	if (MP3ExperimentalReducedTapsEnabled())
+	if (MP3ExperimentalReducedTapsEnabled()) {
+#if defined(AMIGA_M68K_ASM_POLYPHASE)
+		if (AmigaM68KPolyphaseMonoFastStride2Reduced_IsActive()) {
+			AmigaM68KPolyphaseMonoFastStride2Reduced(pcm, vbuf, PolyAsmCoef(coefBase));
+			return 16;
+		}
+#endif
 		return PolyphaseMonoFastLowrateStride2Reduced(pcm, vbuf, coefBase);
+	}
 #endif
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
 	if (AmigaM68KPolyphaseMonoFastStride2_IsActive()) {
@@ -1674,10 +1698,29 @@ int PolyphaseStereoFastLowrateStride5_TEST_ACTIVE(short *pcm, int *vbuf,
 	return PolyphaseStereoFastLowrateStride5_C_REFERENCE(pcm, vbuf, coefBase, phase);
 }
 
+int PolyphaseMonoFastLowrateStride2Reduced_C_REFERENCE(short *pcm, int *vbuf,
+	const int *coefBase)
+{
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_FAST_REDUCED_TAPS)
+	return PolyphaseMonoFastLowrateStride2Reduced(pcm, vbuf, coefBase);
+#else
+	(void)pcm;
+	(void)vbuf;
+	(void)coefBase;
+	return 0;
+#endif
+}
+
 int PolyphaseMonoFastLowrateStride2Reduced_TEST_ACTIVE(short *pcm, int *vbuf,
 	const int *coefBase)
 {
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_FAST_REDUCED_TAPS)
+#if defined(AMIGA_M68K_ASM_POLYPHASE)
+	if (AmigaM68KPolyphaseMonoFastStride2Reduced_IsActive()) {
+		AmigaM68KPolyphaseMonoFastStride2Reduced(pcm, vbuf, PolyAsmCoef(coefBase));
+		return 16;
+	}
+#endif
 	return PolyphaseMonoFastLowrateStride2Reduced(pcm, vbuf, coefBase);
 #else
 	(void)pcm;
@@ -1747,6 +1790,12 @@ int PolyphaseMonoFastLowrate(short *pcm, int *vbuf, const int *coefBase, int str
 #if defined(AMIGA_FAST_REDUCED_TAPS)
 		if (MP3ExperimentalReducedTapsEnabled()) {
 			gMonoStride2ReducedCalls++;
+#if defined(AMIGA_M68K_ASM_POLYPHASE)
+			if (AmigaM68KPolyphaseMonoFastStride2Reduced_IsActive()) {
+				AmigaM68KPolyphaseMonoFastStride2Reduced(pcm, vbuf, PolyAsmCoef(coefBase));
+				return 16;
+			}
+#endif
 			return PolyphaseMonoFastLowrateStride2Reduced(pcm, vbuf, coefBase);
 		}
 #endif
