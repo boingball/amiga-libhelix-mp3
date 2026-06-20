@@ -969,7 +969,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->selftestHuffman = 1;
 		} else if (!strcmp(argv[i], "--selftest-dequant")) {
 			opt->selftestDequant = 1;
-		} else if (!strcmp(argv[i], "--selftest-intensity")) {
+		} else if (!strcmp(argv[i], "--selftest-intensity") ||
+			!strcmp(argv[i], "--Selftest-Intensity")) {
 			opt->selftestIntensity = 1;
 		} else if (!strcmp(argv[i], "--selftest-bitstream")) {
 			opt->selftestBitstream = 1;
