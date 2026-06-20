@@ -321,7 +321,10 @@ static int IMDCTApplySubbandCap(const MP3DecInfo *mp3DecInfo, BlockCount *bc)
 		return 1;
 	}
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_FAST_SUBBAND_CAP)
-	if (mp3DecInfo->fastLowrateStride >= 4) {
+	if (mp3DecInfo->fastLowrateStride >= 2) {
+		/* stride 2 (22050 Hz output from 44100 Hz) and above: subbands 16-31 are
+		 * above the output Nyquist (11025 Hz) and are zeroed by the polyphase
+		 * filter anyway, so skip computing them in the IMDCT. */
 		if (bc->nBlocksTotal > 16) bc->nBlocksTotal = 16;
 		if (bc->nBlocksLong  > 16) bc->nBlocksLong  = 16;
 		if (bc->nBlocksPrev  > 16) bc->nBlocksPrev  = 16;
