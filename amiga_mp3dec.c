@@ -251,6 +251,10 @@ int STATNAME(PolyphaseStereoFastLowrateStride2Reduced_HAS_AMIGA_M68K_ASM_RUNTIME
 #define AMIGA_DEQUANT_BLOCK_C_REFERENCE STATNAME(DequantBlock_C_REFERENCE)
 #define AMIGA_DEQUANT_BLOCK_TEST_ACTIVE STATNAME(DequantBlock_TEST_ACTIVE)
 #define AMIGA_DEQUANT_BLOCK_HAS_ASM STATNAME(DequantBlock_HAS_AMIGA_M68K_ASM_RUNTIME)
+#define AMIGA_INTENSITY_SCALE_RUN_C_REFERENCE STATNAME(IntensityScaleRun_C_REFERENCE)
+#define AMIGA_INTENSITY_SCALE_RUN1_TEST_ACTIVE STATNAME(IntensityScaleRun1_TEST_ACTIVE)
+#define AMIGA_INTENSITY_SCALE_RUN3_TEST_ACTIVE STATNAME(IntensityScaleRun3_TEST_ACTIVE)
+#define AMIGA_INTENSITY_SCALE_RUN_HAS_ASM STATNAME(IntensityScaleRun_HAS_AMIGA_M68K_ASM_RUNTIME)
 #define AMIGA_BITSTREAM_REFILL_SELFTEST STATNAME(BitstreamRefillSelftest)
 #define AMIGA_POLY_COEF STATNAME(polyCoef)
 
@@ -4384,21 +4388,21 @@ static int TestIntensityCase(unsigned long index, unsigned long seed, int patter
 		int firstCount = count >> 1;
 		int secondCount = count - firstCount;
 		int offset = firstCount * stride;
-		IntensityScaleRun_C_REFERENCE(cx0, cx1, fl, fr, firstCount, stride, &cmOutL, &cmOutR);
-		IntensityScaleRun_C_REFERENCE(cx0 + offset, cx1 + offset, fl, fr, secondCount, stride, &cmOutL, &cmOutR);
+		AMIGA_INTENSITY_SCALE_RUN_C_REFERENCE(cx0, cx1, fl, fr, firstCount, stride, &cmOutL, &cmOutR);
+		AMIGA_INTENSITY_SCALE_RUN_C_REFERENCE(cx0 + offset, cx1 + offset, fl, fr, secondCount, stride, &cmOutL, &cmOutR);
 		if (stride == 1) {
-			IntensityScaleRun1_TEST_ACTIVE(ax0, ax1, fl, fr, firstCount, &amOutL, &amOutR);
-			IntensityScaleRun1_TEST_ACTIVE(ax0 + offset, ax1 + offset, fl, fr, secondCount, &amOutL, &amOutR);
+			AMIGA_INTENSITY_SCALE_RUN1_TEST_ACTIVE(ax0, ax1, fl, fr, firstCount, &amOutL, &amOutR);
+			AMIGA_INTENSITY_SCALE_RUN1_TEST_ACTIVE(ax0 + offset, ax1 + offset, fl, fr, secondCount, &amOutL, &amOutR);
 		} else {
-			IntensityScaleRun3_TEST_ACTIVE(ax0, ax1, fl, fr, firstCount, &amOutL, &amOutR);
-			IntensityScaleRun3_TEST_ACTIVE(ax0 + offset, ax1 + offset, fl, fr, secondCount, &amOutL, &amOutR);
+			AMIGA_INTENSITY_SCALE_RUN3_TEST_ACTIVE(ax0, ax1, fl, fr, firstCount, &amOutL, &amOutR);
+			AMIGA_INTENSITY_SCALE_RUN3_TEST_ACTIVE(ax0 + offset, ax1 + offset, fl, fr, secondCount, &amOutL, &amOutR);
 		}
 	} else {
-		IntensityScaleRun_C_REFERENCE(cx0, cx1, fl, fr, count, stride, &cmOutL, &cmOutR);
+		AMIGA_INTENSITY_SCALE_RUN_C_REFERENCE(cx0, cx1, fl, fr, count, stride, &cmOutL, &cmOutR);
 		if (stride == 1)
-			IntensityScaleRun1_TEST_ACTIVE(ax0, ax1, fl, fr, count, &amOutL, &amOutR);
+			AMIGA_INTENSITY_SCALE_RUN1_TEST_ACTIVE(ax0, ax1, fl, fr, count, &amOutL, &amOutR);
 		else
-			IntensityScaleRun3_TEST_ACTIVE(ax0, ax1, fl, fr, count, &amOutL, &amOutR);
+			AMIGA_INTENSITY_SCALE_RUN3_TEST_ACTIVE(ax0, ax1, fl, fr, count, &amOutL, &amOutR);
 	}
 	if (cmOutL != amOutL || cmOutR != amOutR) {
 		printf("Intensity selftest mask mismatch %lu: stride=%d count=%d fl=%ld fr=%ld C(%ld,%ld) active(%ld,%ld)\n",
@@ -4465,7 +4469,7 @@ static int SelftestIntensity(void)
 		"no"
 #endif
 	);
-	printf("Intensity asm active: %s\n", IntensityScaleRun_HAS_AMIGA_M68K_ASM_RUNTIME() ? "yes" : "no");
+	printf("Intensity asm active: %s\n", AMIGA_INTENSITY_SCALE_RUN_HAS_ASM() ? "yes" : "no");
 	printf("Intensity selftest cases: %lu\n", cases);
 	printf("Intensity selftest failures: %lu\n", failures);
 	return failures ? 1 : 0;
