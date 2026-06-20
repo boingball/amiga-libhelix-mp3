@@ -700,7 +700,7 @@ static void PrintUsage(const char *prog)
 	printf("                 defaults to 11025 if no --rate is specified\n");
 	printf("  --quality N set quality/speed level (0 fastest, 1 fast, 2 balanced, 3 accurate)\n");
 	printf("               default: 1 for --fast-lowrate --rate 11025 or 22050, otherwise 3\n");
-	printf("               0 enables Superfast FDCT32 quarter; 1 adds Huffman asm + reduced taps; 3 is original behavior\n");
+	printf("               0 enables Superfast FDCT32 quarter + Huffman asm; 1 adds reduced taps; 3 is original behavior\n");
 	printf("               individual --exp-* flags may still be enabled independently\n");
 	printf("  --exp-poly  use experimental 68030 asm mono polyphase when compiled in\n");
 	printf("  --exp-huff  use experimental 68030 inline-asm Huffman pair refill when compiled in\n");
@@ -806,10 +806,10 @@ static void ApplyQualityOptions(DecodeOptions *opt)
 
 	switch (quality) {
 	case 0:
+		opt->expHuff = 1;
 		opt->expFdct32Quarter = 1;
 		/* fall through */
 	case 1:
-		opt->expHuff = 1;
 		opt->expReducedTaps = 1;
 		/* fall through */
 	case 2:
@@ -2318,7 +2318,7 @@ static int SelftestQuality(void)
 	memset(&opt, 0, sizeof(opt));
 	opt.quality = 1;
 	opt.qualitySpecified = 1;
-	failures += QualitySelftestExpect("quality1", opt, 1, 0, 0, 1, 1, 1) != 0;
+	failures += QualitySelftestExpect("quality1", opt, 1, 0, 0, 1, 0, 1) != 0;
 
 	memset(&opt, 0, sizeof(opt));
 	opt.quality = 2;
@@ -2343,12 +2343,12 @@ static int SelftestQuality(void)
 	memset(&opt, 0, sizeof(opt));
 	opt.fastLowrate = 1;
 	opt.outputRate = 11025;
-	failures += QualitySelftestExpect("auto-fast-lowrate-11025", opt, 1, 0, 0, 1, 1, 1) != 0;
+	failures += QualitySelftestExpect("auto-fast-lowrate-11025", opt, 1, 0, 0, 1, 0, 1) != 0;
 
 	memset(&opt, 0, sizeof(opt));
 	opt.fastLowrate = 1;
 	opt.outputRate = 22050;
-	failures += QualitySelftestExpect("auto-fast-lowrate-22050", opt, 1, 0, 0, 1, 1, 1) != 0;
+	failures += QualitySelftestExpect("auto-fast-lowrate-22050", opt, 1, 0, 0, 1, 0, 1) != 0;
 
 	memset(&opt, 0, sizeof(opt));
 	opt.fastLowrate = 1;
