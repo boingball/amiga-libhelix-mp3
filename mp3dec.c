@@ -237,7 +237,7 @@ int MP3FindSyncWord(unsigned char *buf, int nBytes)
 	return -1;
 }
 
-static int MP3FastLowrateActiveSubbandsForStride(int stride)
+int MP3FastLowrateActiveSubbandsForStride(int stride)
 {
 	if (stride >= 5)
 		return 6;	/* 8820/8287 Hz: output Nyquist ~4.4 kHz -> 6 subbands */
@@ -246,6 +246,24 @@ static int MP3FastLowrateActiveSubbandsForStride(int stride)
 	if (stride == 2)
 		return 16;
 	return 32;
+}
+
+int MP3FastLowrateActiveCoeffLimit(const MP3DecInfo *mp3DecInfo)
+{
+	int activeSubbands;
+
+	if (!mp3DecInfo || !mp3DecInfo->superfastLowrate || mp3DecInfo->fastLowrateStride <= 1)
+		return MAX_NSAMP;
+
+	activeSubbands = mp3DecInfo->fastLowrateActiveSubbands;
+	if (activeSubbands <= 0)
+		activeSubbands = MP3FastLowrateActiveSubbandsForStride(mp3DecInfo->fastLowrateStride);
+	if (activeSubbands > NBANDS)
+		activeSubbands = NBANDS;
+	if (activeSubbands < 0)
+		activeSubbands = 0;
+
+	return activeSubbands * BLOCK_SIZE;
 }
 
 void MP3SetFastLowrate(HMP3Decoder hMP3Decoder, int stride)

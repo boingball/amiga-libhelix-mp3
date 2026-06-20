@@ -302,7 +302,7 @@ static int IMDCTApplySubbandCap(const MP3DecInfo *mp3DecInfo, BlockCount *bc)
 	if (!mp3DecInfo || !bc)
 		return 0;
 
-	activeSubbands = mp3DecInfo->fastLowrateActiveSubbands;
+	activeSubbands = MP3FastLowrateActiveCoeffLimit(mp3DecInfo) / BLOCK_SIZE;
 	if (activeSubbands <= 0) activeSubbands = NBANDS;
 	if (activeSubbands > NBANDS) activeSubbands = NBANDS;
 
