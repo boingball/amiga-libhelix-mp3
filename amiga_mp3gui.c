@@ -310,6 +310,7 @@ typedef struct ArtDecodeState {
 	unsigned short greyCount[ART_W * ART_H];
 	unsigned char greyOut[ART_W * ART_H];
 	int reduce;
+	int wantColor;
 	unsigned long pumpCount;
 	unsigned long decodeMicros;
 	unsigned long processMicros;
@@ -2019,7 +2020,25 @@ static int JpegSampleRGB(const pjpeg_image_info_t *info, int off,
 	*r = info->m_pMCUBufR[off];
 	*g = info->m_pMCUBufG[off];
 	*b = info->m_pMCUBufB[off];
+#if defined(AMIGA_M68K) && defined(AMIGA_M68K_ASM_JPEG_GREY)
+	{
+		unsigned long rv = *r;
+		unsigned long gv = *g;
+		unsigned long bv = *b;
+		__asm__ volatile (
+			"mulu.w #77,%0\n\t"
+			"mulu.w #150,%1\n\t"
+			"mulu.w #29,%2\n\t"
+			"add.l %1,%0\n\t"
+			"add.l %2,%0\n\t"
+			"add.l #128,%0\n\t"
+			"lsr.l #8,%0"
+			: "+d" (rv), "+d" (gv), "+d" (bv));
+		return (int)rv;
+	}
+#else
 	return (int)((77UL * *r + 150UL * *g + 29UL * *b + 128UL) >> 8);
+#endif
 }
 
 static void FinishArtDecode(HelixAmp3Gui *gui, int ok)
@@ -2036,12 +2055,36 @@ static void FinishArtDecode(HelixAmp3Gui *gui, int ok)
 #endif
 		for (i = 0; i < ART_W * ART_H; i++) {
 			if (st->greyCount[i]) {
-				unsigned long c = st->greyCount[i];
-				unsigned long half = c / 2;
+				unsigned short c = st->greyCount[i];
+				unsigned long half = (unsigned long)c >> 1;
+#if defined(AMIGA_M68K) && defined(AMIGA_M68K_ASM_JPEG_GREY)
+				/* DIVU.W (32/16) is ~2x faster than DIVU.L (32/32) on 68020.
+				 * Safe here: max quotient is 255, fits in the 16-bit result. */
+				{
+					unsigned long d = st->greyAccum[i] + half;
+					__asm__ volatile ("divu.w %1,%0" : "+d"(d) : "dm"(c));
+					st->greyOut[i] = (unsigned char)(unsigned short)d;
+				}
+				if (st->wantColor) {
+					unsigned long d;
+					d = st->rAccum[i] + half;
+					__asm__ volatile ("divu.w %1,%0" : "+d"(d) : "dm"(c));
+					gui->artRGBBuf[i * 3    ] = (unsigned char)(unsigned short)d;
+					d = st->gAccum[i] + half;
+					__asm__ volatile ("divu.w %1,%0" : "+d"(d) : "dm"(c));
+					gui->artRGBBuf[i * 3 + 1] = (unsigned char)(unsigned short)d;
+					d = st->bAccum[i] + half;
+					__asm__ volatile ("divu.w %1,%0" : "+d"(d) : "dm"(c));
+					gui->artRGBBuf[i * 3 + 2] = (unsigned char)(unsigned short)d;
+				}
+#else
 				st->greyOut[i] = (unsigned char)((st->greyAccum[i] + half) / c);
-				gui->artRGBBuf[i * 3    ] = (unsigned char)((st->rAccum[i] + half) / c);
-				gui->artRGBBuf[i * 3 + 1] = (unsigned char)((st->gAccum[i] + half) / c);
-				gui->artRGBBuf[i * 3 + 2] = (unsigned char)((st->bAccum[i] + half) / c);
+				if (st->wantColor) {
+					gui->artRGBBuf[i * 3    ] = (unsigned char)((st->rAccum[i] + half) / c);
+					gui->artRGBBuf[i * 3 + 1] = (unsigned char)((st->gAccum[i] + half) / c);
+					gui->artRGBBuf[i * 3 + 2] = (unsigned char)((st->bAccum[i] + half) / c);
+				}
+#endif
 			}
 		}
 		memcpy(gui->artGreyBuf, st->greyOut, ART_W * ART_H);
@@ -2112,12 +2155,19 @@ static void PumpArtDecode(HelixAmp3Gui *gui)
 			for (by = 0; by < st->info.m_MCUHeight; by += 8) {
 				for (bx = 0; bx < st->info.m_MCUWidth; bx += 8) {
 					int off = McuSampleOffset(&st->info, bx, by);
-					unsigned char r, g, b;
-					int grey = JpegSampleRGB(&st->info, off, &r, &g, &b);
-					ArtAccumReducedBlockColor(&st->info,
-						st->greyAccum, st->rAccum, st->gAccum, st->bAccum,
-						st->greyCount, ART_W, ART_H,
-						mcuX + bx, mcuY + by, 8, 8, grey, r, g, b);
+					if (st->wantColor) {
+						unsigned char r, g, b;
+						int grey = JpegSampleRGB(&st->info, off, &r, &g, &b);
+						ArtAccumReducedBlockColor(&st->info,
+							st->greyAccum, st->rAccum, st->gAccum, st->bAccum,
+							st->greyCount, ART_W, ART_H,
+							mcuX + bx, mcuY + by, 8, 8, grey, r, g, b);
+					} else {
+						ArtAccumReducedBlock(&st->info,
+							st->greyAccum, st->greyCount, ART_W, ART_H,
+							mcuX + bx, mcuY + by, 8, 8,
+							JpegGreySample(&st->info, off));
+					}
 				}
 			}
 		} else for (y = 0; y < st->info.m_MCUHeight; y++) {
@@ -2131,17 +2181,22 @@ static void PumpArtDecode(HelixAmp3Gui *gui)
 			for (x = 0; x < st->info.m_MCUWidth; x++) {
 				int srcX = mcuX + x;
 				int dst;
-				unsigned char r, g, b;
-				int grey;
 
 				if (srcX >= st->info.m_width)
 					continue;
 				dst = dstY * ART_W + st->xMap[srcX];
-				grey = JpegSampleRGB(&st->info,
-					McuSampleOffset(&st->info, x, y), &r, &g, &b);
-				ArtAccumSampleColor(st->greyAccum, st->rAccum,
-					st->gAccum, st->bAccum, st->greyCount,
-					dst, grey, r, g, b, 1);
+				if (st->wantColor) {
+					unsigned char r, g, b;
+					int grey = JpegSampleRGB(&st->info,
+						McuSampleOffset(&st->info, x, y), &r, &g, &b);
+					ArtAccumSampleColor(st->greyAccum, st->rAccum,
+						st->gAccum, st->bAccum, st->greyCount,
+						dst, grey, r, g, b, 1);
+				} else {
+					ArtAccumSample(st->greyAccum, st->greyCount, dst,
+						JpegGreySample(&st->info,
+							McuSampleOffset(&st->info, x, y)), 1);
+				}
 			}
 		}
 		st->processMicros += ArtElapsedMicros(t0s, t0u);
@@ -2281,6 +2336,7 @@ static void StartArtDecode(HelixAmp3Gui *gui)
 	int i;
 
 	memset(st, 0, sizeof(*st));
+	st->wantColor = gui->artColorEnabled;
 	gui->artValid = 0;
 	gui->artLoading = 0;
 	if (LoadArtworkCache(gui)) {
