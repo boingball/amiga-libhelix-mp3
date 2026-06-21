@@ -2987,7 +2987,12 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 			SendTimerRequest(gui, ART_TIMER_MICROS);
 		StartPlayback(gui);
 	} else {
-		gui->playlist.current = -1;
+		/* On a natural end-of-playlist, clear the position so subsequent
+		 * Next presses don't claim there is an active track.  On a manual
+		 * stop, keep the position so the Next button can advance from
+		 * where the user left off. */
+		if (!stoppedByUser)
+			gui->playlist.current = -1;
 	}
 }
 
