@@ -337,6 +337,9 @@ typedef struct Mp3Tags {
 	int artIsPng;
 } Mp3Tags;
 
+#define ART_COLOR_CACHE 64
+typedef struct { unsigned long key; long pen; } ArtPenEntry;
+
 typedef struct HelixAmp3Gui {
 	struct Window  *win;
 	struct Gadget  *gadgets;
@@ -376,6 +379,10 @@ typedef struct HelixAmp3Gui {
 	int artCacheSavePending;
 	unsigned char artGreyBuf[ART_W * ART_H];
 	unsigned char artRGBBuf[ART_W * ART_H * 3];
+	unsigned char artPenIdx[ART_W * ART_H];
+	ArtPenEntry   artPenCache[ART_COLOR_CACHE];
+	int           artPenCacheUsed;
+	int           artPensBuilt;
 	ArtDecodeState artDecode;
 	struct MsgPort *timerPort;
 	struct MsgPort *donePort;
@@ -1979,6 +1986,8 @@ static void DrawFilterButton(HelixAmp3Gui *gui);
 static void ApplyHardwareAudioFilter(HelixAmp3Gui *gui);
 static void HandleDoneSignal(HelixAmp3Gui *gui);
 static void SaveArtworkCache(HelixAmp3Gui *gui);
+static void BuildArtColorPens(HelixAmp3Gui *gui);
+static void ReleaseArtColorPens(HelixAmp3Gui *gui);
 
 static int JpegGreySample(const pjpeg_image_info_t *info, int off)
 {
@@ -2076,6 +2085,10 @@ static void FinishArtDecode(HelixAmp3Gui *gui, int ok)
 					d = st->bAccum[i] + half;
 					__asm__ volatile ("divu.w %1,%0" : "+d"(d) : "dm"(c));
 					gui->artRGBBuf[i * 3 + 2] = (unsigned char)(unsigned short)d;
+				} else {
+					gui->artRGBBuf[i * 3    ] =
+					gui->artRGBBuf[i * 3 + 1] =
+					gui->artRGBBuf[i * 3 + 2] = st->greyOut[i];
 				}
 #else
 				st->greyOut[i] = (unsigned char)((st->greyAccum[i] + half) / c);
@@ -2083,12 +2096,18 @@ static void FinishArtDecode(HelixAmp3Gui *gui, int ok)
 					gui->artRGBBuf[i * 3    ] = (unsigned char)((st->rAccum[i] + half) / c);
 					gui->artRGBBuf[i * 3 + 1] = (unsigned char)((st->gAccum[i] + half) / c);
 					gui->artRGBBuf[i * 3 + 2] = (unsigned char)((st->bAccum[i] + half) / c);
+				} else {
+					gui->artRGBBuf[i * 3    ] =
+					gui->artRGBBuf[i * 3 + 1] =
+					gui->artRGBBuf[i * 3 + 2] = st->greyOut[i];
 				}
 #endif
 			}
 		}
 		memcpy(gui->artGreyBuf, st->greyOut, ART_W * ART_H);
 		gui->artValid = 1;
+		if (gui->artColorEnabled)
+			BuildArtColorPens(gui);
 		/* The GUI and playback child share the same AmigaDOS/C runtime state.
 		 * Avoid overlapping artwork-cache writes with playback startup. */
 		if (gui->playbackActive)
@@ -2111,6 +2130,7 @@ static void CancelArtDecode(HelixAmp3Gui *gui)
 		return;
 	st->active = 0;
 	gui->artLoading = 0;
+	ReleaseArtColorPens(gui);
 	DrawArtPanel(gui);
 }
 
@@ -2335,6 +2355,7 @@ static void StartArtDecode(HelixAmp3Gui *gui)
 	unsigned char status;
 	int i;
 
+	ReleaseArtColorPens(gui);
 	memset(st, 0, sizeof(*st));
 	st->wantColor = gui->artColorEnabled;
 	gui->artValid = 0;
@@ -2343,6 +2364,8 @@ static void StartArtDecode(HelixAmp3Gui *gui)
 #ifdef MINIAMP3_DEBUG
 		Printf("artwork cache=hit bytes=%lu\n", gui->tags.artBytes);
 #endif
+		if (gui->artColorEnabled)
+			BuildArtColorPens(gui);
 		DrawArtPanel(gui);
 		return;
 	}
@@ -2468,32 +2491,84 @@ static void DrawTransportIcons(HelixAmp3Gui *gui)
 	RectFill(rp, stopX, stopY, stopX + 9, stopY + 9);
 }
 
-#define ART_COLOR_CACHE 64
-typedef struct { unsigned long key; long pen; } ArtPenEntry;
-
-static long ArtGetPen(struct ColorMap *cm,
-	unsigned char r, unsigned char g, unsigned char b,
-	ArtPenEntry *cache, int *used)
+static void ReleaseArtColorPens(HelixAmp3Gui *gui)
 {
-	unsigned long key = ((unsigned long)r << 16) |
-	                    ((unsigned long)g <<  8) | b;
-	ULONG r32, g32, b32;
-	long pen;
-	int i;
-	for (i = 0; i < *used; i++)
-		if (cache[i].key == key)
-			return cache[i].pen;
-	r32 = (ULONG)r | ((ULONG)r << 8) | ((ULONG)r << 16) | ((ULONG)r << 24);
-	g32 = (ULONG)g | ((ULONG)g << 8) | ((ULONG)g << 16) | ((ULONG)g << 24);
-	b32 = (ULONG)b | ((ULONG)b << 8) | ((ULONG)b << 16) | ((ULONG)b << 24);
-	pen = ObtainBestPen(cm, r32, g32, b32,
-		OBP_FailIfBad, (Tag)FALSE, TAG_DONE);
-	if (*used < ART_COLOR_CACHE) {
-		cache[*used].key = key;
-		cache[*used].pen = pen;
-		(*used)++;
+	if (gui->artPensBuilt && gui->win) {
+		struct ColorMap *cm = gui->win->WScreen->ViewPort.ColorMap;
+		if (cm) {
+			int i;
+			for (i = 0; i < gui->artPenCacheUsed; i++)
+				if (gui->artPenCache[i].pen >= 0)
+					ReleasePen(cm, gui->artPenCache[i].pen);
+		}
 	}
-	return pen;
+	gui->artPensBuilt = 0;
+	gui->artPenCacheUsed = 0;
+}
+
+static void BuildArtColorPens(HelixAmp3Gui *gui)
+{
+	struct ColorMap *cm;
+	int i;
+
+	ReleaseArtColorPens(gui);
+	if (!gui->win || !gui->artValid)
+		return;
+	cm = gui->win->WScreen->ViewPort.ColorMap;
+	if (!cm)
+		return;
+
+	/* Pass 1: build pen cache from unique undithered pixel colours. */
+	for (i = 0; i < ART_W * ART_H; i++) {
+		const unsigned char *p = &gui->artRGBBuf[i * 3];
+		unsigned long key = ((unsigned long)p[0] << 16) |
+		                    ((unsigned long)p[1] <<  8) | p[2];
+		int j;
+		for (j = 0; j < gui->artPenCacheUsed; j++)
+			if (gui->artPenCache[j].key == key)
+				break;
+		if (j == gui->artPenCacheUsed && gui->artPenCacheUsed < ART_COLOR_CACHE) {
+			ULONG r32 = (ULONG)p[0] | ((ULONG)p[0] << 8) | ((ULONG)p[0] << 16) | ((ULONG)p[0] << 24);
+			ULONG g32 = (ULONG)p[1] | ((ULONG)p[1] << 8) | ((ULONG)p[1] << 16) | ((ULONG)p[1] << 24);
+			ULONG b32 = (ULONG)p[2] | ((ULONG)p[2] << 8) | ((ULONG)p[2] << 16) | ((ULONG)p[2] << 24);
+			gui->artPenCache[j].key = key;
+			gui->artPenCache[j].pen = ObtainBestPen(cm, r32, g32, b32,
+				OBP_FailIfBad, (Tag)FALSE, TAG_DONE);
+			gui->artPenCacheUsed++;
+		}
+	}
+
+	if (!gui->artPenCacheUsed)
+		return;
+
+	/* Pass 2: assign per-pixel pen index using Bayer-dithered colour.
+	 * The dither offset pushes each pixel's colour toward lighter or darker,
+	 * causing adjacent pixels to snap to different pens across palette
+	 * boundaries — same technique as the greyscale path, extended to RGB. */
+	for (i = 0; i < ART_W * ART_H; i++) {
+		const unsigned char *p = &gui->artRGBBuf[i * 3];
+		int dv = (int)kBayer8x8[(i / ART_W) & 7][i & 7] - 32;
+		int dscale = dv * 3 / 4;
+		int rd = (int)p[0] + dscale;
+		int gd = (int)p[1] + dscale;
+		int bd = (int)p[2] + dscale;
+		int bestj = 0;
+		unsigned long bestDist = 0xffffffffUL;
+		int j;
+		if (rd < 0) rd = 0; else if (rd > 255) rd = 255;
+		if (gd < 0) gd = 0; else if (gd > 255) gd = 255;
+		if (bd < 0) bd = 0; else if (bd > 255) bd = 255;
+		for (j = 0; j < gui->artPenCacheUsed; j++) {
+			unsigned long k = gui->artPenCache[j].key;
+			int dr = (int)((k >> 16) & 0xff) - rd;
+			int dg = (int)((k >>  8) & 0xff) - gd;
+			int db = (int)( k        & 0xff) - bd;
+			unsigned long dist = (unsigned long)(dr*dr + dg*dg + db*db);
+			if (dist < bestDist) { bestDist = dist; bestj = j; }
+		}
+		gui->artPenIdx[i] = (unsigned char)bestj;
+	}
+	gui->artPensBuilt = 1;
 }
 
 static void DrawArtPanel(HelixAmp3Gui *gui)
@@ -2510,43 +2585,28 @@ static void DrawArtPanel(HelixAmp3Gui *gui)
 		GTBB_Recessed, TRUE,
 		TAG_DONE);
 	if (gui->artValid) {
-		if (gui->artColorEnabled && gui->win->WScreen->ViewPort.ColorMap) {
-			/* True colour path: map each pixel to nearest screen pen via
-			 * ObtainBestPen, with a small per-draw cache to reduce calls. */
-			struct ColorMap *cm = gui->win->WScreen->ViewPort.ColorMap;
-			ArtPenEntry penCache[ART_COLOR_CACHE];
-			int penCacheUsed = 0;
-			int i;
-
+		if (gui->artColorEnabled && gui->artPensBuilt) {
+			/* True colour path: pen indices pre-computed at load time —
+			 * no ObtainBestPen calls during draw, just fast run-length RectFills. */
 			for (y = 0; y < ART_H; y++) {
-				const unsigned char *row = &gui->artRGBBuf[y * ART_W * 3];
+				const unsigned char *idxRow = &gui->artPenIdx[y * ART_W];
 				int runStart = 0;
-				long runPen = ArtGetPen(cm, row[0], row[1], row[2],
-					penCache, &penCacheUsed);
+				unsigned char runIdx = idxRow[0];
 
 				for (x = 1; x <= ART_W; x++) {
-					long pen;
-					if (x < ART_W) {
-						const unsigned char *p = row + x * 3;
-						pen = ArtGetPen(cm, p[0], p[1], p[2],
-							penCache, &penCacheUsed);
-					} else {
-						pen = -2; /* sentinel to flush last run */
-					}
-					if (pen != runPen) {
-						if (runPen >= 0) {
-							SetAPen(rp, (UWORD)runPen);
+					unsigned char idx = (x < ART_W) ? idxRow[x] : 0xff;
+					if (idx != runIdx) {
+						long pen = gui->artPenCache[runIdx].pen;
+						if (pen >= 0) {
+							SetAPen(rp, (UWORD)pen);
 							RectFill(rp, ART_X + runStart, ART_Y + y,
 								ART_X + x - 1, ART_Y + y);
 						}
 						runStart = x;
-						runPen = pen;
+						runIdx = idx;
 					}
 				}
 			}
-			for (i = 0; i < penCacheUsed; i++)
-				if (penCache[i].pen >= 0)
-					ReleasePen(cm, penCache[i].pen);
 		} else {
 			/* Greyscale path: ordered dithering with 8x8 Bayer matrix and
 			 * three system pens (shadow / background / shine). */
@@ -3716,6 +3776,7 @@ static void GuiClose(HelixAmp3Gui *gui)
 		DeleteMsgPort(gui->donePort);
 		gui->donePort = NULL;
 	}
+	ReleaseArtColorPens(gui);
 	FreeTags(&gui->tags);
 	if (gui->win && gui->menuStrip)
 		ClearMenuStrip(gui->win);
@@ -4703,6 +4764,10 @@ static void GuiPoll(HelixAmp3Gui *gui)
 						gui->artColorEnabled = !gui->artColorEnabled;
 						SetMenuItemChecked(gui, MENUNUM_PLAYBACK, ITEMNUM_ARTCOLOR,
 							gui->artColorEnabled);
+						if (gui->artColorEnabled && gui->artValid)
+							BuildArtColorPens(gui);
+						else
+							ReleaseArtColorPens(gui);
 						DrawArtPanel(gui);
 						SetStatus(gui, gui->artColorEnabled ?
 							"Colour artwork pens enabled." :
