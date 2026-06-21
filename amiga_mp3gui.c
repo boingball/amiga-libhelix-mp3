@@ -3021,6 +3021,19 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 	if (gui->playbackDonePending && PlaybackCanFinalize(gui))
 		FinalizePlayback(gui);
 
+	/* Recovery: if the playback process has exited and cleanup is marked
+	 * complete but no done message was ever delivered to the GUI (e.g., the
+	 * child read gDonePort as NULL in a race), force-finalize so the player
+	 * does not stay stuck in the Stopping state indefinitely. */
+	if (gui->playbackActive && !gui->playbackDonePending &&
+		gGuiPlaybackStatus.runId == gui->playbackRunId &&
+		gGuiPlaybackStatus.cleanupComplete &&
+		!PlaybackProcessStillExists()) {
+		gui->playbackDonePending = 1;
+		gui->playbackStoppedByUser = gGuiPlayer.stopRequested ? 1 : 0;
+		FinalizePlayback(gui);
+	}
+
 	if (gui->playbackActive && !gui->playbackDonePending && !expiredWasArt) {
 		int phase = gGuiPlaybackStatus.phase;
 		unsigned long frames = gGuiPlaybackStatus.decodedFrames;

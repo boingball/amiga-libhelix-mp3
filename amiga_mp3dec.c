@@ -4914,6 +4914,14 @@ static int DecodeStreamFillS8(DecodeStream *stream, const DecodeOptions *opt,
 			err = MP3Decode(stream->decoder, &stream->readPtr,
 				&stream->bytesLeft, stream->decodeBuf, 0);
 		}
+#if defined(AMIGA_M68K)
+		/* Poll CTRL-C signal so stop requests are noticed within one frame
+		 * decode rather than waiting for the full buffer fill to complete.
+		 * SetSignal(0,0) reads without clearing, so the bit stays set for
+		 * the WaitIO path that also checks it. */
+		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C)
+			gPlaybackInterrupted = 1;
+#endif
 		if (gPlaybackInterrupted)
 			break;
 		if (err) {
@@ -5119,6 +5127,10 @@ static int DecodeStreamFillPlanarS8(DecodeStream *stream, const DecodeOptions *o
 			err = MP3Decode(stream->decoder, &stream->readPtr,
 				&stream->bytesLeft, stream->decodeBuf, 0);
 		}
+#if defined(AMIGA_M68K)
+		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C)
+			gPlaybackInterrupted = 1;
+#endif
 		if (gPlaybackInterrupted)
 			break;
 		if (err) {
