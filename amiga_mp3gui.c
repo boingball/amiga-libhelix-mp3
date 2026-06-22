@@ -3058,6 +3058,17 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 		if (phaseChanged)
 			gui->lastDisplayedPhase = phase;
 
+		/* Once the decoder reports a valid rate, fill in the Hz field that
+		 * ReadMpegInfo leaves as 0 for non-MP3 formats (e.g. FLAC). */
+		if (rate > 0 && gui->tags.sampleRate == 0) {
+			gui->tags.sampleRate = rate;
+			FormatFileInfo(gui);
+			if (gui->gadFileInfo)
+				GT_SetGadgetAttrs(gui->gadFileInfo, gui->win, NULL,
+					GTTX_Text, (ULONG)gui->fileInfoText,
+					TAG_DONE);
+		}
+
 		/* Derive audio position from decoded frames rather than wall-clock ticks.
 		 * Each MP3 frame = 1152 samples.  Subtract the selected half-buffer
 		 * duration for pipeline lag, falling back to the requested slider value
