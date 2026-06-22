@@ -8,6 +8,7 @@ void *FlacModuleCalloc(size_t count, size_t bytes);
 void *FlacModuleRealloc(void *ptr, size_t bytes);
 void  FlacModuleFree(void *ptr);
 void  FlacModuleExit(int status);
+void  FlacModuleSetExecBase(void *execBase);
 
 
 #endif /* DECODERS_FLAC_ALLOC_H */

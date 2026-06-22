@@ -11,7 +11,18 @@
 #include "flac_alloc.h"
 #include "flac/src/foxen-flac.h"
 
-#include <stdio.h>
+
+#ifndef FLAC_MODULE_DEBUG
+#define FLAC_MODULE_DEBUG 0
+#endif
+
+#if FLAC_MODULE_DEBUG
+/* Decoder-module logging must be supplied by a freestanding implementation. */
+extern void FlacModuleDebug(const char *fmt, ...);
+#define FLAC_DEBUG(...) FlacModuleDebug(__VA_ARGS__)
+#else
+#define FLAC_DEBUG(...) ((void)0)
+#endif
 
 static void *ModuleAlloc(unsigned long bytes)
 {
@@ -87,10 +98,10 @@ static void FlacFreeState(FlacState *st)
 static void FlacDumpFirstBytes(const unsigned char *buf, unsigned long count)
 {
     unsigned long i, n = (count < 16UL) ? count : 16UL;
-    printf("flac-debug: read first16");
+    FLAC_DEBUG("flac-debug: read first16");
     for (i = 0; i < n; i++)
-        printf(" %02lx", (unsigned long)buf[i]);
-    printf("\n");
+        FLAC_DEBUG(" %02lx", (unsigned long)buf[i]);
+    FLAC_DEBUG("\n");
 }
 
 /* Refill iobuf from file if the current buffer is exhausted. */
@@ -100,17 +111,17 @@ static int FlacFillBuf(FlacState *st)
     if (st->eof)
         return (st->iobufPos < st->iobufFill);
     if (st->iobufPos >= st->iobufFill) {
-        printf("flac-debug: read request size=%lu\n", (unsigned long)FLAC_IO_CAP);
+        FLAC_DEBUG("flac-debug: read request size=%lu\n", (unsigned long)FLAC_IO_CAP);
         got = st->readFn(st->userData, st->iobuf, FLAC_IO_CAP);
-        printf("flac-debug: read returned size=%ld\n", (long)got);
+        FLAC_DEBUG("flac-debug: read returned size=%ld\n", (long)got);
         if (got <= 0) {
             st->eof = 1;
-            printf("flac-debug: read eof_set=%d\n", st->eof);
+            FLAC_DEBUG("flac-debug: read eof_set=%d\n", st->eof);
             return 0;
         }
         st->iobufFill = (unsigned long)got;
         st->iobufPos  = 0;
-        printf("flac-debug: read eof_set=%d\n", st->eof);
+        FLAC_DEBUG("flac-debug: read eof_set=%d\n", st->eof);
         FlacDumpFirstBytes(st->iobuf, st->iobufFill);
     }
     return 1;
@@ -133,21 +144,21 @@ static int FlacRunDecoder(FlacState *st)
         uint32_t produced;
         int noProgress;
 
-        printf("flac-debug: FlacRunDecoder before FlacFillBuf iobufFill=%lu iobufPos=%lu\n",
+        FLAC_DEBUG("flac-debug: FlacRunDecoder before FlacFillBuf iobufFill=%lu iobufPos=%lu\n",
                st->iobufFill, st->iobufPos);
         if (!FlacFillBuf(st)) {
             st->done = 1;
-            printf("flac-debug: FlacRunDecoder FlacFillBuf result=0 iobufFill=%lu iobufPos=%lu done=%d eof=%d error=%d\n",
+            FLAC_DEBUG("flac-debug: FlacRunDecoder FlacFillBuf result=0 iobufFill=%lu iobufPos=%lu done=%d eof=%d error=%d\n",
                    st->iobufFill, st->iobufPos, st->done, st->eof, st->error);
             return 0;
         }
-        printf("flac-debug: FlacRunDecoder FlacFillBuf result=1 iobufFill=%lu iobufPos=%lu\n",
+        FLAC_DEBUG("flac-debug: FlacRunDecoder FlacFillBuf result=1 iobufFill=%lu iobufPos=%lu\n",
                st->iobufFill, st->iobufPos);
 
         in_avail  = (uint32_t)(st->iobufFill - st->iobufPos);
         out_avail = (uint32_t)FLAC_OUT_CAP;
         fed = in_avail;
-        printf("flac-debug: fx_flac_process before bytes_available=%lu out_avail=%lu\n",
+        FLAC_DEBUG("flac-debug: fx_flac_process before bytes_available=%lu out_avail=%lu\n",
                (unsigned long)in_avail, (unsigned long)out_avail);
 
         state = fx_flac_process(st->flac,
@@ -160,17 +171,17 @@ static int FlacRunDecoder(FlacState *st)
          * output buffer capacity; returned values are bytes consumed and
          * individual int32_t samples produced. */
         produced = out_avail;
-        printf("flac-debug: fx_flac_process returned state=%s consumed=%lu produced=%lu\n",
+        FLAC_DEBUG("flac-debug: fx_flac_process returned state=%s consumed=%lu produced=%lu\n",
                FlacStateName(state), (unsigned long)in_avail, (unsigned long)produced);
         st->iobufPos += (unsigned long)in_avail;
-        printf("flac-debug: FlacRunDecoder after consume iobufFill=%lu iobufPos=%lu\n",
+        FLAC_DEBUG("flac-debug: FlacRunDecoder after consume iobufFill=%lu iobufPos=%lu\n",
                st->iobufFill, st->iobufPos);
 
         noProgress = (in_avail == 0 && produced == 0 && state != FLAC_ERR);
         if (noProgress) {
             st->stallCount++;
             if (st->stallCount > FLAC_STALL_LIMIT) {
-                printf("flac-debug: decoder stalled state=%s fed=%lu eof=%d error=%d\n",
+                FLAC_DEBUG("flac-debug: decoder stalled state=%s fed=%lu eof=%d error=%d\n",
                        FlacStateName(state), (unsigned long)fed, st->eof, st->error);
                 st->error = 1;
                 return 0;
@@ -250,19 +261,19 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
             break;
         in_avail  = (uint32_t)(st->iobufFill - st->iobufPos);
         out_avail = 0;
-        printf("flac-debug: open metadata before fx_flac_process bytes_available=%lu iobufFill=%lu iobufPos=%lu\n",
+        FLAC_DEBUG("flac-debug: open metadata before fx_flac_process bytes_available=%lu iobufFill=%lu iobufPos=%lu\n",
                (unsigned long)in_avail, st->iobufFill, st->iobufPos);
         state = fx_flac_process(st->flac, st->iobuf + st->iobufPos,
                                 &in_avail, NULL, &out_avail);
         st->iobufPos += (unsigned long)in_avail;
-        printf("flac-debug: open metadata after fx_flac_process state=%s consumed=%lu produced=%lu iobufFill=%lu iobufPos=%lu\n",
+        FLAC_DEBUG("flac-debug: open metadata after fx_flac_process state=%s consumed=%lu produced=%lu iobufFill=%lu iobufPos=%lu\n",
                FlacStateName(state), (unsigned long)in_avail,
                (unsigned long)out_avail, st->iobufFill, st->iobufPos);
         tries++;
     }
 
     if (state != FLAC_END_OF_METADATA) {
-        printf("flac-debug: open result=failure streaminfo_parse_state=%s tries=%d eof=%d\n",
+        FLAC_DEBUG("flac-debug: open result=failure streaminfo_parse_state=%s tries=%d eof=%d\n",
                FlacStateName(state), tries, st->eof);
         FlacFreeState(st);
         return NULL;
@@ -273,11 +284,11 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     ss  = fx_flac_get_streaminfo(st->flac, FLAC_KEY_SAMPLE_SIZE);
     ns  = fx_flac_get_streaminfo(st->flac, FLAC_KEY_N_SAMPLES);
 
-    printf("flac-debug: open streaminfo sample_rate=%ld n_channels=%ld sample_size=%ld bits_per_sample=%ld n_samples=%ld\n",
+    FLAC_DEBUG("flac-debug: open streaminfo sample_rate=%ld n_channels=%ld sample_size=%ld bits_per_sample=%ld n_samples=%ld\n",
            (long)sr, (long)nch, (long)ss, (long)ss, (long)ns);
 
     if (sr <= 0 || nch <= 0 || nch > (int64_t)FLAC_CH || ss <= 0) {
-        printf("flac-debug: open result=failure invalid_streaminfo sample_rate=%ld n_channels=%ld sample_size=%ld n_samples=%ld\n",
+        FLAC_DEBUG("flac-debug: open result=failure invalid_streaminfo sample_rate=%ld n_channels=%ld sample_size=%ld n_samples=%ld\n",
                (long)sr, (long)nch, (long)ss, (long)ns);
         FlacFreeState(st);
         return NULL;
@@ -291,7 +302,7 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     infoOut->bitsPerSample = (unsigned short)(ss > 0 ? ss : 16);
     infoOut->totalSamples  = (ns > 0) ? (DecULong)ns : 0;
 
-    printf("flac-debug: open result=success sample_rate=%ld n_channels=%ld sample_size=%ld n_samples=%ld iobufFill=%lu iobufPos=%lu\n",
+    FLAC_DEBUG("flac-debug: open result=success sample_rate=%ld n_channels=%ld sample_size=%ld n_samples=%ld iobufFill=%lu iobufPos=%lu\n",
            (long)sr, (long)nch, (long)ss, (long)ns, st->iobufFill, st->iobufPos);
     return (DecHandle)st;
 }
@@ -305,13 +316,12 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
     int32_t      *src;
     short        *dst;
 
-    printf("FLACDECODE MARKER 12345\n");
-    fflush(stdout);
+    FLAC_DEBUG("FLACDECODE MARKER 12345\n");
 
     if (!st)
         return -1;
 
-    printf("flac-debug: FlacDecode enter maxSamplesPerChannel=%lu st->pcmFrames=%lu st->pcmPos=%lu st->done=%d st->eof=%d st->error=%d st->iobufFill=%lu st->iobufPos=%lu\n",
+    FLAC_DEBUG("flac-debug: FlacDecode enter maxSamplesPerChannel=%lu st->pcmFrames=%lu st->pcmPos=%lu st->done=%d st->eof=%d st->error=%d st->iobufFill=%lu st->iobufPos=%lu\n",
            (unsigned long)maxSamplesPerChan,
            (unsigned long)(st->channels ? (st->outbufFill / (unsigned long)st->channels) : 0UL),
            (unsigned long)(st->channels ? (st->outbufPos / (unsigned long)st->channels) : 0UL),
@@ -343,13 +353,13 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
         }
 
         /* Need a new decoded block */
-        printf("flac-debug: FlacDecode calling FlacRunDecoder pcmFrames=%lu pcmPos=%lu done=%d eof=%d error=%d\n",
+        FLAC_DEBUG("flac-debug: FlacDecode calling FlacRunDecoder pcmFrames=%lu pcmPos=%lu done=%d eof=%d error=%d\n",
                (unsigned long)(st->outbufFill / (unsigned long)ch),
                (unsigned long)(st->outbufPos / (unsigned long)ch),
                st->done, st->eof, st->error);
         {
             int runRc = FlacRunDecoder(st);
-            printf("flac-debug: FlacDecode FlacRunDecoder called=1 rc=%d pcmFrames=%lu pcmPos=%lu done=%d eof=%d error=%d\n",
+            FLAC_DEBUG("flac-debug: FlacDecode FlacRunDecoder called=1 rc=%d pcmFrames=%lu pcmPos=%lu done=%d eof=%d error=%d\n",
                    runRc,
                    (unsigned long)(st->outbufFill / (unsigned long)ch),
                    (unsigned long)(st->outbufPos / (unsigned long)ch),
@@ -362,7 +372,7 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
     if (st->error)
         return -1;
     if (produced == 0 && !st->eof && !st->done) {
-        printf("flac-debug: decoder stalled produced=0 eof=%d done=%d error=%d\n",
+        FLAC_DEBUG("flac-debug: decoder stalled produced=0 eof=%d done=%d error=%d\n",
                st->eof, st->done, st->error);
         st->error = 1;
         return -1;

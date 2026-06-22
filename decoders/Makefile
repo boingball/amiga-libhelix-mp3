@@ -20,7 +20,7 @@ CPU    := -m68020
 CFLAGS := $(CPU) -O2 -fomit-frame-pointer -std=gnu89 -Wall -I. \
           -DHAVE_AMIGA_AUDIO_DEVICE -DAMIGA_M68K \
           -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc \
-          -fno-builtin-free -fno-builtin-exit
+          -fno-builtin-free -fno-builtin-exit -ffunction-sections -fdata-sections -DNDEBUG
 
 # Post-link: mark hunks as "any RAM, prefer Fast" (same as main binary)
 FIXHUNKS := python3 ../tools/amiga_fast_preferred_hunks.py
@@ -53,13 +53,13 @@ flac_module.o flac/src/foxen-flac.o: flac/src/foxen-flac.h
 
 flac.decoder: $(FLAC_OBJS) decoder_module.h flac/src/foxen-flac.h
 	rm -f $@ $@.map
-	$(CC) $(FLAC_CFLAGS) -nostartfiles -Wl,-Map,$@.map -o $@ $(FLAC_OBJS)
-	@if grep -E '(^|/)(malloc\.o|lib_a-exit\.o)([)[:space:]]|$$)' $@.map; then \
-	    echo "ERROR: FLAC decoder linked libc malloc.o or lib_a-exit.o" >&2; \
+	$(CC) $(FLAC_CFLAGS) -nostartfiles -Wl,-e,DecoderModuleEntry -Wl,--gc-sections -Wl,-Map,$@.map -o $@ $(FLAC_OBJS)
+	@if grep -iE 'printf|fprintf|puts|putchar|fflush|stdio|vfprintf|malloc\.o|abort|assert|(^|[^A-Za-z0-9_])exit([^A-Za-z0-9_]|$$)|_exit|__EXIT_LIST__|DOSBase|SysBase' $@.map; then \
+	    echo "ERROR: FLAC decoder linked forbidden libc/startup symbols" >&2; \
 	    exit 1; \
 	fi
-	@if $(NM) -u $@ 2>/dev/null | grep -E '(^|[[:space:]])(_?SysBase|_?_exit)$$'; then \
-	    echo "ERROR: FLAC decoder has unresolved SysBase or _exit" >&2; \
+	@if $(NM) -u $@ 2>/dev/null | grep -iE 'printf|fprintf|puts|putchar|fflush|stdio|vfprintf|malloc\.o|abort|assert|(^|[[:space:]])_?exit$$|__EXIT_LIST__|DOSBase|SysBase'; then \
+	    echo "ERROR: FLAC decoder has forbidden unresolved libc/startup symbols" >&2; \
 	    exit 1; \
 	fi
 	@if ! grep -q 'flac_module\.o' $@.map; then \
