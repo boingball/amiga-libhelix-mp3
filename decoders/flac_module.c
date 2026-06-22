@@ -1,29 +1,13 @@
 /*
  * flac_module.c - FLAC decoder module for MiniAMP3 using libfoxenflac.
  *
- * Clone libfoxenflac into decoders/flac/ before building:
- *   git submodule add https://github.com/astoeckel/libfoxenflac decoders/flac
- *
  * The module implements the DecoderOps vtable declared in decoder_module.h.
- * All memory is allocated with exec AllocMem/FreeVec (MEMF_FAST only) so
- * the decoder never touches chip RAM.
+ * All memory is allocated via exec AllocMem (MEMF_FAST) on Amiga.
  *
- * Output: interleaved signed 16-bit PCM (L0 R0 L1 R1 ...).
- * 24-bit FLAC is down-shifted to 16 bits automatically.
+ * Sized for Subset-format FLAC up to 48 kHz, stereo (uses ~50 KB Fast RAM).
  */
 
 #include "decoder_module.h"
-
-/*
- * libfoxenflac header.  The library uses a "user-provided memory" pattern:
- *   sz = fxflac_size();            -- how many bytes to allocate
- *   fxflac_init(ptr);              -- initialise (after zeroing)
- *   fxflac_feed(ptr, &buf, &len); -- returns FXFLAC_OK / FXFLAC_BLOCK_DECODED
- *   fxflac_read(ptr, chans, &n);  -- get int32_t** channels after decode
- *   fxflac_get_streaminfo(ptr, &si); -- sample_rate, n_channels, sample_size
- *
- * Adjust the include path if the header lives elsewhere in the submodule.
- */
 #include "flac/src/foxen-flac.h"
 
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
@@ -31,20 +15,17 @@
 #include <exec/memory.h>
 #include <proto/exec.h>
 
-extern struct ExecBase *SysBase;  /* set by DecoderModuleEntry in flac_entry.c */
+extern struct ExecBase *SysBase;
 
 static void *ModuleAlloc(unsigned long bytes)
 {
     return AllocMem(bytes, MEMF_FAST | MEMF_CLEAR);
 }
-
 static void ModuleFree(void *ptr, unsigned long bytes)
 {
-    if (ptr)
-        FreeMem(ptr, bytes);
+    if (ptr) FreeMem(ptr, bytes);
 }
 #else
-/* Host-build stubs (for cross-compile tests on Linux etc.) */
 #include <stdlib.h>
 #include <string.h>
 static void *ModuleAlloc(unsigned long bytes)
@@ -60,264 +41,272 @@ static void ModuleFree(void *ptr, unsigned long bytes)
 }
 #endif
 
-/* --- I/O buffer size ---------------------------------------------------- */
+/* Maximum block size and channels we support (Subset DAT: 4608 samples, 2 ch).
+ * Files outside this range will fail to open. */
+#define FLAC_BLK   FLAC_SUBSET_MAX_BLOCK_SIZE_48KHZ   /* 4608 */
+#define FLAC_CH    2U
 
-#define FLAC_IO_BUF  (16 * 1024UL)  /* compressed-data feed buffer (Fast RAM) */
+/* Compressed I/O buffer: read this many bytes from file per refill */
+#define FLAC_IO_CAP  (16UL * 1024UL)
 
-/* --- Per-stream state ---------------------------------------------------- */
+/* Output sample buffer capacity: full block * channels (interleaved int32_t) */
+#define FLAC_OUT_CAP ((unsigned long)(FLAC_BLK) * (unsigned long)(FLAC_CH))
 
 typedef struct FlacState {
-    /* libfoxenflac state — allocated as fxflac_size() bytes */
-    FxFlac               *flac;
-    unsigned long         flacSize;
+    void         *flacMem;   /* original AllocMem result for flac state */
+    fx_flac_t    *flac;      /* pointer returned by fx_flac_init (may differ) */
+    unsigned long flacSize;
 
-    /* Compressed-data I/O buffer */
-    unsigned char        *iobuf;
-    unsigned long         iobufFill;   /* valid bytes currently in iobuf   */
-    const unsigned char  *iobufPtr;    /* current read position in iobuf   */
+    unsigned char *iobuf;
+    unsigned long  iobufFill; /* valid bytes from start of iobuf */
+    unsigned long  iobufPos;  /* read cursor into iobuf */
 
-    /* Current decoded block (int32_t** into FxFlac state, valid until next feed) */
-    int32_t             **chans;
-    unsigned long         blockSamples;   /* total samples per channel in block */
-    unsigned long         blockConsumed;  /* samples per channel already returned */
+    int32_t       *outbuf;    /* decoded interleaved int32_t samples */
+    unsigned long  outbufFill;/* valid int32_t samples in outbuf */
+    unsigned long  outbufPos; /* read cursor (in int32_t samples) */
 
-    /* Stream parameters */
-    int                   channels;
-    int                   sampleSize;  /* bits per sample (16 or 24) */
-    int                   shift;       /* right-shift to reach 16-bit range */
+    int  channels;
+    int  shift;     /* right-shift to reduce to 16-bit range */
 
-    /* I/O callbacks */
-    DecoderReadCb         readFn;
-    DecoderSeekCb         seekFn;
-    void                 *userData;
+    DecoderReadCb  readFn;
+    DecoderSeekCb  seekFn;
+    void          *userData;
 
-    int                   eof;
-    int                   error;
+    int  eof;
+    int  error;
+    int  done;
 } FlacState;
 
-/* --- Helper: refill the compressed-data buffer -------------------------- */
-
-static int FlacRefillIoBuf(FlacState *st)
+/* Refill iobuf from file if the current buffer is exhausted. */
+static int FlacFillBuf(FlacState *st)
 {
     DecLong got;
-
     if (st->eof)
-        return 0;
-    got = st->readFn(st->userData, st->iobuf, FLAC_IO_BUF);
-    if (got <= 0) {
-        st->eof = 1;
-        st->iobufFill = 0;
-        st->iobufPtr  = st->iobuf;
-        return 0;
+        return (st->iobufPos < st->iobufFill);
+    if (st->iobufPos >= st->iobufFill) {
+        got = st->readFn(st->userData, st->iobuf, FLAC_IO_CAP);
+        if (got <= 0) { st->eof = 1; return 0; }
+        st->iobufFill = (unsigned long)got;
+        st->iobufPos  = 0;
     }
-    st->iobufFill = (unsigned long)got;
-    st->iobufPtr  = st->iobuf;
     return 1;
 }
 
-/* --- Helper: feed until a block is decoded or EOF/error ----------------- */
-
-static int FlacDecodeNextBlock(FlacState *st)
+/*
+ * Run fx_flac_process until we have a decoded audio block in outbuf,
+ * or until EOF / error.  Returns 1 with outbuf populated, 0 otherwise.
+ */
+static int FlacRunDecoder(FlacState *st)
 {
-    FxFlacStatus status;
-    uint32_t     n_samples = 0;
-
-    st->blockSamples  = 0;
-    st->blockConsumed = 0;
+    if (st->error || st->done)
+        return 0;
 
     for (;;) {
-        if (st->iobufFill == 0) {
-            if (!FlacRefillIoBuf(st))
-                return 0;  /* EOF */
+        uint32_t in_avail;
+        uint32_t out_avail;
+        fx_flac_state_t state;
+
+        if (!FlacFillBuf(st)) {
+            st->done = 1;
+            return 0;
         }
 
-        {
-            uint32_t remaining = (uint32_t)st->iobufFill;
-            status = fxflac_feed(st->flac,
-                                 (const uint8_t **)&st->iobufPtr,
-                                 &remaining);
-            st->iobufFill = remaining;
+        in_avail  = (uint32_t)(st->iobufFill - st->iobufPos);
+        out_avail = (uint32_t)FLAC_OUT_CAP;
+
+        state = fx_flac_process(st->flac,
+                                st->iobuf + st->iobufPos,
+                                &in_avail,
+                                st->outbuf,
+                                &out_avail);
+
+        /* in_avail is now bytes consumed */
+        st->iobufPos += (unsigned long)in_avail;
+
+        if (state == FLAC_ERR) {
+            st->error = 1;
+            return 0;
         }
 
-        if (status == FXFLAC_BLOCK_DECODED) {
-            fxflac_read(st->flac, &st->chans, &n_samples);
-            st->blockSamples  = (unsigned long)n_samples;
-            st->blockConsumed = 0;
+        if (state == FLAC_DECODED_FRAME && out_avail > 0) {
+            st->outbufFill = (unsigned long)out_avail;
+            st->outbufPos  = 0;
             return 1;
         }
-        if (status == FXFLAC_OK) {
-            /* Decoder wants more input; iobufFill should now be 0 */
-            continue;
-        }
-        /* Error or end-of-stream */
-        st->error = 1;
-        return 0;
+
+        /* Other states (END_OF_METADATA, SEARCH_FRAME, IN_FRAME, END_OF_FRAME):
+         * keep looping; refill input as needed. */
     }
 }
-
-/* --- DecoderOps callbacks ----------------------------------------------- */
 
 static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
                           void *userData, struct DecoderStreamInfo *infoOut)
 {
-    FlacState           *st;
-    FxFlacStreamInfo     si;
-    unsigned long        flacSize;
-    int                  gotInfo = 0;
-    int                  tries;
+    FlacState    *st;
+    unsigned long flacSize;
+    int64_t       sr, nch, ss, ns;
+    fx_flac_state_t state;
+    int tries;
 
-    flacSize = (unsigned long)fxflac_size();
+    flacSize = (unsigned long)fx_flac_size(FLAC_BLK, FLAC_CH);
+    if (flacSize == 0)
+        return NULL;
 
     st = (FlacState *)ModuleAlloc(sizeof(FlacState));
-    if (!st)
-        return NULL;
+    if (!st) return NULL;
 
-    st->flac = (FxFlac *)ModuleAlloc(flacSize);
-    if (!st->flac) {
-        ModuleFree(st, sizeof(FlacState));
-        return NULL;
-    }
+    st->flacMem  = ModuleAlloc(flacSize);
     st->flacSize = flacSize;
-
-    st->iobuf = (unsigned char *)ModuleAlloc(FLAC_IO_BUF);
-    if (!st->iobuf) {
-        ModuleFree(st->flac, flacSize);
+    if (!st->flacMem) {
         ModuleFree(st, sizeof(FlacState));
         return NULL;
     }
 
-    fxflac_init(st->flac);
+    st->flac = fx_flac_init(st->flacMem, (uint16_t)FLAC_BLK, (uint8_t)FLAC_CH);
+    if (!st->flac) {
+        ModuleFree(st->flacMem, flacSize);
+        ModuleFree(st, sizeof(FlacState));
+        return NULL;
+    }
+
+    st->iobuf = (unsigned char *)ModuleAlloc(FLAC_IO_CAP);
+    if (!st->iobuf) {
+        ModuleFree(st->flacMem, flacSize);
+        ModuleFree(st, sizeof(FlacState));
+        return NULL;
+    }
+
+    st->outbuf = (int32_t *)ModuleAlloc(FLAC_OUT_CAP * sizeof(int32_t));
+    if (!st->outbuf) {
+        ModuleFree(st->iobuf,   FLAC_IO_CAP);
+        ModuleFree(st->flacMem, flacSize);
+        ModuleFree(st, sizeof(FlacState));
+        return NULL;
+    }
+
     st->readFn   = readFn;
     st->seekFn   = seekFn;
     st->userData = userData;
 
-    /* Feed enough data to obtain STREAMINFO (usually within the first block) */
-    for (tries = 0; tries < 256 && !gotInfo; tries++) {
-        if (!FlacDecodeNextBlock(st) && st->error)
+    /* Feed until FLAC_END_OF_METADATA so streaminfo is available */
+    state = FLAC_INIT;
+    tries = 0;
+    while (state != FLAC_END_OF_METADATA && state != FLAC_ERR && tries < 2048) {
+        uint32_t in_avail, out_avail;
+        FlacFillBuf(st);
+        if (st->iobufPos >= st->iobufFill)
             break;
-        /* Check if streaminfo is available now */
-        fxflac_get_streaminfo(st->flac, &si);
-        if (si.sample_rate > 0)
-            gotInfo = 1;
-        /* If a real audio block decoded on the first try we have info too */
-        if (st->blockSamples > 0)
-            gotInfo = 1;
+        in_avail  = (uint32_t)(st->iobufFill - st->iobufPos);
+        out_avail = 0;
+        state = fx_flac_process(st->flac, st->iobuf + st->iobufPos,
+                                &in_avail, NULL, &out_avail);
+        st->iobufPos += (unsigned long)in_avail;
+        tries++;
     }
 
-    if (!gotInfo || si.sample_rate == 0) {
-        ModuleFree(st->iobuf, FLAC_IO_BUF);
-        ModuleFree(st->flac,  flacSize);
-        ModuleFree(st,        sizeof(FlacState));
+    if (state != FLAC_END_OF_METADATA) {
+        ModuleFree(st->outbuf,  FLAC_OUT_CAP * sizeof(int32_t));
+        ModuleFree(st->iobuf,   FLAC_IO_CAP);
+        ModuleFree(st->flacMem, flacSize);
+        ModuleFree(st, sizeof(FlacState));
         return NULL;
     }
 
-    st->channels   = (int)si.n_channels;
-    st->sampleSize = (int)si.sample_size;
-    st->shift      = st->sampleSize > 16 ? (st->sampleSize - 16) : 0;
+    sr  = fx_flac_get_streaminfo(st->flac, FLAC_KEY_SAMPLE_RATE);
+    nch = fx_flac_get_streaminfo(st->flac, FLAC_KEY_N_CHANNELS);
+    ss  = fx_flac_get_streaminfo(st->flac, FLAC_KEY_SAMPLE_SIZE);
+    ns  = fx_flac_get_streaminfo(st->flac, FLAC_KEY_N_SAMPLES);
 
-    if (st->channels < 1) st->channels = 1;
-    if (st->channels > 2) st->channels = 2;
+    if (sr <= 0 || nch <= 0 || nch > (int64_t)FLAC_CH) {
+        ModuleFree(st->outbuf,  FLAC_OUT_CAP * sizeof(int32_t));
+        ModuleFree(st->iobuf,   FLAC_IO_CAP);
+        ModuleFree(st->flacMem, flacSize);
+        ModuleFree(st, sizeof(FlacState));
+        return NULL;
+    }
 
-    infoOut->sampleRate    = si.sample_rate;
+    st->channels = (int)nch;
+    st->shift    = (ss > 16) ? (int)(ss - 16) : 0;
+
+    infoOut->sampleRate    = (DecULong)sr;
     infoOut->channels      = (unsigned short)st->channels;
-    infoOut->bitsPerSample = (unsigned short)st->sampleSize;
-    infoOut->totalSamples  = (DecULong)si.n_samples;
+    infoOut->bitsPerSample = (unsigned short)(ss > 0 ? ss : 16);
+    infoOut->totalSamples  = (ns > 0) ? (DecULong)ns : 0;
 
     return (DecHandle)st;
 }
 
-static DecLong FlacDecode(DecHandle handle, short *outBuf,
-                          DecULong maxSamplesPerChan)
+static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPerChan)
 {
     FlacState    *st = (FlacState *)handle;
     DecULong      produced = 0;
     int           ch;
+    unsigned long i, take, total;
+    int32_t      *src;
+    short        *dst;
 
-    if (!st || st->error)
-        return -1;
+    if (!st || st->error || st->done)
+        return 0;
+
+    ch = st->channels;
 
     while (produced < maxSamplesPerChan) {
-        DecULong avail;
-        DecULong take;
-        DecULong s;
+        /* Drain already-decoded samples */
+        if (st->outbufPos < st->outbufFill) {
+            unsigned long avail = (st->outbufFill - st->outbufPos) / (unsigned long)ch;
+            take = (unsigned long)(maxSamplesPerChan - produced);
+            if (take > avail) take = avail;
 
-        /* Decode a new block if the current one is exhausted */
-        if (st->blockConsumed >= st->blockSamples) {
-            if (!FlacDecodeNextBlock(st)) {
-                /* EOF or error */
-                break;
-            }
-            if (st->blockSamples == 0)
-                break;  /* EOF without a new audio block */
+            src = st->outbuf + st->outbufPos;
+            dst = outBuf + produced * (unsigned long)ch;
+            total = take * (unsigned long)ch;
+            for (i = 0; i < total; i++)
+                dst[i] = (short)(src[i] >> st->shift);
+
+            st->outbufPos += take * (unsigned long)ch;
+            produced      += (DecULong)take;
+            continue;
         }
 
-        avail = st->blockSamples - st->blockConsumed;
-        take  = avail;
-        if (take > maxSamplesPerChan - produced)
-            take = maxSamplesPerChan - produced;
-
-        /* Convert int32_t → int16_t and interleave channels */
-        for (s = 0; s < take; s++) {
-            DecULong src = st->blockConsumed + s;
-            DecULong dst = (produced + s) * (DecULong)st->channels;
-
-            for (ch = 0; ch < st->channels; ch++) {
-                int32_t raw = st->chans[ch][src];
-                short   s16 = (short)(raw >> st->shift);
-                outBuf[dst + (DecULong)ch] = s16;
-            }
-        }
-
-        st->blockConsumed += take;
-        produced          += take;
+        /* Need a new decoded block */
+        if (!FlacRunDecoder(st))
+            break;
     }
 
     return (DecLong)produced;
 }
 
-static DecLong FlacSeek(DecHandle handle, DecULong samplePos)
+static DecLong FlacSeek(DecHandle handle, DecULong sampleOffset)
 {
-    /* Basic implementation: rewind and skip.
-     * A real seek would use the FLAC seektable via the seek callback.
-     * For now, return non-zero to indicate unsupported (stream will restart). */
-    (void)handle;
-    (void)samplePos;
+    (void)handle; (void)sampleOffset;
     return -1;
 }
 
 static void FlacClose(DecHandle handle)
 {
     FlacState *st = (FlacState *)handle;
-
-    if (!st)
-        return;
-    ModuleFree(st->iobuf, FLAC_IO_BUF);
-    ModuleFree(st->flac,  st->flacSize);
-    ModuleFree(st,        sizeof(FlacState));
+    if (!st) return;
+    ModuleFree(st->outbuf,  FLAC_OUT_CAP * sizeof(int32_t));
+    ModuleFree(st->iobuf,   FLAC_IO_CAP);
+    ModuleFree(st->flacMem, st->flacSize);
+    ModuleFree(st, sizeof(FlacState));
 }
 
-static DecLong FlacGetTag(DecHandle handle, DecULong tagId,
-                          void *valueOut, DecULong maxBytes)
+static DecLong FlacGetTag(DecHandle handle, const char *key,
+                          char *buf, DecULong bufSize)
 {
-    (void)handle;
-    (void)tagId;
-    (void)valueOut;
-    (void)maxBytes;
+    (void)handle; (void)key; (void)buf; (void)bufSize;
     return -1;
 }
 
-/* --- Module info --------------------------------------------------------- */
-
-static struct DecoderModuleInfo gFlacInfo = {
+static const struct DecoderModuleInfo gFlacInfo = {
     DECODER_MODULE_MAGIC,
     DECODER_MODULE_VERSION,
-    0,          /* revision */
-    "FLAC",
-    "flac\0fla\0\0",
-    DECF_NEEDS_SEEK
+    "foxen-flac",
+    "flac\0fla\0",
+    0
 };
 
-/* gFlacOps is referenced by flac_entry.c */
 struct DecoderOps gFlacOps = {
     &gFlacInfo,
     FlacOpen,
