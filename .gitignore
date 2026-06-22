@@ -1,0 +1,8 @@
+
+# Amiga build outputs
+*.o
+*.a
+*.map
+*.decoder
+*.fastexp
+*.exp
