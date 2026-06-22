@@ -6992,6 +6992,8 @@ cleanup:
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
 
 #define GENERIC_STALL_LIMIT 64
+#define GENERIC_STARTUP_TIMEOUT_ITERATIONS 64
+#define GENERIC_STARTUP_TIMEOUT_MS 5000UL
 
 typedef struct GenericDecodeStream {
 	const struct DecoderOps *ops;
@@ -7510,6 +7512,8 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 	int                      initialDecodeSlots;
 	int                      liveSlots;
 	int                      refill;
+	int                      startupFillAttempts;
+	clock_t                  startupStartedAt;
 	int                      err;
 
 	(void)input;  /* module handles its own I/O via callbacks */
@@ -7522,6 +7526,14 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 	err = -1;
 
 	playbackRate = opt->outputRate > 0 ? opt->outputRate : (int)sinfo->sampleRate;
+	if (sinfo->sampleRate == 0 || sinfo->channels == 0 || sinfo->channels > 2 ||
+		sinfo->bitsPerSample == 0 || sinfo->bitsPerSample > 32) {
+		fprintf(stderr, "generic decoder: invalid stream format %lu Hz %u ch %u-bit\n",
+			sinfo->sampleRate, sinfo->channels, sinfo->bitsPerSample);
+		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+		gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
+		return -1;
+	}
 	if (playbackRate <= 0)
 		playbackRate = 8287;
 
@@ -7566,6 +7578,8 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 	liveSlots          = AmigaAudioLiveSlots(opt->stereo);
 	decodeAhead        = opt->stereo ? 2 : -1;
 	initialDecodeSlots = opt->stereo ? AMIGA_STEREO_DECODE_SLOTS : liveSlots;
+	startupFillAttempts = 0;
+	startupStartedAt = clock();
 
 	for (active = 0; active < initialDecodeSlots; active++) {
 		GuiPublishStartupStage(active == 0 ? GUISTART_FILL_BUFFER_A :
@@ -7575,16 +7589,32 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 
 		len[active] = GenericDecodeStreamFillPlaybackBuffer(&stream, opt,
 			&player, active, buf[active], bufBytes);
+		startupFillAttempts++;
+		if (len[active] == 0 && !stream.outOfData && !stream.decodeError &&
+			(startupFillAttempts >= GENERIC_STARTUP_TIMEOUT_ITERATIONS ||
+			PlaybackElapsedMilliseconds(startupStartedAt, clock()) >=
+			GENERIC_STARTUP_TIMEOUT_MS)) {
+			fprintf(stderr, "generic decoder: startup timed out before PCM output\n");
+			stream.decodeError = 1;
+			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+			gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
+			gPlaybackInterrupted = 1;
+		}
 
 		if (gPlaybackInterrupted)
 			goto cleanup;
 		GuiPublishStartupStage(active == 0 ? GUISTART_FILL_BUFFER_A_DONE :
 			GUISTART_FILL_BUFFER_B_DONE);
 
-		if (stream.decodeError)
+		if (stream.decodeError) {
+			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+			gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
 			goto cleanup;
+		}
 		if (active == 0 && (len[0] == 0 || len[0] / playbackChannels == 0)) {
 			fprintf(stderr, "generic decoder: first buffer fill produced zero bytes\n");
+			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+			gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
 			goto cleanup;
 		}
 		if (len[active] == 0)
@@ -7772,6 +7802,8 @@ static int AmigaGenericFormatPlay(const char *filename, const char *ext,
 	handle = mod.ops->open(DecModReadCb, DecModSeekCb, &input, &sinfo);
 	if (!handle) {
 		fprintf(stderr, "decoder module failed to open: %s\n", filename);
+		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+		gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
 		goto done_module;
 	}
 
@@ -7781,15 +7813,6 @@ static int AmigaGenericFormatPlay(const char *filename, const char *ext,
 	printf("generic decoder: %s  %lu Hz  %u ch  %u-bit totalSamples=%lu\n",
 		mod.ops->info->name,
 		sinfo.sampleRate, sinfo.channels, sinfo.bitsPerSample, sinfo.totalSamples);
-
-	if (sinfo.sampleRate == 0 || sinfo.channels == 0 || sinfo.channels > 2 ||
-		sinfo.bitsPerSample == 0 || sinfo.bitsPerSample > 32) {
-		fprintf(stderr, "generic decoder: invalid stream format %lu Hz %u ch %u-bit\n",
-			sinfo.sampleRate, sinfo.channels, sinfo.bitsPerSample);
-		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
-		ret = 1;
-		goto done_handle;
-	}
 
 	GuiPublishStartupStage(GUISTART_DECODER_ALLOC);
 	gMiniAmp3RequestedVolume = (unsigned short)opt->volumePercent;
