@@ -5897,8 +5897,9 @@ static void AmigaAudioClose(AmigaAudioPlayer *player,
 static int AmigaAudioOpenOne(AmigaAudioPlayer *player, int ch,
 	const UBYTE *channels, unsigned long channelCount)
 {
+	int i;
+
 	{
-		int i;
 		int liveSlots = AmigaAudioLiveSlots(player->stereo);
 
 		for (i = 0; i < liveSlots; i++) {
@@ -5953,7 +5954,6 @@ static int AmigaAudioOpenOne(AmigaAudioPlayer *player, int ch,
 		player->closeReq[ch]->ioa_Request.io_Message.mn_ReplyPort = player->port;
 	}
 	{
-		int i;
 		for (i = 1; i < AmigaAudioLiveSlots(player->stereo); i++) {
 			struct Message message;
 
@@ -6123,6 +6123,8 @@ static void AmigaAudioPrintStartupVolumeDebug(AmigaAudioPlayer *player,
 	}
 }
 
+static const char *PlaybackBufferName(int index);
+
 static void AmigaAudioCommitOne(AmigaAudioPlayer *player, int index, int ch)
 {
 	if (gPlaybackInterrupted || player->stopping)
@@ -6159,7 +6161,6 @@ static void AmigaPlaybackCopy(const signed char *src, signed char *dest,
 }
 
 static unsigned long PlaybackMaxChunkBytes(int stereo);
-static const char *PlaybackBufferName(int index);
 
 static int AmigaAudioPrepare(AmigaAudioPlayer *player, int index,
 	signed char *buf, unsigned long len)
