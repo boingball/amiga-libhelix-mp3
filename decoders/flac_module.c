@@ -72,6 +72,15 @@ typedef struct FlacState {
     int  done;
     unsigned long stallCount;
 } FlacState;
+static void FlacFreeState(FlacState *st)
+{
+    if (!st) return;
+    if (st->outbuf)  ModuleFree(st->outbuf,  FLAC_OUT_CAP * sizeof(int32_t));
+    if (st->iobuf)   ModuleFree(st->iobuf,   FLAC_IO_CAP);
+    if (st->flacMem) ModuleFree(st->flacMem, st->flacSize);
+    ModuleFree(st, sizeof(FlacState));
+}
+
 
 /* Refill iobuf from file if the current buffer is exhausted. */
 static int FlacFillBuf(FlacState *st)
@@ -176,29 +185,25 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     st->flacMem  = ModuleAlloc(flacSize);
     st->flacSize = flacSize;
     if (!st->flacMem) {
-        ModuleFree(st, sizeof(FlacState));
+        FlacFreeState(st);
         return NULL;
     }
 
     st->flac = fx_flac_init(st->flacMem, (uint16_t)FLAC_BLK, (uint8_t)FLAC_CH);
     if (!st->flac) {
-        ModuleFree(st->flacMem, flacSize);
-        ModuleFree(st, sizeof(FlacState));
+        FlacFreeState(st);
         return NULL;
     }
 
     st->iobuf = (unsigned char *)ModuleAlloc(FLAC_IO_CAP);
     if (!st->iobuf) {
-        ModuleFree(st->flacMem, flacSize);
-        ModuleFree(st, sizeof(FlacState));
+        FlacFreeState(st);
         return NULL;
     }
 
     st->outbuf = (int32_t *)ModuleAlloc(FLAC_OUT_CAP * sizeof(int32_t));
     if (!st->outbuf) {
-        ModuleFree(st->iobuf,   FLAC_IO_CAP);
-        ModuleFree(st->flacMem, flacSize);
-        ModuleFree(st, sizeof(FlacState));
+        FlacFreeState(st);
         return NULL;
     }
 
@@ -229,10 +234,9 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     }
 
     if (state != FLAC_END_OF_METADATA) {
-        ModuleFree(st->outbuf,  FLAC_OUT_CAP * sizeof(int32_t));
-        ModuleFree(st->iobuf,   FLAC_IO_CAP);
-        ModuleFree(st->flacMem, flacSize);
-        ModuleFree(st, sizeof(FlacState));
+        printf("flac-debug: open result=failure streaminfo_parse_state=%s tries=%d eof=%d\n",
+               FlacStateName(state), tries, st->eof);
+        FlacFreeState(st);
         return NULL;
     }
 
@@ -241,14 +245,13 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     ss  = fx_flac_get_streaminfo(st->flac, FLAC_KEY_SAMPLE_SIZE);
     ns  = fx_flac_get_streaminfo(st->flac, FLAC_KEY_N_SAMPLES);
 
-    printf("flac-debug: open streaminfo sampleRate=%ld channels=%ld bitsPerSample=%ld totalSamples=%ld\n",
-           (long)sr, (long)nch, (long)ss, (long)ns);
+    printf("flac-debug: open streaminfo sample_rate=%ld n_channels=%ld sample_size=%ld bits_per_sample=%ld n_samples=%ld\n",
+           (long)sr, (long)nch, (long)ss, (long)ss, (long)ns);
 
     if (sr <= 0 || nch <= 0 || nch > (int64_t)FLAC_CH || ss <= 0) {
-        ModuleFree(st->outbuf,  FLAC_OUT_CAP * sizeof(int32_t));
-        ModuleFree(st->iobuf,   FLAC_IO_CAP);
-        ModuleFree(st->flacMem, flacSize);
-        ModuleFree(st, sizeof(FlacState));
+        printf("flac-debug: open result=failure invalid_streaminfo sample_rate=%ld n_channels=%ld sample_size=%ld n_samples=%ld\n",
+               (long)sr, (long)nch, (long)ss, (long)ns);
+        FlacFreeState(st);
         return NULL;
     }
 
@@ -260,6 +263,8 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     infoOut->bitsPerSample = (unsigned short)(ss > 0 ? ss : 16);
     infoOut->totalSamples  = (ns > 0) ? (DecULong)ns : 0;
 
+    printf("flac-debug: open result=success sample_rate=%ld n_channels=%ld sample_size=%ld n_samples=%ld\n",
+           (long)sr, (long)nch, (long)ss, (long)ns);
     return (DecHandle)st;
 }
 
@@ -321,10 +326,7 @@ static void FlacClose(DecHandle handle)
 {
     FlacState *st = (FlacState *)handle;
     if (!st) return;
-    ModuleFree(st->outbuf,  FLAC_OUT_CAP * sizeof(int32_t));
-    ModuleFree(st->iobuf,   FLAC_IO_CAP);
-    ModuleFree(st->flacMem, st->flacSize);
-    ModuleFree(st, sizeof(FlacState));
+    FlacFreeState(st);
 }
 
 static struct DecoderModuleInfo gFlacInfo = {

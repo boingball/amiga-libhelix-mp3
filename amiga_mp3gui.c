@@ -3127,6 +3127,10 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 				SetStatus(gui, buf);
 			}
 			break;
+		case GUIPLAY_PHASE_ERROR:
+			if (phaseChanged)
+				SetStatus(gui, "Decoder error - playback stopped.");
+			break;
 		case GUIPLAY_PHASE_STOPPING:
 			if (gGuiPlaybackStatus.cleanupStage != gui->lastCleanupStage) {
 				gui->lastCleanupStage = gGuiPlaybackStatus.cleanupStage;
