@@ -6989,6 +6989,8 @@ cleanup:
 
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
 
+#define GENERIC_STALL_LIMIT 64
+
 typedef struct GenericDecodeStream {
 	const struct DecoderOps *ops;
 	DecHandle                handle;
@@ -7007,6 +7009,7 @@ typedef struct GenericDecodeStream {
 	int                      planarSpillCount;
 	int                      outOfData;
 	int                      decodeError;
+	int                      consecutiveZeroOutput;
 	DecodeStats             *stats;
 	TimingStats             *timing;
 	RateState                rateState;
@@ -7071,6 +7074,9 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 		int     spill;
 		int     i;
 
+		if (AmigaPlaybackStopRequested(opt, "inside generic mono decode loop"))
+			break;
+
 		nDecoded = gs->ops->decode(gs->handle, gs->decodeBuf, GENERIC_DECODE_CHUNK);
 
 #if defined(AMIGA_M68K)
@@ -7080,15 +7086,31 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 		if (gPlaybackInterrupted)
 			break;
 
+		printf("generic-debug: decode rc=%ld pcmSamples=%ld stopRequested=%d zeroOutput=%d eof=%d error=%d\n",
+			(long)nDecoded, (long)(nDecoded > 0 ? nDecoded : 0),
+			gPlaybackInterrupted ? 1 : 0, gs->consecutiveZeroOutput,
+			gs->outOfData, gs->decodeError);
+
 		if (nDecoded < 0) {
 			gs->decodeError = 1;
 			gs->outOfData   = 1;
 			break;
 		}
 		if (nDecoded == 0) {
+			gs->consecutiveZeroOutput++;
+			printf("generic-debug: zero-output decode count=%d stopRequested=%d\n",
+				gs->consecutiveZeroOutput, gPlaybackInterrupted ? 1 : 0);
+			if (AmigaPlaybackStopRequested(opt, "after generic mono zero-output decode"))
+				break;
+			if (gs->consecutiveZeroOutput > GENERIC_STALL_LIMIT) {
+				fprintf(stderr, "generic decoder-stalled: rc=0 pcmSamples=0 zeroOutput=%d\n",
+					gs->consecutiveZeroOutput);
+				gs->decodeError = 1;
+			}
 			gs->outOfData = 1;
 			break;
 		}
+		gs->consecutiveZeroOutput = 0;
 
 		/* Mix stereo → mono if necessary, or pass through mono */
 		if (gs->channels > 1) {
@@ -7190,6 +7212,9 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 		int          i;
 		int          direct;
 
+		if (AmigaPlaybackStopRequested(opt, "inside generic stereo decode loop"))
+			break;
+
 		nDecoded = gs->ops->decode(gs->handle, gs->decodeBuf, GENERIC_DECODE_CHUNK);
 
 #if defined(AMIGA_M68K)
@@ -7199,15 +7224,31 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 		if (gPlaybackInterrupted)
 			break;
 
+		printf("generic-debug: decode rc=%ld pcmSamples=%ld stopRequested=%d zeroOutput=%d eof=%d error=%d\n",
+			(long)nDecoded, (long)(nDecoded > 0 ? nDecoded : 0),
+			gPlaybackInterrupted ? 1 : 0, gs->consecutiveZeroOutput,
+			gs->outOfData, gs->decodeError);
+
 		if (nDecoded < 0) {
 			gs->decodeError = 1;
 			gs->outOfData   = 1;
 			break;
 		}
 		if (nDecoded == 0) {
+			gs->consecutiveZeroOutput++;
+			printf("generic-debug: zero-output decode count=%d stopRequested=%d\n",
+				gs->consecutiveZeroOutput, gPlaybackInterrupted ? 1 : 0);
+			if (AmigaPlaybackStopRequested(opt, "after generic stereo zero-output decode"))
+				break;
+			if (gs->consecutiveZeroOutput > GENERIC_STALL_LIMIT) {
+				fprintf(stderr, "generic decoder-stalled: rc=0 pcmSamples=0 zeroOutput=%d\n",
+					gs->consecutiveZeroOutput);
+				gs->decodeError = 1;
+			}
 			gs->outOfData = 1;
 			break;
 		}
+		gs->consecutiveZeroOutput = 0;
 
 		channels = gs->channels;
 		frames   = (int)nDecoded;  /* samples per channel */
@@ -7735,9 +7776,18 @@ static int AmigaGenericFormatPlay(const char *filename, const char *ext,
 	if (AmigaPlaybackStopRequested(opt, "after generic stream open"))
 		goto done_handle;
 
-	printf("generic decoder: %s  %lu Hz  %u ch  %u-bit\n",
+	printf("generic decoder: %s  %lu Hz  %u ch  %u-bit totalSamples=%lu\n",
 		mod.ops->info->name,
-		sinfo.sampleRate, sinfo.channels, sinfo.bitsPerSample);
+		sinfo.sampleRate, sinfo.channels, sinfo.bitsPerSample, sinfo.totalSamples);
+
+	if (sinfo.sampleRate == 0 || sinfo.channels == 0 || sinfo.channels > 2 ||
+		sinfo.bitsPerSample == 0 || sinfo.bitsPerSample > 32) {
+		fprintf(stderr, "generic decoder: invalid stream format %lu Hz %u ch %u-bit\n",
+			sinfo.sampleRate, sinfo.channels, sinfo.bitsPerSample);
+		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+		ret = 1;
+		goto done_handle;
+	}
 
 	GuiPublishStartupStage(GUISTART_DECODER_ALLOC);
 	gMiniAmp3RequestedVolume = (unsigned short)opt->volumePercent;
