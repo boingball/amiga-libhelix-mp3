@@ -83,6 +83,12 @@ typedef struct FlacState {
     int  error;
     int  done;
     unsigned long stallCount;
+
+    /* Host-visible in debugger/core dumps without module-side logging. */
+    unsigned long lastFlacState;
+    unsigned long lastBytesFed;
+    unsigned long lastBytesConsumed;
+    unsigned long lastSamplesProduced;
 } FlacState;
 static void FlacFreeState(FlacState *st)
 {
@@ -129,11 +135,15 @@ static int FlacFillBuf(FlacState *st)
 
 /*
  * Run fx_flac_process until we have a decoded audio block in outbuf,
- * or until EOF / error.  Returns 1 with outbuf populated, 0 otherwise.
+ * EOF, or error.  Returns 1 with outbuf populated, 0 for EOF, -1 for error.
  */
 static int FlacRunDecoder(FlacState *st)
 {
-    if (st->error || st->done)
+    unsigned long guard = 0;
+
+    if (st->error)
+        return -1;
+    if (st->done)
         return 0;
 
     for (;;) {
@@ -141,8 +151,13 @@ static int FlacRunDecoder(FlacState *st)
         uint32_t out_avail;
         fx_flac_state_t state;
         uint32_t fed;
+        uint32_t consumed;
         uint32_t produced;
-        int noProgress;
+
+        if (++guard > FLAC_STALL_LIMIT) {
+            st->error = 1;
+            return -1;
+        }
 
         FLAC_DEBUG("flac-debug: FlacRunDecoder before FlacFillBuf iobufFill=%lu iobufPos=%lu\n",
                st->iobufFill, st->iobufPos);
@@ -167,24 +182,32 @@ static int FlacRunDecoder(FlacState *st)
                                 st->outbuf,
                                 &out_avail);
 
-        /* Per libfoxenflac usage, input values are available input bytes and
-         * output buffer capacity; returned values are bytes consumed and
-         * individual int32_t samples produced. */
+        /* On return libfoxenflac writes bytes consumed to in_avail and
+         * individual int32_t samples produced to out_avail. */
+        consumed = in_avail;
         produced = out_avail;
+        st->lastFlacState = (unsigned long)state;
+        st->lastBytesFed = (unsigned long)fed;
+        st->lastBytesConsumed = (unsigned long)consumed;
+        st->lastSamplesProduced = (unsigned long)produced;
         FLAC_DEBUG("flac-debug: fx_flac_process returned state=%s consumed=%lu produced=%lu\n",
-               FlacStateName(state), (unsigned long)in_avail, (unsigned long)produced);
-        st->iobufPos += (unsigned long)in_avail;
+               FlacStateName(state), (unsigned long)consumed, (unsigned long)produced);
+
+        if (consumed > fed) {
+            st->error = 1;
+            return -1;
+        }
+        st->iobufPos += (unsigned long)consumed;
         FLAC_DEBUG("flac-debug: FlacRunDecoder after consume iobufFill=%lu iobufPos=%lu\n",
                st->iobufFill, st->iobufPos);
 
-        noProgress = (in_avail == 0 && produced == 0 && state != FLAC_ERR);
-        if (noProgress) {
+        if (consumed == 0 && produced == 0 && state != FLAC_ERR) {
             st->stallCount++;
             if (st->stallCount > FLAC_STALL_LIMIT) {
                 FLAC_DEBUG("flac-debug: decoder stalled state=%s fed=%lu eof=%d error=%d\n",
                        FlacStateName(state), (unsigned long)fed, st->eof, st->error);
                 st->error = 1;
-                return 0;
+                return -1;
             }
         } else {
             st->stallCount = 0;
@@ -192,17 +215,23 @@ static int FlacRunDecoder(FlacState *st)
 
         if (state == FLAC_ERR) {
             st->error = 1;
-            return 0;
+            return -1;
         }
 
-        if (state == FLAC_DECODED_FRAME && out_avail > 0) {
-            st->outbufFill = (unsigned long)out_avail;
+        if (produced > 0) {
+            if (st->channels <= 0 || (produced % (uint32_t)st->channels) != 0) {
+                st->error = 1;
+                return -1;
+            }
+            st->outbufFill = (unsigned long)produced;
             st->outbufPos  = 0;
             return 1;
         }
 
-        /* Other states (END_OF_METADATA, SEARCH_FRAME, IN_FRAME, END_OF_FRAME):
-         * keep looping; refill input as needed. */
+        /* Consuming metadata, frame headers, or other non-frame states without
+         * PCM is valid.  Keep driving the decoder instead of reporting EOF to
+         * the host.  Repeated no-consume/no-output iterations are caught by
+         * stallCount/guard above. */
     }
 }
 
@@ -256,21 +285,45 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     tries = 0;
     while (state != FLAC_END_OF_METADATA && state != FLAC_ERR && tries < 2048) {
         uint32_t in_avail, out_avail;
-        FlacFillBuf(st);
+        uint32_t fed, consumed, produced;
+        if (!FlacFillBuf(st))
+            break;
         if (st->iobufPos >= st->iobufFill)
             break;
         in_avail  = (uint32_t)(st->iobufFill - st->iobufPos);
         out_avail = 0;
+        fed = in_avail;
         FLAC_DEBUG("flac-debug: open metadata before fx_flac_process bytes_available=%lu iobufFill=%lu iobufPos=%lu\n",
                (unsigned long)in_avail, st->iobufFill, st->iobufPos);
         state = fx_flac_process(st->flac, st->iobuf + st->iobufPos,
                                 &in_avail, NULL, &out_avail);
-        st->iobufPos += (unsigned long)in_avail;
+        consumed = in_avail;
+        produced = out_avail;
+        st->lastFlacState = (unsigned long)state;
+        st->lastBytesFed = (unsigned long)fed;
+        st->lastBytesConsumed = (unsigned long)consumed;
+        st->lastSamplesProduced = (unsigned long)produced;
+        if (consumed > fed) {
+            state = FLAC_ERR;
+            break;
+        }
+        st->iobufPos += (unsigned long)consumed;
+        if (consumed == 0 && produced == 0 && state != FLAC_ERR) {
+            st->stallCount++;
+            if (st->stallCount > FLAC_STALL_LIMIT) {
+                state = FLAC_ERR;
+                break;
+            }
+        } else {
+            st->stallCount = 0;
+        }
         FLAC_DEBUG("flac-debug: open metadata after fx_flac_process state=%s consumed=%lu produced=%lu iobufFill=%lu iobufPos=%lu\n",
-               FlacStateName(state), (unsigned long)in_avail,
-               (unsigned long)out_avail, st->iobufFill, st->iobufPos);
+               FlacStateName(state), (unsigned long)consumed,
+               (unsigned long)produced, st->iobufFill, st->iobufPos);
         tries++;
     }
+
+    st->stallCount = 0;
 
     if (state != FLAC_END_OF_METADATA) {
         FLAC_DEBUG("flac-debug: open result=failure streaminfo_parse_state=%s tries=%d eof=%d\n",
@@ -364,7 +417,7 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
                    (unsigned long)(st->outbufFill / (unsigned long)ch),
                    (unsigned long)(st->outbufPos / (unsigned long)ch),
                    st->done, st->eof, st->error);
-            if (!runRc)
+            if (runRc <= 0)
                 break;
         }
     }
