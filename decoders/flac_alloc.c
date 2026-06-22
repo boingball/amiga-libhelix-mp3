@@ -197,7 +197,12 @@ void _free_r(void *reent, void *ptr)
     FlacModuleFree(ptr);
 }
 
+#if defined(__GNUC__)
+void exit(int status) __attribute__((noreturn));
+#endif
 void exit(int status)
 {
     FlacModuleExit(status);
+    for (;;)
+        ;
 }
