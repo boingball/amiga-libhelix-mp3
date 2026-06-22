@@ -57,7 +57,7 @@ static void FlacExecFreeMem(void *ptr, unsigned long bytes)
 
 static void FlacModuleZero(void *ptr, unsigned long bytes)
 {
-    unsigned char *p = (unsigned char *)ptr;
+    volatile unsigned char *p = (volatile unsigned char *)ptr;
     while (bytes--)
         *p++ = 0;
 }
