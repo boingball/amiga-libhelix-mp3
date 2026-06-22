@@ -12,7 +12,7 @@
  * 24-bit FLAC is down-shifted to 16 bits automatically.
  */
 
-#include "../decoder_module.h"
+#include "decoder_module.h"
 
 /*
  * libfoxenflac header.  The library uses a "user-provided memory" pattern:
@@ -24,7 +24,7 @@
  *
  * Adjust the include path if the header lives elsewhere in the submodule.
  */
-#include "flac/foxen_flac.h"
+#include "flac/src/foxen-flac.h"
 
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
 #include <exec/types.h>

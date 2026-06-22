@@ -124,6 +124,11 @@ static const char *GuiStartupStageName(int stage)
 extern GuiPlaybackStatus gGuiPlaybackStatus;
 extern volatile int gMiniAmp3EmbeddedPlayback;
 
+/* Decoder module discovery (set at startup, read by playback subprocess). */
+extern char gDecoderModulesPath[512];
+/* ASL pattern covering mp3 + all discovered decoder extensions, e.g. "#?.(mp3|flac)" */
+static char gSupportedExtPattern[512];
+
 #ifdef MINIAMP3_DEBUG
 #ifndef MINIAMP3_DEBUG_FMT_PTR
 #if defined(AMIGA_M68K)
@@ -3690,9 +3695,129 @@ static void DrainWindowMessages(HelixAmp3Gui *gui)
 		GT_ReplyIMsg(msg);
 }
 
+/*
+ * ScanDecoderModules — find all *.decoder files in PROGDIR:decoders/, load
+ * each one briefly to read its extension list, then build:
+ *   gDecoderModulesPath  — absolute path for the playback subprocess
+ *   gSupportedExtPattern — AmigaDOS ASL pattern like "#?.(mp3|flac)"
+ */
+static void ScanDecoderModules(void)
+{
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	BPTR     progDir;
+	BPTR     lock;
+	struct FileInfoBlock *fib;
+	char     dirPath[512];
+	char     extList[256];   /* collected "mp3|flac|..." */
+	int      extLen;
+
+	extList[0] = '\0';
+	extLen     = 0;
+
+	/* Build path: PROGDIR:decoders/ */
+	progDir = GetProgramDir();
+	if (!progDir || !NameFromLock(progDir, (STRPTR)dirPath, (LONG)sizeof(dirPath))) {
+		/* Fallback: use PROGDIR: assign directly */
+		strncpy(dirPath, "PROGDIR:", sizeof(dirPath) - 12);
+		dirPath[sizeof(dirPath) - 12] = '\0';
+	} else {
+		/* Append trailing / if not already present */
+		{
+			int l = (int)strlen(dirPath);
+			if (l > 0 && dirPath[l - 1] != '/' && dirPath[l - 1] != ':') {
+				dirPath[l]     = '/';
+				dirPath[l + 1] = '\0';
+			}
+		}
+	}
+	strncat(dirPath, "decoders/", sizeof(dirPath) - strlen(dirPath) - 1);
+
+	strncpy(gDecoderModulesPath, dirPath, sizeof(gDecoderModulesPath) - 1);
+	gDecoderModulesPath[sizeof(gDecoderModulesPath) - 1] = '\0';
+
+	/* Always include mp3 as base */
+	strncpy(extList, "mp3", sizeof(extList) - 1);
+	extLen = 3;
+
+	lock = Lock((STRPTR)gDecoderModulesPath, ACCESS_READ);
+	if (lock) {
+		fib = (struct FileInfoBlock *)AllocMem(sizeof(*fib), MEMF_CLEAR);
+		if (fib && Examine(lock, fib)) {
+			while (ExNext(lock, fib)) {
+				const char *fname = fib->fib_FileName;
+				const char *dot = NULL;
+				const char *p;
+				BPTR seg;
+				char modPath[600];
+				int  dlen, flen;
+
+				for (p = fname; *p; p++)
+					if (*p == '.') dot = p;
+				if (!dot || strcmp(dot, ".decoder") != 0)
+					continue;
+
+				dlen = (int)strlen(gDecoderModulesPath);
+				flen = (int)strlen(fname);
+				if (dlen + flen + 1 >= (int)sizeof(modPath))
+					continue;
+				memcpy(modPath, gDecoderModulesPath, (size_t)dlen);
+				memcpy(modPath + dlen, fname, (size_t)(flen + 1));
+
+				seg = LoadSeg((STRPTR)modPath);
+				if (seg) {
+					typedef struct DecoderOps *(*EntFn)(void);
+					EntFn entry = (EntFn)((UBYTE *)BADDR(seg) + 4);
+					const struct DecoderOps *ops = entry();
+
+					if (ops && ops->info &&
+						ops->info->magic == DECODER_MODULE_MAGIC) {
+						const char *exts = ops->info->extensions;
+						while (exts && *exts) {
+							int elen = (int)strlen(exts);
+							if (extLen + 1 + elen + 1 < (int)sizeof(extList)) {
+								extList[extLen] = '|';
+								memcpy(extList + extLen + 1, exts, (size_t)(elen + 1));
+								extLen += 1 + elen;
+							}
+							exts += elen + 1;
+						}
+					}
+					UnLoadSeg(seg);
+				}
+			}
+			FreeMem(fib, sizeof(*fib));
+		}
+		UnLock(lock);
+	}
+
+	/* Build pattern: "#?.(mp3|flac)" or "#?.mp3" if only one */
+	if (strchr(extList, '|')) {
+		int written = 0;
+		written += snprintf(gSupportedExtPattern + written,
+			sizeof(gSupportedExtPattern) - (size_t)written,
+			"#?.(");
+		written += snprintf(gSupportedExtPattern + written,
+			sizeof(gSupportedExtPattern) - (size_t)written,
+			"%s", extList);
+		snprintf(gSupportedExtPattern + written,
+			sizeof(gSupportedExtPattern) - (size_t)written, ")");
+	} else {
+		snprintf(gSupportedExtPattern, sizeof(gSupportedExtPattern),
+			"#?.%s", extList);
+	}
+#else
+	strncpy(gSupportedExtPattern, "#?.mp3", sizeof(gSupportedExtPattern) - 1);
+	gSupportedExtPattern[sizeof(gSupportedExtPattern) - 1] = '\0';
+#endif
+}
+
 static int GuiOpen(HelixAmp3Gui *gui)
 {
 	struct NewWindow nw;
+
+	/* Discover decoder modules and build the ASL file-browser pattern first,
+	 * so gSupportedExtPattern and gDecoderModulesPath are ready for playback. */
+	ScanDecoderModules();
 
 	memset(gui, 0, sizeof(*gui));
 	gui->fastLowrate = LoadEnvInt("FastLowrate", 1, 0, 1);
@@ -4475,7 +4600,7 @@ static void HandlePlaylistPoll(HelixAmp3Gui *gui)
 				ASLFR_TitleText, (ULONG)"Add to playlist",
 				ASLFR_DoMultiSelect, TRUE,
 				ASLFR_DoPatterns, TRUE,
-				ASLFR_InitialPattern, (ULONG)"#?.mp3",
+				ASLFR_InitialPattern, (ULONG)gSupportedExtPattern,
 				ASLFR_InitialDrawer,
 					(ULONG)(gui->lastDrawer[0] ? gui->lastDrawer : NULL),
 				TAG_DONE);
@@ -4585,9 +4710,9 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 		CopyDrawerFromPath(gui->lastDrawer, sizeof(gui->lastDrawer),
 			gui->inputName);
 	req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
-		ASLFR_TitleText, (ULONG)"Select MP3 for MiniAMP3",
+		ASLFR_TitleText, (ULONG)"Select audio file for MiniAMP3",
 		ASLFR_DoPatterns, TRUE,
-		ASLFR_InitialPattern, (ULONG)"#?.mp3",
+		ASLFR_InitialPattern, (ULONG)gSupportedExtPattern,
 		ASLFR_InitialDrawer,
 			(ULONG)(gui->lastDrawer[0] ? gui->lastDrawer : NULL),
 		TAG_DONE);
@@ -4900,7 +5025,7 @@ static void StartPlayback(HelixAmp3Gui *gui)
 	struct Process *thisProc;
 
 	if (!gui->inputName[0]) {
-		SetStatus(gui, "Browse to an MP3 first.");
+		SetStatus(gui, "Browse to an audio file first.");
 		return;
 	}
 	if (gui->playbackActive || gui->playbackDonePending) {

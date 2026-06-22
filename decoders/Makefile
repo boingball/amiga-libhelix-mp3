@@ -25,21 +25,23 @@ FIXHUNKS := python3 ../tools/amiga_fast_preferred_hunks.py
 .PHONY: all flac clean
 
 # Build whichever modules have their upstream library checked out
-all: $(if $(wildcard flac/foxen_flac.h),flac,)
+all: $(if $(wildcard flac/src/foxen-flac.h),flac,)
 	@echo "Decoder build complete."
-	@if [ ! -f flac/foxen_flac.h ]; then \
-	    echo "  FLAC skipped: run 'git submodule add https://github.com/astoeckel/libfoxenflac flac'"; \
+	@if [ ! -f flac/src/foxen-flac.h ]; then \
+	    echo "  FLAC skipped: run 'git submodule update --init decoders/flac'"; \
 	fi
 
 # --------------------------------------------------------------------------
 # FLAC — libfoxenflac (https://github.com/astoeckel/libfoxenflac)
 # --------------------------------------------------------------------------
-FLAC_SRCS := flac_entry.c flac_module.c flac/foxen_flac.c
+FLAC_SRCS := flac_entry.c flac_module.c flac/src/foxen-flac.c
 
 flac: flac.decoder
 
-flac.decoder: $(FLAC_SRCS) decoder_module.h flac/foxen_flac.h
-	$(CC) $(CFLAGS) -Iflac -nostartfiles -o $@ $(FLAC_SRCS)
+FLAC_CFLAGS := $(filter-out -std=gnu89 -std=gnu11,$(CFLAGS)) -std=gnu99 -I. -Iflac/src
+
+flac.decoder: $(FLAC_SRCS) decoder_module.h flac/src/foxen-flac.h
+	$(CC) $(FLAC_CFLAGS) -nostartfiles -o $@ $(FLAC_SRCS)
 	$(FIXHUNKS) $@
 	@echo "Built $@"
 

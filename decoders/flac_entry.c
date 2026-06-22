@@ -6,7 +6,7 @@
  * Compile order: flac_entry.c flac_module.c flac/<foxen_flac.c>
  */
 
-#include "../decoder_module.h"
+#include "decoder_module.h"
 
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
 #include <exec/types.h>

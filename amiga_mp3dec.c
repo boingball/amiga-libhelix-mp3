@@ -261,6 +261,10 @@ int STATNAME(PolyphaseStereoFastLowrateStride2Reduced_HAS_AMIGA_M68K_ASM_RUNTIME
 #define READBUF_SIZE (1024 * 16)
 #define OUTBUF_SAMPS (MAX_NCHAN * MAX_NGRAN * MAX_NSAMP)
 
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+#include "decoders/decoder_module.h"
+#endif
+
 /* Fake-stereo (pseudo-stereo) widener parameters; see FakeStereo below. */
 #define FAKE_STEREO_MAX_DELAY 256
 #define FAKE_STEREO_DELAY_MASK (FAKE_STEREO_MAX_DELAY - 1)
@@ -4686,6 +4690,44 @@ static int SelftestMulshift(void)
  * quieter.)  delay is in output samples; larger shift = less cross-bleed = wider
  * (shift 0 collapses to mono).
  */
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+/* Path to the decoders/ directory (including trailing slash).
+ * Set by the GUI on startup so the playback subprocess can find modules. */
+char gDecoderModulesPath[512];
+#endif
+
+/* Returns pointer to the extension part of a filename (after the last dot),
+ * or NULL if there is no extension.  The returned pointer is into 'path'. */
+static const char *GetFileExtension(const char *path)
+{
+	const char *ext = NULL;
+	const char *p;
+
+	if (!path)
+		return NULL;
+	for (p = path; *p; p++) {
+		if (*p == '/' || *p == ':')
+			ext = NULL;
+		else if (*p == '.')
+			ext = p + 1;
+	}
+	return (ext && *ext) ? ext : NULL;
+}
+
+/* Case-insensitive string compare (portable; no strcasecmp in all environments) */
+static int StrCaseCmp(const char *a, const char *b)
+{
+	unsigned char ca, cb;
+
+	do {
+		ca = (unsigned char)*a++;
+		cb = (unsigned char)*b++;
+		if (ca >= 'A' && ca <= 'Z') ca += 32;
+		if (cb >= 'A' && cb <= 'Z') cb += 32;
+	} while (ca && ca == cb);
+	return (int)ca - (int)cb;
+}
+
 typedef struct FakeStereo {
 	short hist[FAKE_STEREO_MAX_DELAY];
 	int pos;
@@ -6938,6 +6980,782 @@ cleanup:
 	return err;
 }
 
+
+/* =========================================================================
+ * Generic decoder stream — bridges DecoderOps module vtable into the same
+ * Paula playback infrastructure used by the MP3 path.  Handles stereo and
+ * mono output, optional rate downsampling, and fake-stereo widening.
+ * ========================================================================= */
+
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+
+typedef struct GenericDecodeStream {
+	const struct DecoderOps *ops;
+	DecHandle                handle;
+	int                      channels;    /* as reported by ops->open()          */
+	int                      sampleRate;  /* native rate reported by the module  */
+	short                    decodeBuf[OUTBUF_SAMPS]; /* module output (S16 IL)  */
+	short                    writeBuf[OUTBUF_SAMPS];  /* post-processed S16      */
+	short                    rateBuf[OUTBUF_SAMPS];   /* rate-converted S16      */
+	union {
+		signed char interleaved[OUTBUF_SAMPS];
+		signed char planar[2][OUTBUF_SAMPS / 2];
+	} spill;
+	int                      spillPos;
+	int                      spillCount;
+	int                      planarSpillPos;
+	int                      planarSpillCount;
+	int                      outOfData;
+	int                      decodeError;
+	DecodeStats             *stats;
+	TimingStats             *timing;
+	RateState                rateState;
+	FakeStereo               fakeStereo;
+} GenericDecodeStream;
+
+static void GenericDecodeStreamInit(GenericDecodeStream *gs,
+	const struct DecoderOps *ops, DecHandle handle,
+	int channels, int sampleRate,
+	DecodeStats *stats, TimingStats *timing)
+{
+	memset(gs, 0, sizeof(*gs));
+	gs->ops        = ops;
+	gs->handle     = handle;
+	gs->channels   = channels > 2 ? 2 : (channels < 1 ? 1 : channels);
+	gs->sampleRate = sampleRate;
+	gs->stats      = stats;
+	gs->timing     = timing;
+}
+
+/* Max samples per channel to request from the module in one call.
+ * OUTBUF_SAMPS is sized for an MP3 frame (2 ch * 2 gran * 576 = 2304).
+ * We halve it so the interleaved output always fits in decodeBuf. */
+#define GENERIC_DECODE_CHUNK (OUTBUF_SAMPS / 2)
+
+/* --- Mono (interleaved S8) fill ----------------------------------------- */
+
+static int GenericDecodeStreamCopySpill(GenericDecodeStream *gs,
+	signed char *dest, int maxBytes, int *outBytes)
+{
+	int n;
+
+	if (gs->spillPos >= gs->spillCount) {
+		gs->spillPos   = 0;
+		gs->spillCount = 0;
+		return 0;
+	}
+	n = gs->spillCount - gs->spillPos;
+	if (n > maxBytes)
+		n = maxBytes;
+	memcpy(dest + *outBytes, gs->spill.interleaved + gs->spillPos, n);
+	gs->spillPos += n;
+	*outBytes    += n;
+	if (gs->spillPos >= gs->spillCount) {
+		gs->spillPos   = 0;
+		gs->spillCount = 0;
+	}
+	return n;
+}
+
+static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
+	const DecodeOptions *opt, signed char *dest, int maxBytes)
+{
+	int produced = 0;
+
+	GenericDecodeStreamCopySpill(gs, dest, maxBytes, &produced);
+
+	while (produced < maxBytes && !gs->outOfData && !gPlaybackInterrupted) {
+		DecLong nDecoded;
+		int     outSamps;
+		int     direct;
+		int     spill;
+		int     i;
+
+		nDecoded = gs->ops->decode(gs->handle, gs->decodeBuf, GENERIC_DECODE_CHUNK);
+
+#if defined(AMIGA_M68K)
+		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C)
+			gPlaybackInterrupted = 1;
+#endif
+		if (gPlaybackInterrupted)
+			break;
+
+		if (nDecoded < 0) {
+			gs->decodeError = 1;
+			gs->outOfData   = 1;
+			break;
+		}
+		if (nDecoded == 0) {
+			gs->outOfData = 1;
+			break;
+		}
+
+		/* Mix stereo → mono if necessary, or pass through mono */
+		if (gs->channels > 1) {
+			outSamps = MixFrame(gs->decodeBuf, gs->writeBuf,
+				(int)nDecoded * gs->channels, gs->channels, 1);
+		} else {
+			memcpy(gs->writeBuf, gs->decodeBuf,
+				(size_t)((int)nDecoded * (int)sizeof(short)));
+			outSamps = (int)nDecoded;
+		}
+
+		/* Optional rate downsampling (e.g. 44100 → 22050) */
+		if (!opt->fastLowrate && opt->outputRate > 0 &&
+			gs->sampleRate > opt->outputRate) {
+			outSamps = DownsampleFrame(&gs->rateState,
+				gs->writeBuf, gs->rateBuf,
+				outSamps, gs->sampleRate, opt->outputRate, 1);
+			memmove(gs->writeBuf, gs->rateBuf,
+				(size_t)((int)outSamps * (int)sizeof(short)));
+		}
+
+		if (gs->stats)
+			gs->stats->outputSamples += (unsigned long)outSamps;
+		if (gs->stats)
+			gs->stats->decodedFrames++;
+
+		/* Convert S16 → S8 directly into dest[], tail goes to spill */
+		direct = outSamps;
+		if (direct > maxBytes - produced)
+			direct = maxBytes - produced;
+		i = 0;
+		if (direct >= 4) {
+			int d4 = direct & ~3;
+			for (; i < d4; i += 4) {
+				dest[produced + i]     = Sample16ToS8(gs->writeBuf[i]);
+				dest[produced + i + 1] = Sample16ToS8(gs->writeBuf[i + 1]);
+				dest[produced + i + 2] = Sample16ToS8(gs->writeBuf[i + 2]);
+				dest[produced + i + 3] = Sample16ToS8(gs->writeBuf[i + 3]);
+			}
+		}
+		for (; i < direct; i++)
+			dest[produced + i] = Sample16ToS8(gs->writeBuf[i]);
+		produced += direct;
+
+		spill = outSamps - direct;
+		if (spill > 0) {
+			gs->spillPos   = 0;
+			gs->spillCount = spill;
+			for (i = 0; i < spill; i++)
+				gs->spill.interleaved[i] =
+					Sample16ToS8(gs->writeBuf[direct + i]);
+		}
+	}
+	return produced;
+}
+
+/* --- Stereo (planar S8) fill -------------------------------------------- */
+
+static int GenericDecodeStreamCopyPlanarSpill(GenericDecodeStream *gs,
+	signed char *left, signed char *right, int maxFrames, int *outFrames)
+{
+	int n;
+
+	if (gs->planarSpillPos >= gs->planarSpillCount) {
+		gs->planarSpillPos   = 0;
+		gs->planarSpillCount = 0;
+		return 0;
+	}
+	n = gs->planarSpillCount - gs->planarSpillPos;
+	if (n > maxFrames)
+		n = maxFrames;
+	memcpy(left  + *outFrames, gs->spill.planar[0] + gs->planarSpillPos, (size_t)n);
+	memcpy(right + *outFrames, gs->spill.planar[1] + gs->planarSpillPos, (size_t)n);
+	gs->planarSpillPos += n;
+	*outFrames         += n;
+	if (gs->planarSpillPos >= gs->planarSpillCount) {
+		gs->planarSpillPos   = 0;
+		gs->planarSpillCount = 0;
+	}
+	return n;
+}
+
+static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
+	const DecodeOptions *opt, signed char *left, signed char *right, int maxFrames)
+{
+	int produced = 0;
+
+	if (!gs->fakeStereo.configured)
+		FakeStereoInit(&gs->fakeStereo, opt->fakeStereo,
+			opt->fakeStereoDelay, opt->fakeStereoShift);
+
+	GenericDecodeStreamCopyPlanarSpill(gs, left, right, maxFrames, &produced);
+
+	while (produced < maxFrames && !gs->outOfData && !gPlaybackInterrupted) {
+		DecLong     nDecoded;
+		const short *pcm;
+		int          frames;
+		int          channels;
+		int          i;
+		int          direct;
+
+		nDecoded = gs->ops->decode(gs->handle, gs->decodeBuf, GENERIC_DECODE_CHUNK);
+
+#if defined(AMIGA_M68K)
+		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C)
+			gPlaybackInterrupted = 1;
+#endif
+		if (gPlaybackInterrupted)
+			break;
+
+		if (nDecoded < 0) {
+			gs->decodeError = 1;
+			gs->outOfData   = 1;
+			break;
+		}
+		if (nDecoded == 0) {
+			gs->outOfData = 1;
+			break;
+		}
+
+		channels = gs->channels;
+		frames   = (int)nDecoded;  /* samples per channel */
+		pcm      = gs->decodeBuf;
+
+		/* Optional rate downsampling — work in interleaved stereo */
+		if (!opt->fastLowrate && opt->outputRate > 0 &&
+			gs->sampleRate > opt->outputRate) {
+			if (channels == 1) {
+				/* Expand mono to interleaved-stereo for the resampler */
+				for (i = frames - 1; i >= 0; i--) {
+					gs->writeBuf[2 * i]     = gs->decodeBuf[i];
+					gs->writeBuf[2 * i + 1] = gs->decodeBuf[i];
+				}
+				pcm = gs->writeBuf;
+			}
+			frames = DownsampleFrame(&gs->rateState, pcm, gs->rateBuf,
+				frames * (channels == 1 ? 2 : channels),
+				gs->sampleRate, opt->outputRate, 2) / 2;
+			pcm      = gs->rateBuf;
+			channels = 2;
+		}
+
+		if (gs->stats)
+			gs->stats->decodedFrames++;
+		if (gs->stats)
+			gs->stats->outputSamples += (unsigned long)frames * 2UL;
+
+		/* De-interleave → planar S8 with FakeStereo support for mono sources */
+		direct = frames;
+		if (direct > maxFrames - produced)
+			direct = maxFrames - produced;
+
+		for (i = 0; i < direct; i++) {
+			short wl, wr;
+			if (channels >= 2) {
+				wl = pcm[2 * i];
+				wr = pcm[2 * i + 1];
+			} else if (gs->fakeStereo.enabled) {
+				FakeStereoProcess(&gs->fakeStereo, pcm[i], &wl, &wr);
+			} else {
+				wl = pcm[i];
+				wr = pcm[i];
+			}
+			left[produced  + i] = Sample16ToS8(wl);
+			right[produced + i] = Sample16ToS8(wr);
+		}
+
+		gs->planarSpillPos   = 0;
+		gs->planarSpillCount = frames - direct;
+		for (i = direct; i < frames; i++) {
+			int s = i - direct;
+			if (channels >= 2) {
+				gs->spill.planar[0][s] = Sample16ToS8(pcm[2 * i]);
+				gs->spill.planar[1][s] = Sample16ToS8(pcm[2 * i + 1]);
+			} else if (gs->fakeStereo.enabled) {
+				short wl, wr;
+				FakeStereoProcess(&gs->fakeStereo, pcm[i], &wl, &wr);
+				gs->spill.planar[0][s] = Sample16ToS8(wl);
+				gs->spill.planar[1][s] = Sample16ToS8(wr);
+			} else {
+				gs->spill.planar[0][s] = Sample16ToS8(pcm[i]);
+				gs->spill.planar[1][s] = gs->spill.planar[0][s];
+			}
+		}
+		produced += direct;
+	}
+	return produced;
+}
+
+/* Mirrors DecodeStreamFillPlaybackBuffer() but uses GenericDecodeStream */
+static unsigned long GenericDecodeStreamFillPlaybackBuffer(
+	GenericDecodeStream *gs, const DecodeOptions *opt,
+	AmigaAudioPlayer *player, int index,
+	signed char *buf, unsigned long maxBytes)
+{
+	if (gPlaybackInterrupted)
+		return 0;
+	if (opt->stereo) {
+		signed char *lbuf = player->splitWorkBuf[index][0] ?
+			player->splitWorkBuf[index][0] : player->splitBuf[index][0];
+		signed char *rbuf = player->splitWorkBuf[index][1] ?
+			player->splitWorkBuf[index][1] : player->splitBuf[index][1];
+		int frames;
+
+		if (!lbuf || !rbuf)
+			return 0;
+		frames = GenericDecodeStreamFillPlanarS8(gs, opt, lbuf, rbuf,
+			(int)(maxBytes / 2UL));
+		if (gPlaybackInterrupted)
+			return 0;
+		return (unsigned long)frames * 2UL;
+	}
+	{
+		int bytes = GenericDecodeStreamFillS8(gs, opt, buf, (int)maxBytes);
+		if (gPlaybackInterrupted || bytes < 0)
+			return 0;
+		return (unsigned long)bytes;
+	}
+}
+
+/* --- Module loading ------------------------------------------------------ */
+
+typedef struct LoadedDecoderModule {
+	BPTR                     segment;
+	const struct DecoderOps *ops;
+} LoadedDecoderModule;
+
+/* Scan gDecoderModulesPath for a module whose extension list matches ext.
+ * Returns non-zero and fills *out on success; caller must call
+ * UnloadDecoderModule() when done. */
+static int LoadDecoderModuleForExt(const char *ext,
+	LoadedDecoderModule *out)
+{
+	char path[600];
+	BPTR lock;
+	struct FileInfoBlock *fib;
+	BPTR seg;
+	DecoderModuleEntryFn entry;
+	const struct DecoderOps *ops;
+	const char *exts;
+
+	if (!gDecoderModulesPath[0] || !ext)
+		return 0;
+
+	lock = Lock((STRPTR)gDecoderModulesPath, ACCESS_READ);
+	if (!lock)
+		return 0;
+
+	fib = (struct FileInfoBlock *)AllocMem(sizeof(*fib), MEMF_CLEAR);
+	if (!fib) {
+		UnLock(lock);
+		return 0;
+	}
+
+	if (!Examine(lock, fib)) {
+		FreeMem(fib, sizeof(*fib));
+		UnLock(lock);
+		return 0;
+	}
+
+	while (ExNext(lock, fib)) {
+		const char *fname = fib->fib_FileName;
+		const char *dot;
+		/* We only care about *.decoder files */
+		dot = NULL;
+		{
+			const char *p;
+			for (p = fname; *p; p++)
+				if (*p == '.') dot = p;
+		}
+		if (!dot || StrCaseCmp(dot, ".decoder") != 0)
+			continue;
+
+		/* Build full path */
+		{
+			int dlen = (int)strlen(gDecoderModulesPath);
+			int flen = (int)strlen(fname);
+			if (dlen + flen + 1 >= (int)sizeof(path))
+				continue;
+			memcpy(path, gDecoderModulesPath, (size_t)dlen);
+			memcpy(path + dlen, fname, (size_t)(flen + 1));
+		}
+
+		seg = LoadSeg((STRPTR)path);
+		if (!seg)
+			continue;
+
+		entry = (DecoderModuleEntryFn)((unsigned char *)BADDR(seg) + 4);
+		ops   = entry();
+		if (!ops || ops->info->magic != DECODER_MODULE_MAGIC ||
+			ops->info->version > DECODER_MODULE_VERSION) {
+			UnLoadSeg(seg);
+			continue;
+		}
+
+		/* Walk the extension list: "flac\0fla\0\0" */
+		for (exts = ops->info->extensions; exts && *exts;
+			 exts += strlen(exts) + 1) {
+			if (StrCaseCmp(exts, ext) == 0) {
+				out->segment = seg;
+				out->ops     = ops;
+				FreeMem(fib, sizeof(*fib));
+				UnLock(lock);
+				return 1;
+			}
+		}
+
+		UnLoadSeg(seg);
+	}
+
+	FreeMem(fib, sizeof(*fib));
+	UnLock(lock);
+	return 0;
+}
+
+static void UnloadDecoderModule(LoadedDecoderModule *mod)
+{
+	if (mod && mod->segment) {
+		UnLoadSeg(mod->segment);
+		mod->segment = (BPTR)0;
+		mod->ops     = NULL;
+	}
+}
+
+/* I/O callbacks backed by the existing InputSource ----------------------- */
+
+static DecLong DecModReadCb(void *userData, unsigned char *buf, DecULong maxBytes)
+{
+	return (DecLong)InputSourceRead((InputSource *)userData, buf, (size_t)maxBytes);
+}
+
+static DecLong DecModSeekCb(void *userData, DecLong offset, int whence)
+{
+	InputSource *src = (InputSource *)userData;
+	unsigned long pos;
+
+	if (whence == 0) {              /* SEEK_SET */
+		if (offset < 0) return -1;
+		pos = (unsigned long)offset;
+	} else if (whence == 1) {       /* SEEK_CUR */
+		unsigned long cur = InputSourceTell(src);
+		if (offset < 0 && (unsigned long)(-(long)offset) > cur) return -1;
+		pos = (unsigned long)((long)cur + offset);
+	} else {
+		return -1;                  /* SEEK_END not supported */
+	}
+	InputSourceSeek(src, pos);
+	return 0;
+}
+
+/* --- AmigaPlayStreamingGeneric ------------------------------------------ */
+
+/*
+ * Streaming playback path for non-MP3 formats.  Mirrors AmigaPlayStreaming()
+ * but uses a GenericDecodeStream backed by a DecoderOps vtable.  The module
+ * has already been opened (ops->open called) before this is invoked.
+ */
+static int AmigaPlayStreamingGeneric(InputSource *input,
+	const struct DecoderOps *ops, DecHandle handle,
+	const struct DecoderStreamInfo *sinfo,
+	const DecodeOptions *opt, DecodeStats *stats, TimingStats *timing)
+{
+	GenericDecodeStream      stream;
+	AmigaAudioPlayer         player;
+	PlaybackCleanupStatus    cleanupStatus;
+	unsigned int             period;
+	unsigned long            bufBytes;
+	unsigned long            requestedBytes;
+	signed char             *buf[3];
+	unsigned long            len[3];
+	unsigned long            playbackChannels;
+	unsigned long            halfMilliseconds;
+	int                      playbackRate;
+	int                      active;
+	int                      decodeAhead;
+	int                      initialDecodeSlots;
+	int                      liveSlots;
+	int                      refill;
+	int                      err;
+
+	(void)input;  /* module handles its own I/O via callbacks */
+
+	memset(&player, 0, sizeof(player));
+	PlaybackCleanupStatusInit(&cleanupStatus);
+	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_BUFFERING;
+	buf[0] = NULL; buf[1] = NULL; buf[2] = NULL;
+	len[0] = 0;    len[1] = 0;    len[2] = 0;
+	err = -1;
+
+	playbackRate = opt->outputRate > 0 ? opt->outputRate : (int)sinfo->sampleRate;
+	if (playbackRate <= 0)
+		playbackRate = 8287;
+
+	stats->sampleRate      = (int)sinfo->sampleRate;
+	stats->channels        = (int)sinfo->channels;
+	stats->outputSampleRate = playbackRate;
+	gGuiPlaybackStatus.sampleRate  = playbackRate;
+	gGuiPlaybackStatus.effectiveRate = playbackRate;
+	gGuiPlaybackStatus.requestedRate = opt->outputRate;
+
+	GuiPublishStartupStage(GUISTART_STREAM_INIT);
+	if (AmigaPlaybackStopRequested(opt, "before generic stream init"))
+		goto cleanup;
+
+	GenericDecodeStreamInit(&stream, ops, handle,
+		(int)sinfo->channels, (int)sinfo->sampleRate, stats, timing);
+
+	period = AmigaPalAudioPeriod(playbackRate);
+	gGuiPlaybackStatus.paulaPeriod = period;
+	printf("play output rate: %d Hz (source: %lu Hz, %u ch)\n",
+		playbackRate, sinfo->sampleRate, sinfo->channels);
+
+	requestedBytes = PlaybackRequestedChunkBytes(opt, playbackRate);
+	gGuiPlaybackStatus.requestedBytes = requestedBytes;
+
+	GuiPublishStartupStage(GUISTART_AUDIO_SETUP);
+	if (AmigaPlaybackStopRequested(opt, "before generic audio setup"))
+		goto cleanup;
+
+	if (AmigaSetupPlaybackBuffers(&player, opt, period, requestedBytes,
+		opt->stereo ? 2UL : 1UL, 0, buf, &bufBytes, &cleanupStatus) != 0)
+		goto cleanup;
+
+	halfMilliseconds = PlaybackBufferDurationMilliseconds(opt, bufBytes, playbackRate);
+	gGuiPlaybackStatus.halfBufferMs = halfMilliseconds;
+
+	if (AmigaPlaybackStopRequested(opt, "after generic audio setup"))
+		goto cleanup;
+
+	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_BUFFERING;
+	playbackChannels   = opt->stereo ? 2UL : 1UL;
+	liveSlots          = AmigaAudioLiveSlots(opt->stereo);
+	decodeAhead        = opt->stereo ? 2 : -1;
+	initialDecodeSlots = opt->stereo ? AMIGA_STEREO_DECODE_SLOTS : liveSlots;
+
+	for (active = 0; active < initialDecodeSlots; active++) {
+		GuiPublishStartupStage(active == 0 ? GUISTART_FILL_BUFFER_A :
+			GUISTART_FILL_BUFFER_B);
+		if (gPlaybackInterrupted)
+			goto cleanup;
+
+		len[active] = GenericDecodeStreamFillPlaybackBuffer(&stream, opt,
+			&player, active, buf[active], bufBytes);
+
+		if (gPlaybackInterrupted)
+			goto cleanup;
+		GuiPublishStartupStage(active == 0 ? GUISTART_FILL_BUFFER_A_DONE :
+			GUISTART_FILL_BUFFER_B_DONE);
+
+		if (stream.decodeError)
+			goto cleanup;
+		if (active == 0 && (len[0] == 0 || len[0] / playbackChannels == 0)) {
+			fprintf(stderr, "generic decoder: first buffer fill produced zero bytes\n");
+			goto cleanup;
+		}
+		if (len[active] == 0)
+			break;
+		if (active < liveSlots) {
+			GuiPublishStartupStage(active == 0 ? GUISTART_PREPARE_A :
+				GUISTART_PREPARE_B);
+			if (gPlaybackInterrupted)
+				goto cleanup;
+			if (AmigaAudioPreparePlaybackBuffer(&player, active,
+				buf[active], len[active]) != 0)
+				goto cleanup;
+		}
+	}
+
+	if (active == 0)
+		goto cleanup;
+	for (refill = 0; refill < active && refill < liveSlots; refill++) {
+		if (gPlaybackInterrupted)
+			goto cleanup;
+		if (refill == 0)
+			GuiPublishStartupStage(GUISTART_COMMIT_A);
+		if (AmigaAudioCommitPlaybackBuffer(&player, refill) != 0)
+			goto cleanup;
+	}
+	GuiPublishStartupStage(GUISTART_PLAYING);
+	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
+	err = 0;
+
+	active = 0;
+	while (err == 0 && !gPlaybackInterrupted && player.sent[active][0]) {
+		clock_t       waitStartedAt;
+		clock_t       refillFinishedAt;
+		unsigned long elapsedMilliseconds;
+		unsigned long activeMilliseconds;
+		long          spareMilliseconds;
+		int           justFreed;
+		int           underrun;
+		int           late;
+
+#if defined(AMIGA_M68K)
+		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C) {
+			gPlaybackInterrupted = 1;
+			break;
+		}
+#endif
+		waitStartedAt = clock();
+		if (gPlaybackInterrupted)
+			break;
+		underrun = AmigaAudioDone(&player, active);
+		if (AmigaAudioWait(&player, active) != 0) {
+			err = -1;
+			break;
+		}
+#if defined(AMIGA_M68K)
+		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C) {
+			gPlaybackInterrupted = 1;
+			break;
+		}
+#endif
+		justFreed = active;
+		if (opt->stereo) {
+			activeMilliseconds = PlaybackBufferDurationMilliseconds(opt,
+				len[decodeAhead], playbackRate);
+			if (len[decodeAhead] == 0) {
+				active = (active + 1) % liveSlots;
+				break;
+			}
+			if (AmigaAudioCopyStereoDecodeAheadToSlot(&player, justFreed,
+				decodeAhead, len[decodeAhead]) != 0) {
+				err = -1;
+				break;
+			}
+			len[justFreed] = len[decodeAhead];
+		} else {
+			activeMilliseconds = PlaybackBufferDurationMilliseconds(opt,
+				len[justFreed], playbackRate);
+			if (gPlaybackInterrupted)
+				break;
+			len[justFreed] = GenericDecodeStreamFillPlaybackBuffer(&stream, opt,
+				&player, justFreed, buf[justFreed], bufBytes);
+			if (stream.decodeError) {
+				err = -1;
+				break;
+			}
+			if (len[justFreed] == 0) {
+				active = (active + 1) % liveSlots;
+				break;
+			}
+		}
+
+		if (gPlaybackInterrupted)
+			break;
+		if (AmigaAudioPreparePlaybackBuffer(&player, justFreed, buf[justFreed],
+			len[justFreed]) != 0 ||
+			AmigaAudioCommitPlaybackBuffer(&player, justFreed) != 0) {
+			err = -1;
+			break;
+		}
+		if (opt->stereo) {
+			if (gPlaybackInterrupted)
+				break;
+			len[decodeAhead] = GenericDecodeStreamFillPlaybackBuffer(&stream, opt,
+				&player, decodeAhead, buf[decodeAhead], bufBytes);
+			if (stream.decodeError) {
+				err = -1;
+				break;
+			}
+		}
+		refillFinishedAt = clock();
+
+		active = (active + 1) % liveSlots;
+		elapsedMilliseconds = PlaybackElapsedMilliseconds(waitStartedAt, refillFinishedAt);
+		spareMilliseconds   = (long)activeMilliseconds - (long)elapsedMilliseconds;
+		late = (spareMilliseconds < 0) || underrun;
+		if (!stats->spareTimeMeasured || spareMilliseconds < stats->minimumSpareMilliseconds) {
+			stats->minimumSpareMilliseconds = spareMilliseconds;
+			stats->spareTimeMeasured = 1;
+		}
+		if (late)
+			stats->lateBuffers++;
+		if (underrun) {
+			stats->underruns++;
+			stats->underrunBuffers[justFreed]++;
+		}
+		gGuiPlaybackStatus.spareMs       = spareMilliseconds;
+		gGuiPlaybackStatus.underruns     = stats->underruns;
+		gGuiPlaybackStatus.decodedFrames = stats->decodedFrames;
+		if (underrun)
+			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_UNDERRUN;
+		else if (gGuiPlaybackStatus.phase == GUIPLAY_PHASE_UNDERRUN)
+			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
+	}
+
+cleanup:
+	AmigaAudioClose(&player, &cleanupStatus, opt);
+	return err;
+}
+
+/*
+ * AmigaGenericFormatPlay — self-contained non-MP3 playback path.
+ *
+ * Opens the file, finds a matching decoder module from gDecoderModulesPath,
+ * probes the stream, runs AmigaPlayStreamingGeneric(), then cleans up.
+ * Called from HelixAmp3CliMain() when the input extension is not ".mp3".
+ */
+static int AmigaGenericFormatPlay(const char *filename, const char *ext,
+	const DecodeOptions *opt, DecodeStats *stats)
+{
+	BPTR                  amigaFile = (BPTR)0;
+	InputSource           input;
+	LoadedDecoderModule   mod;
+	struct DecoderStreamInfo sinfo;
+	DecHandle             handle = NULL;
+	int                   ret = 1;
+
+	memset(&mod,   0, sizeof(mod));
+	memset(&sinfo, 0, sizeof(sinfo));
+
+	GuiPublishStartupStage(GUISTART_INPUT_OPEN);
+	if (AmigaPlaybackStopRequested(opt, "before generic input open"))
+		return 1;
+
+	GuiPublishStartupStage(GUISTART_INPUT_FOPEN_BEFORE);
+	amigaFile = Open((STRPTR)filename, MODE_OLDFILE);
+	GuiPublishStartupStage(GUISTART_INPUT_FOPEN_AFTER);
+	if (!amigaFile) {
+		fprintf(stderr, "cannot open input: %s\n", filename);
+		return 1;
+	}
+	InputSourceInitAmigaDos(&input, amigaFile);
+	amigaFile = (BPTR)0;
+
+	if (AmigaPlaybackStopRequested(opt, "after generic input open"))
+		goto done_input;
+
+	/* Find and load the decoder module */
+	if (!LoadDecoderModuleForExt(ext, &mod)) {
+		fprintf(stderr, "no decoder module found for .%s files\n", ext);
+		goto done_input;
+	}
+
+	/* Open the stream — module probes headers and reports format */
+	GuiPublishStartupStage(GUISTART_INPUT_PREPARE);
+	handle = mod.ops->open(DecModReadCb, DecModSeekCb, &input, &sinfo);
+	if (!handle) {
+		fprintf(stderr, "decoder module failed to open: %s\n", filename);
+		goto done_module;
+	}
+
+	if (AmigaPlaybackStopRequested(opt, "after generic stream open"))
+		goto done_handle;
+
+	printf("generic decoder: %s  %lu Hz  %u ch  %u-bit\n",
+		mod.ops->info->name,
+		sinfo.sampleRate, sinfo.channels, sinfo.bitsPerSample);
+
+	GuiPublishStartupStage(GUISTART_DECODER_ALLOC);
+	gMiniAmp3RequestedVolume = (unsigned short)opt->volumePercent;
+	gMiniAmp3VolumeSequence++;
+
+	ret = AmigaPlayStreamingGeneric(&input, mod.ops, handle, &sinfo,
+		opt, stats, NULL);
+
+done_handle:
+	mod.ops->close(handle);
+done_module:
+	UnloadDecoderModule(&mod);
+done_input:
+	InputSourceClose(&input);
+	return ret ? 1 : 0;
+}
+
+#endif /* HAVE_AMIGA_AUDIO_DEVICE */
 static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 	const DecodeOptions *opt, DecodeStats *stats, TimingStats *timing)
 {
@@ -7616,6 +8434,16 @@ int main(int argc, char **argv)
 	gGuiPlaybackStatus.requestedRate = opt.outputRate;
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
 	if (opt.play) {
+		/* If the file extension is not .mp3, try a generic decoder module. */
+		{
+			const char *ext = GetFileExtension(opt.inName);
+			if (ext && StrCaseCmp(ext, "mp3") != 0) {
+				int gret = AmigaGenericFormatPlay(opt.inName, ext, &opt, &stats);
+				free(resolvedOutName);
+				AmigaFreeNormalizedArgs(&normalized);
+				return gret;
+			}
+		}
 		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_BEFORE);
 		amigaInputFile = Open((STRPTR)opt.inName, MODE_OLDFILE);
 		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_AFTER);

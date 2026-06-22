@@ -46,7 +46,7 @@ HALFASM_TEST_CPPFLAGS := -DAMIGA_M68K_ASM_FDCT32
 FAST030_ASM_SOURCES := real/amiga_m68k_polyphase.S
 AMIGA_HUNK_FAST_PREFERRED := python3 tools/amiga_fast_preferred_hunks.py
 
-.PHONY: all fast030 prof030 gui fast030-halfasm-test gui-halfasm-test clean print-command print-fast030-command print-gui-command
+.PHONY: all fast030 prof030 gui fast030-halfasm-test gui-halfasm-test decoder-modules clean print-command print-fast030-command print-gui-command
 
 all: $(TARGET)
 
@@ -102,5 +102,13 @@ print-fast030-command:
 	@printf '%s\n' '$(CC) $(FAST030_CFLAGS) $(CPPFLAGS_COMMON) $(FAST030_CPPFLAGS) $(EXTRA_CFLAGS) -o $(FAST030_TARGET) $(SOURCES) $(FAST030_ASM_SOURCES)'
 	@printf '%s\n' '$(AMIGA_HUNK_FAST_PREFERRED) $(FAST030_TARGET)'
 
+# Build all decoder modules (FLAC etc.) — requires upstream submodules cloned
+decoder-modules:
+	$(MAKE) -C decoders \
+		CC="$(CC)" \
+		CPU="$(CPU)" \
+		CFLAGS="$(CFLAGS_COMMON) $(CPPFLAGS_COMMON)"
+
 clean:
 	rm -f $(TARGET) $(FAST030_TARGET) $(FAST030_HALFASM_TEST_TARGET) $(GUI_TARGET) $(GUI_HALFASM_TEST_TARGET)
+	$(MAKE) -C decoders clean
