@@ -7044,6 +7044,7 @@ typedef struct GenericDecodeStream {
 	TimingStats             *timing;
 	RateState                rateState;
 	FakeStereo               fakeStereo;
+	int                      firstFillDebugPrinted;
 } GenericDecodeStream;
 
 static void GenericDecodeStreamInit(GenericDecodeStream *gs,
@@ -7064,6 +7065,12 @@ static void GenericDecodeStreamInit(GenericDecodeStream *gs,
  * OUTBUF_SAMPS is sized for an MP3 frame (2 ch * 2 gran * 576 = 2304).
  * We halve it so the interleaved output always fits in decodeBuf. */
 #define GENERIC_DECODE_CHUNK (OUTBUF_SAMPS / 2)
+#ifndef GENERIC_STARTUP_DECODE_CALL_GUARD
+#define GENERIC_STARTUP_DECODE_CALL_GUARD 128
+#endif
+#ifndef GENERIC_FLAC_TEST_HALF_BUFFER_BYTES
+#define GENERIC_FLAC_TEST_HALF_BUFFER_BYTES 0UL
+#endif
 
 /* --- Mono (interleaved S8) fill ----------------------------------------- */
 
@@ -7227,6 +7234,14 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 	const DecodeOptions *opt, signed char *left, signed char *right, int maxFrames)
 {
 	int produced = 0;
+	int decodeCalls = 0;
+	int firstFill = !gs->firstFillDebugPrinted;
+	short min16 = 32767;
+	short max16 = -32768;
+	signed char min8 = 127;
+	signed char max8 = -128;
+	unsigned long nonzero8 = 0;
+	int haveDiag = 0;
 
 	if (!gs->fakeStereo.configured)
 		FakeStereoInit(&gs->fakeStereo, opt->fakeStereo,
@@ -7244,8 +7259,14 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 
 		if (AmigaPlaybackStopRequested(opt, "inside generic stereo decode loop"))
 			break;
+		if (firstFill && decodeCalls >= GENERIC_STARTUP_DECODE_CALL_GUARD) {
+			fprintf(stderr, "generic decoder: startup fill exceeded decode-call guard\n");
+			gs->decodeError = 1;
+			break;
+		}
 
 		nDecoded = gs->ops->decode(gs->handle, gs->decodeBuf, GENERIC_DECODE_CHUNK);
+		decodeCalls++;
 
 #if defined(AMIGA_M68K)
 		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C)
@@ -7314,6 +7335,7 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 
 		for (i = 0; i < direct; i++) {
 			short wl, wr;
+			signed char sl, sr;
 			if (channels >= 2) {
 				wl = pcm[2 * i];
 				wr = pcm[2 * i + 1];
@@ -7323,9 +7345,29 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 				wl = pcm[i];
 				wr = pcm[i];
 			}
-			left[produced  + i] = Sample16ToS8(wl);
-			right[produced + i] = Sample16ToS8(wr);
+			if (firstFill) {
+				if (wl < min16) min16 = wl;
+				if (wl > max16) max16 = wl;
+				if (wr < min16) min16 = wr;
+				if (wr > max16) max16 = wr;
+			}
+			sl = Sample16ToS8(wl);
+			sr = Sample16ToS8(wr);
+			left[produced  + i] = sl;
+			right[produced + i] = sr;
+			if (firstFill) {
+				if (sl < min8) min8 = sl;
+				if (sl > max8) max8 = sl;
+				if (sr < min8) min8 = sr;
+				if (sr > max8) max8 = sr;
+				if (sl != 0) nonzero8++;
+				if (sr != 0) nonzero8++;
+				haveDiag = 1;
+			}
 		}
+		printf("generic-debug: planar loop rcFrames=%ld bytesWrittenThisIteration=%ld totalBytesWritten=%ld targetBufBytes=%ld enough=%d\n",
+			(long)nDecoded, (long)direct * 2L, (long)(produced + direct) * 2L,
+			(long)maxFrames * 2L, produced + direct >= maxFrames ? 1 : 0);
 
 		gs->planarSpillPos   = 0;
 		gs->planarSpillCount = frames - direct;
@@ -7346,6 +7388,19 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 		}
 		produced += direct;
 	}
+	if (firstFill) {
+		int i;
+		gs->firstFillDebugPrinted = 1;
+		if (!haveDiag) {
+			min16 = max16 = 0;
+			min8 = max8 = 0;
+		}
+		printf("generic-debug: first buffer diagnostics s16Min=%ld s16Max=%ld s8Min=%ld s8Max=%ld nonzeroBytes=%lu first16=",
+			(long)min16, (long)max16, (long)min8, (long)max8, nonzero8);
+		for (i = 0; i < 16 && i < produced; i++)
+			printf("%s%ld", i ? "," : "", (long)left[i]);
+		printf("\n");
+	}
 	return produced;
 }
 
@@ -7355,6 +7410,10 @@ static unsigned long GenericDecodeStreamFillPlaybackBuffer(
 	AmigaAudioPlayer *player, int index,
 	signed char *buf, unsigned long maxBytes)
 {
+	const char *fillPath = opt->stereo ? "planar-s8-stereo" : "interleaved-s8-mono";
+	printf("generic-debug: fill entry bufBytes=%lu sourceChannels=%ld outputStereo=%d outputRate=%ld sourceRate=%ld path=%s\n",
+		maxBytes, (long)gs->channels, opt->stereo ? 1 : 0,
+		(long)opt->outputRate, (long)gs->sampleRate, fillPath);
 	if (gPlaybackInterrupted)
 		return 0;
 	if (opt->stereo) {
@@ -7625,6 +7684,12 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 		playbackRate, sinfo->sampleRate, sinfo->channels);
 
 	requestedBytes = PlaybackRequestedChunkBytes(opt, playbackRate);
+	if (GENERIC_FLAC_TEST_HALF_BUFFER_BYTES > 0UL &&
+		requestedBytes > GENERIC_FLAC_TEST_HALF_BUFFER_BYTES) {
+		printf("generic-debug: forcing generic test half-buffer bytes from %lu to %lu\n",
+			requestedBytes, (unsigned long)GENERIC_FLAC_TEST_HALF_BUFFER_BYTES);
+		requestedBytes = GENERIC_FLAC_TEST_HALF_BUFFER_BYTES;
+	}
 	gGuiPlaybackStatus.requestedBytes = requestedBytes;
 
 	GuiPublishStartupStage(GUISTART_AUDIO_SETUP);
@@ -7657,6 +7722,8 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 
 		len[active] = GenericDecodeStreamFillPlaybackBuffer(&stream, opt,
 			&player, active, buf[active], bufBytes);
+		if (active == 0)
+			printf("generic-debug: startup buffer 0 filled len=%lu\n", len[active]);
 		startupFillAttempts++;
 		if (len[active] == 0 && !stream.outOfData && !stream.decodeError &&
 			(startupFillAttempts >= GENERIC_STARTUP_TIMEOUT_ITERATIONS ||
@@ -7700,6 +7767,7 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 
 	if (active == 0)
 		goto cleanup;
+	printf("generic-debug: starting audio playback\n");
 	for (refill = 0; refill < active && refill < liveSlots; refill++) {
 		if (gPlaybackInterrupted)
 			goto cleanup;
