@@ -11,6 +11,8 @@
 #include "flac_alloc.h"
 #include "flac/src/foxen-flac.h"
 
+#include <stdio.h>
+
 static void *ModuleAlloc(unsigned long bytes)
 {
     return FlacModuleCalloc(1, (size_t)bytes);
@@ -32,6 +34,18 @@ static void ModuleFree(void *ptr, unsigned long bytes)
 
 /* Output sample buffer capacity: full block * channels (interleaved int32_t) */
 #define FLAC_OUT_CAP ((unsigned long)(FLAC_BLK) * (unsigned long)(FLAC_CH))
+#define FLAC_STALL_LIMIT 64
+
+static const char *FlacStateName(fx_flac_state_t state)
+{
+    switch (state) {
+    case FLAC_INIT: return "FLAC_INIT";
+    case FLAC_END_OF_METADATA: return "FLAC_END_OF_METADATA";
+    case FLAC_DECODED_FRAME: return "FLAC_DECODED_FRAME";
+    case FLAC_ERR: return "FLAC_ERR";
+    default: return "FLAC_STATE_UNKNOWN";
+    }
+}
 
 typedef struct FlacState {
     void         *flacMem;   /* original AllocMem result for flac state */
@@ -56,6 +70,7 @@ typedef struct FlacState {
     int  eof;
     int  error;
     int  done;
+    unsigned long stallCount;
 } FlacState;
 
 /* Refill iobuf from file if the current buffer is exhausted. */
@@ -86,6 +101,9 @@ static int FlacRunDecoder(FlacState *st)
         uint32_t in_avail;
         uint32_t out_avail;
         fx_flac_state_t state;
+        uint32_t fed;
+        uint32_t produced;
+        int noProgress;
 
         if (!FlacFillBuf(st)) {
             st->done = 1;
@@ -94,6 +112,7 @@ static int FlacRunDecoder(FlacState *st)
 
         in_avail  = (uint32_t)(st->iobufFill - st->iobufPos);
         out_avail = (uint32_t)FLAC_OUT_CAP;
+        fed = in_avail;
 
         state = fx_flac_process(st->flac,
                                 st->iobuf + st->iobufPos,
@@ -101,8 +120,26 @@ static int FlacRunDecoder(FlacState *st)
                                 st->outbuf,
                                 &out_avail);
 
-        /* in_avail is now bytes consumed */
+        /* in_avail is now bytes consumed; out_avail is samples produced */
+        produced = out_avail;
         st->iobufPos += (unsigned long)in_avail;
+
+        printf("flac-debug: decode state=%s fed=%lu consumed=%lu samples=%lu eof=%d error=%d done=%d\n",
+               FlacStateName(state), (unsigned long)fed, (unsigned long)in_avail,
+               (unsigned long)produced, st->eof, st->error, st->done);
+
+        noProgress = (in_avail == 0 && produced == 0 && state != FLAC_ERR);
+        if (noProgress) {
+            st->stallCount++;
+            if (st->stallCount > FLAC_STALL_LIMIT) {
+                printf("flac-debug: decoder stalled state=%s fed=%lu eof=%d\n",
+                       FlacStateName(state), (unsigned long)fed, st->eof);
+                st->error = 1;
+                return 0;
+            }
+        } else {
+            st->stallCount = 0;
+        }
 
         if (state == FLAC_ERR) {
             st->error = 1;
@@ -179,9 +216,15 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
             break;
         in_avail  = (uint32_t)(st->iobufFill - st->iobufPos);
         out_avail = 0;
-        state = fx_flac_process(st->flac, st->iobuf + st->iobufPos,
-                                &in_avail, NULL, &out_avail);
-        st->iobufPos += (unsigned long)in_avail;
+        {
+            uint32_t fed = in_avail;
+            state = fx_flac_process(st->flac, st->iobuf + st->iobufPos,
+                                    &in_avail, NULL, &out_avail);
+            st->iobufPos += (unsigned long)in_avail;
+            printf("flac-debug: open state=%s fed=%lu consumed=%lu samples=%lu eof=%d error=%d done=%d\n",
+                   FlacStateName(state), (unsigned long)fed, (unsigned long)in_avail,
+                   (unsigned long)out_avail, st->eof, st->error, st->done);
+        }
         tries++;
     }
 
@@ -198,7 +241,10 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     ss  = fx_flac_get_streaminfo(st->flac, FLAC_KEY_SAMPLE_SIZE);
     ns  = fx_flac_get_streaminfo(st->flac, FLAC_KEY_N_SAMPLES);
 
-    if (sr <= 0 || nch <= 0 || nch > (int64_t)FLAC_CH) {
+    printf("flac-debug: open streaminfo sampleRate=%ld channels=%ld bitsPerSample=%ld totalSamples=%ld\n",
+           (long)sr, (long)nch, (long)ss, (long)ns);
+
+    if (sr <= 0 || nch <= 0 || nch > (int64_t)FLAC_CH || ss <= 0) {
         ModuleFree(st->outbuf,  FLAC_OUT_CAP * sizeof(int32_t));
         ModuleFree(st->iobuf,   FLAC_IO_CAP);
         ModuleFree(st->flacMem, flacSize);
@@ -226,7 +272,11 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
     int32_t      *src;
     short        *dst;
 
-    if (!st || st->error || st->done)
+    if (!st)
+        return -1;
+    if (st->error)
+        return -1;
+    if (st->done)
         return 0;
 
     ch = st->channels;
@@ -254,6 +304,10 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
             break;
     }
 
+    printf("flac-debug: decode callback framesReturned=%ld eof=%d error=%d done=%d\n",
+           (long)produced, st->eof, st->error, st->done);
+    if (st->error)
+        return -1;
     return (DecLong)produced;
 }
 
