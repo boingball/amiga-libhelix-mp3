@@ -340,6 +340,7 @@ typedef struct DecodeOptions {
 	int debugPlay;
 	int debugTone;
 	int debugCleanup;
+	int debugDecoder;
 	int play;
 	int stereo;
 	int fakeStereo;
@@ -749,6 +750,7 @@ static void PrintUsage(const char *prog)
 	printf("  --debug-play print audio.device playback startup diagnostics\n");
 	printf("  --debug-tone submit a generated signed-8 Paula test tone through --play audio path\n");
 	printf("  --debug-cleanup print playback resource cleanup diagnostics\n");
+	printf("  --debug-decoder print generic decoder module/rate diagnostics\n");
 	printf("  --debug-argv print argc/argv after Amiga argument normalization\n");
 	printf("  --show-argv  alias for --debug-argv\n");
 	printf("\n");
@@ -842,6 +844,9 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	opt->volumePercent = 100;
 	opt->fakeStereoDelay = FAKE_STEREO_DEFAULT_DELAY;
 	opt->fakeStereoShift = FAKE_STEREO_DEFAULT_SHIFT;
+#if defined(DEBUG_DECODER) && DEBUG_DECODER
+	opt->debugDecoder = 1;
+#endif
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--mono")) {
@@ -1034,6 +1039,8 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->outFormat = OUT_S8;
 		} else if (!strcmp(argv[i], "--debug-cleanup")) {
 			opt->debugCleanup = 1;
+		} else if (!strcmp(argv[i], "--debug-decoder")) {
+			opt->debugDecoder = 1;
 		} else if (!strcmp(argv[i], "--debug-argv") ||
 			!strcmp(argv[i], "--show-argv")) {
 			opt->debugArgv = 1;
@@ -7243,7 +7250,7 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 		if (gPlaybackInterrupted)
 			break;
 
-		printf("generic-debug: decode rc=%ld pcmSamples=%ld stopRequested=%d zeroOutput=%d eof=%d error=%d\n",
+		if (opt->debugDecoder) printf("generic-debug: decode rc=%ld pcmSamples=%ld stopRequested=%d zeroOutput=%d eof=%d error=%d\n",
 			(long)nDecoded, (long)(nDecoded > 0 ? nDecoded : 0),
 			gPlaybackInterrupted ? 1 : 0, gs->consecutiveZeroOutput,
 			gs->outOfData, gs->decodeError);
@@ -7255,7 +7262,7 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 		}
 		if (nDecoded == 0) {
 			gs->consecutiveZeroOutput++;
-			printf("generic-debug: zero-output decode count=%d stopRequested=%d\n",
+			if (opt->debugDecoder) printf("generic-debug: zero-output decode count=%d stopRequested=%d\n",
 				gs->consecutiveZeroOutput, gPlaybackInterrupted ? 1 : 0);
 			if (AmigaPlaybackStopRequested(opt, "after generic mono zero-output decode"))
 				break;
@@ -7320,6 +7327,12 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 				gs->spill.interleaved[i] =
 					Sample16ToS8(gs->writeBuf[direct + i]);
 		}
+		if (opt->debugDecoder)
+			printf("generic-debug: mono summary sourceRate=%ld outputRate=%ld sourceFramesDecoded=%ld outputFramesWritten=%ld outputBytesWritten=%ld ratio=%ld/%ld phase=%lu\n",
+				(long)gs->sampleRate, (long)(opt->outputRate > 0 ? opt->outputRate : gs->sampleRate),
+				(long)nDecoded, (long)direct, (long)direct,
+				(long)gs->sampleRate, (long)(opt->outputRate > 0 ? opt->outputRate : gs->sampleRate),
+				gs->rateState.phase);
 	}
 	return produced;
 }
@@ -7395,7 +7408,7 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 		if (gPlaybackInterrupted)
 			break;
 
-		printf("generic-debug: decode rc=%ld pcmSamples=%ld stopRequested=%d zeroOutput=%d eof=%d error=%d\n",
+		if (opt->debugDecoder) printf("generic-debug: decode rc=%ld pcmSamples=%ld stopRequested=%d zeroOutput=%d eof=%d error=%d\n",
 			(long)nDecoded, (long)(nDecoded > 0 ? nDecoded : 0),
 			gPlaybackInterrupted ? 1 : 0, gs->consecutiveZeroOutput,
 			gs->outOfData, gs->decodeError);
@@ -7407,7 +7420,7 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 		}
 		if (nDecoded == 0) {
 			gs->consecutiveZeroOutput++;
-			printf("generic-debug: zero-output decode count=%d stopRequested=%d\n",
+			if (opt->debugDecoder) printf("generic-debug: zero-output decode count=%d stopRequested=%d\n",
 				gs->consecutiveZeroOutput, gPlaybackInterrupted ? 1 : 0);
 			if (AmigaPlaybackStopRequested(opt, "after generic stereo zero-output decode"))
 				break;
@@ -7485,9 +7498,13 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 				haveDiag = 1;
 			}
 		}
-		printf("generic-debug: planar loop rcFrames=%ld bytesWrittenThisIteration=%ld totalBytesWritten=%ld targetBufBytes=%ld enough=%d\n",
-			(long)nDecoded, (long)direct * 2L, (long)(produced + direct) * 2L,
-			(long)maxFrames * 2L, produced + direct >= maxFrames ? 1 : 0);
+		if (opt->debugDecoder)
+			printf("generic-debug: planar summary sourceRate=%ld outputRate=%ld sourceFramesDecoded=%ld outputFramesWritten=%ld outputBytesWritten=%ld totalBytesWritten=%ld targetBufBytes=%ld ratio=%ld/%ld phase=%lu enough=%d\n",
+				(long)gs->sampleRate, (long)(opt->outputRate > 0 ? opt->outputRate : gs->sampleRate),
+				(long)nDecoded, (long)direct, (long)direct * 2L,
+				(long)(produced + direct) * 2L, (long)maxFrames * 2L,
+				(long)gs->sampleRate, (long)(opt->outputRate > 0 ? opt->outputRate : gs->sampleRate),
+				gs->rateState.phase, produced + direct >= maxFrames ? 1 : 0);
 
 		gs->planarSpillPos   = 0;
 		gs->planarSpillCount = frames - direct;
@@ -7515,11 +7532,11 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 			min16 = max16 = 0;
 			min8 = max8 = 0;
 		}
-		printf("generic-debug: first buffer diagnostics s16Min=%ld s16Max=%ld s8Min=%ld s8Max=%ld nonzeroBytes=%lu first16=",
+		if (opt->debugDecoder) printf("generic-debug: first buffer diagnostics s16Min=%ld s16Max=%ld s8Min=%ld s8Max=%ld nonzeroBytes=%lu first16=",
 			(long)min16, (long)max16, (long)min8, (long)max8, nonzero8);
 		for (i = 0; i < 16 && i < produced; i++)
-			printf("%s%ld", i ? "," : "", (long)left[i]);
-		printf("\n");
+			if (opt->debugDecoder) printf("%s%ld", i ? "," : "", (long)left[i]);
+		if (opt->debugDecoder) printf("\n");
 	}
 	return produced;
 }
@@ -7531,7 +7548,7 @@ static unsigned long GenericDecodeStreamFillPlaybackBuffer(
 	signed char *buf, unsigned long maxBytes)
 {
 	const char *fillPath = opt->stereo ? "planar-s8-stereo" : "interleaved-s8-mono";
-	printf("generic-debug: fill entry bufBytes=%lu sourceChannels=%ld outputStereo=%d outputRate=%ld sourceRate=%ld path=%s\n",
+	if (opt->debugDecoder) printf("generic-debug: fill entry bufBytes=%lu sourceChannels=%ld outputStereo=%d outputRate=%ld sourceRate=%ld path=%s\n",
 		maxBytes, (long)gs->channels, opt->stereo ? 1 : 0,
 		(long)opt->outputRate, (long)gs->sampleRate, fillPath);
 	if (gPlaybackInterrupted)
@@ -7549,7 +7566,7 @@ static unsigned long GenericDecodeStreamFillPlaybackBuffer(
 			(int)(maxBytes / 2UL));
 		if (gPlaybackInterrupted)
 			return 0;
-		printf("generic-debug: fill return combinedBytes=%lu perChannelBytes=%lu signedness=signed-8 center=0 matches-mp3-Sample16ToS8\n",
+		if (opt->debugDecoder) printf("generic-debug: fill return combinedBytes=%lu perChannelBytes=%lu signedness=signed-8 center=0 matches-mp3-Sample16ToS8\n",
 			(unsigned long)frames * 2UL, (unsigned long)frames);
 		return (unsigned long)frames * 2UL;
 	}
@@ -7572,7 +7589,7 @@ typedef struct LoadedDecoderModule {
  * Returns non-zero and fills *out on success; caller must call
  * UnloadDecoderModule() when done. */
 static int LoadDecoderModuleForExt(const char *ext,
-	LoadedDecoderModule *out)
+	LoadedDecoderModule *out, int debugDecoder)
 {
 	char path[600];
 	BPTR lock;
@@ -7585,17 +7602,20 @@ static int LoadDecoderModuleForExt(const char *ext,
 	InitDecoderModulesPath();
 
 	if (!gDecoderModulesPath[0] || !ext) {
-		fprintf(stderr, "decoder module discovery: no decoder directory configured\n");
+		if (debugDecoder)
+			fprintf(stderr, "decoder module discovery: no decoder directory configured\n");
 		return 0;
 	}
 
-	fprintf(stderr, "decoder module discovery: searching %s for .%s\n",
-		gDecoderModulesPath, ext);
+	if (debugDecoder)
+		fprintf(stderr, "decoder module discovery: searching %s for .%s\n",
+			gDecoderModulesPath, ext);
 
 	lock = Lock((STRPTR)gDecoderModulesPath, ACCESS_READ);
 	if (!lock) {
-		fprintf(stderr, "decoder module discovery: cannot lock %s (IoErr=%ld)\n",
-			gDecoderModulesPath, (long)IoErr());
+		if (debugDecoder)
+			fprintf(stderr, "decoder module discovery: cannot lock %s (IoErr=%ld)\n",
+				gDecoderModulesPath, (long)IoErr());
 		return 0;
 	}
 
@@ -7635,50 +7655,60 @@ static int LoadDecoderModuleForExt(const char *ext,
 		}
 
 		seg = LoadSeg((STRPTR)path);
-		fprintf(stderr, "decoder module discovery: trying %s\n", path);
+		if (debugDecoder)
+			fprintf(stderr, "decoder module discovery: trying %s\n", path);
 		if (!seg) {
-			fprintf(stderr, "decoder module discovery: LoadSeg failed for %s (IoErr=%ld)\n",
-				path, (long)IoErr());
+			if (debugDecoder)
+				fprintf(stderr, "decoder module discovery: LoadSeg failed for %s (IoErr=%ld)\n",
+					path, (long)IoErr());
 			continue;
 		}
 
 		entry = (DecoderModuleEntryFn)((unsigned char *)BADDR(seg) + 4);
 		ops   = entry();
 		if (!ops || !ops->info) {
-			fprintf(stderr, "decoder module discovery: %s has no DecoderOps/info\n",
+			if (debugDecoder)
+				fprintf(stderr, "decoder module discovery: %s has no DecoderOps/info\n",
 				path);
 			UnLoadSeg(seg);
 			continue;
 		}
 		if (ops->info->magic != DECODER_MODULE_MAGIC ||
 			ops->info->version > DECODER_MODULE_VERSION) {
-			fprintf(stderr, "decoder module discovery: %s ABI mismatch (magic=%08lx version=%lu)\n",
+			if (debugDecoder)
+				fprintf(stderr, "decoder module discovery: %s ABI mismatch (magic=%08lx version=%lu)\n",
 				path, (unsigned long)ops->info->magic,
 				(unsigned long)ops->info->version);
 			UnLoadSeg(seg);
 			continue;
 		}
 
-		fprintf(stderr, "decoder module discovery: loaded %s name=\"%s\" abi=%u revision=%u flags=%lu\n",
+		if (debugDecoder)
+			fprintf(stderr, "decoder module discovery: loaded %s name=\"%s\" abi=%u revision=%u flags=%lu\n",
 			path, ops->info->name ? ops->info->name : "(null)",
 			(unsigned int)ops->info->version,
 			(unsigned int)ops->info->revision,
 			(unsigned long)ops->info->flags);
 
 		/* Walk the extension list: "flac\0fla\0\0" */
-		fprintf(stderr, "decoder module discovery: %s registers extensions:", path);
+		if (debugDecoder)
+			fprintf(stderr, "decoder module discovery: %s registers extensions:", path);
 		for (exts = ops->info->extensions; exts && *exts;
 			 exts += strlen(exts) + 1) {
-			fprintf(stderr, " %s", exts);
+			if (debugDecoder)
+				fprintf(stderr, " %s", exts);
 			if (StrCaseCmp(exts, ext) == 0) {
-				fprintf(stderr, "\n");
+				if (debugDecoder)
+					fprintf(stderr, "\n");
 				if (StrCaseCmp(ext, "flac") == 0 || StrCaseCmp(ext, "fla") == 0) {
 					if (strcmp(path, EXPECTED_FLAC_DECODER_PATH) == 0) {
-						fprintf(stderr, "decoder module discovery: FLAC loader path verified: %s\n",
-							path);
+						if (debugDecoder)
+							fprintf(stderr, "decoder module discovery: FLAC loader path verified: %s\n",
+								path);
 					} else {
-						fprintf(stderr, "decoder module discovery: FLAC loader path WARNING: loaded %s, expected %s\n",
-							path, EXPECTED_FLAC_DECODER_PATH);
+						if (debugDecoder)
+							fprintf(stderr, "decoder module discovery: FLAC loader path WARNING: loaded %s, expected %s\n",
+								path, EXPECTED_FLAC_DECODER_PATH);
 					}
 				}
 				out->segment = seg;
@@ -7688,7 +7718,8 @@ static int LoadDecoderModuleForExt(const char *ext,
 				return 1;
 			}
 		}
-		fprintf(stderr, "\n");
+		if (debugDecoder)
+			fprintf(stderr, "\n");
 
 		UnLoadSeg(seg);
 	}
@@ -7808,7 +7839,7 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 	requestedBytes = PlaybackRequestedChunkBytes(opt, playbackRate);
 	if (GENERIC_FLAC_TEST_HALF_BUFFER_BYTES > 0UL &&
 		requestedBytes > GENERIC_FLAC_TEST_HALF_BUFFER_BYTES) {
-		printf("generic-debug: forcing generic test half-buffer bytes from %lu to %lu\n",
+		if (opt->debugDecoder) printf("generic-debug: forcing generic test half-buffer bytes from %lu to %lu\n",
 			requestedBytes, (unsigned long)GENERIC_FLAC_TEST_HALF_BUFFER_BYTES);
 		requestedBytes = GENERIC_FLAC_TEST_HALF_BUFFER_BYTES;
 	}
@@ -7866,7 +7897,7 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 		len[active] = GenericDecodeStreamFillPlaybackBuffer(&stream, opt,
 			&player, active, buf[active], bufBytes);
 		if (active == 0)
-			printf("generic-debug: startup buffer 0 filled len=%lu\n", len[active]);
+			if (opt->debugDecoder) printf("generic-debug: startup buffer 0 filled len=%lu\n", len[active]);
 		startupFillAttempts++;
 		if (len[active] == 0 && !stream.outOfData && !stream.decodeError &&
 			(startupFillAttempts >= GENERIC_STARTUP_TIMEOUT_ITERATIONS ||
@@ -7910,7 +7941,7 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 
 	if (active == 0)
 		goto cleanup;
-	printf("generic-debug: starting audio playback\n");
+	if (opt->debugDecoder) printf("generic-debug: starting audio playback\n");
 	for (refill = 0; refill < active && refill < liveSlots; refill++) {
 		if (gPlaybackInterrupted)
 			goto cleanup;
@@ -8071,7 +8102,7 @@ static int AmigaGenericFormatPlay(const char *filename, const char *ext,
 		goto done_input;
 
 	/* Find and load the decoder module */
-	if (!LoadDecoderModuleForExt(ext, &mod)) {
+	if (!LoadDecoderModuleForExt(ext, &mod, opt->debugDecoder)) {
 		fprintf(stderr, "no decoder module found for .%s files\n", ext);
 		goto done_input;
 	}
