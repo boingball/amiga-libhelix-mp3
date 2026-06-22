@@ -4,8 +4,9 @@
  * FLAC modules are linked with -nostartfiles and loaded with LoadSeg(), so
  * pulling the C runtime allocator can introduce startup/exit dependencies that
  * are not available to standalone decoder hunks.  This file provides the small
- * malloc/free/calloc/realloc/exit surface needed by third-party decoder code and
- * backs it with Exec AllocMem/FreeMem for Amiga builds.
+ * malloc/free/calloc/realloc surface needed by third-party decoder code and
+ * backs it with Exec AllocMem/FreeMem for Amiga builds without referencing the
+ * CRT SysBase/DOSBase globals.
  */
 
 #define FLAC_ALLOC_IMPLEMENTATION
@@ -17,13 +18,42 @@
 
 #include <exec/types.h>
 #include <exec/memory.h>
-#include <proto/exec.h>
-
-extern struct ExecBase *SysBase;
 
 typedef struct FlacAllocHeader {
     unsigned long size;
 } FlacAllocHeader;
+
+static void *gFlacExecBase;
+
+void FlacModuleSetExecBase(void *execBase)
+{
+    gFlacExecBase = execBase;
+}
+
+static void *FlacExecAllocMem(unsigned long bytes, unsigned long flags)
+{
+    register void *a6 __asm("a6") = gFlacExecBase;
+    register unsigned long d0 __asm("d0") = bytes;
+    register unsigned long d1 __asm("d1") = flags;
+
+    __asm volatile ("jsr a6@(-198:W)"
+                    : "+r" (d0)
+                    : "r" (d1), "r" (a6)
+                    : "a0", "a1", "d2", "cc", "memory");
+    return (void *)d0;
+}
+
+static void FlacExecFreeMem(void *ptr, unsigned long bytes)
+{
+    register void *a6 __asm("a6") = gFlacExecBase;
+    register void *a1 __asm("a1") = ptr;
+    register unsigned long d0 __asm("d0") = bytes;
+
+    __asm volatile ("jsr a6@(-210:W)"
+                    :
+                    : "r" (a1), "r" (d0), "r" (a6)
+                    : "a0", "d1", "d2", "cc", "memory");
+}
 
 static void FlacModuleZero(void *ptr, unsigned long bytes)
 {
@@ -46,10 +76,10 @@ void *FlacModuleMalloc(size_t bytes)
     unsigned long total = payload + (unsigned long)sizeof(FlacAllocHeader);
     FlacAllocHeader *hdr;
 
-    if (total < payload)
+    if (total < payload || !gFlacExecBase)
         return NULL;
 
-    hdr = (FlacAllocHeader *)AllocMem(total, MEMF_FAST | MEMF_CLEAR);
+    hdr = (FlacAllocHeader *)FlacExecAllocMem(total, MEMF_FAST | MEMF_CLEAR);
     if (!hdr)
         return NULL;
 
@@ -103,7 +133,7 @@ void FlacModuleFree(void *ptr)
 
     hdr = ((FlacAllocHeader *)ptr) - 1;
     total = hdr->size + (unsigned long)sizeof(FlacAllocHeader);
-    FreeMem(hdr, total);
+    FlacExecFreeMem(hdr, total);
 }
 
 void FlacModuleExit(int status)
@@ -114,10 +144,9 @@ void FlacModuleExit(int status)
 }
 
 /*
- * Provide libc-compatible symbol names for third-party FLAC code that calls
- * malloc/free directly.  Because these definitions are part of the decoder
- * module, the linker does not need to pull malloc.o or exit/_exit support from
- * the C runtime.
+ * Provide libc-compatible allocation symbol names for third-party FLAC code
+ * that calls them directly.  These definitions live in the decoder module so
+ * the linker does not need libc allocator objects.
  */
 void *malloc(size_t bytes)
 {
@@ -137,11 +166,4 @@ void *realloc(void *ptr, size_t bytes)
 void free(void *ptr)
 {
     FlacModuleFree(ptr);
-}
-
-void exit(int status)
-{
-    (void)status;
-    for (;;)
-        ;
 }

@@ -8,15 +8,11 @@
 
 #include "decoder_module.h"
 
-#include <stdio.h>
 
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
-#include <exec/types.h>
-#include <exec/execbase.h>
-
-/* SysBase must be set before any exec library calls (AllocMem etc.)     */
-/* We define it here so every file in this module sees the same instance. */
-struct ExecBase *SysBase;
+/* Exec base is kept in flac_alloc.c under a private symbol so the decoder
+ * does not export or link the usual CRT SysBase/DOSBase globals. */
+extern void FlacModuleSetExecBase(void *execBase);
 #endif
 
 /* Forward declaration — defined in flac_module.c */
@@ -30,9 +26,7 @@ extern struct DecoderOps gFlacOps;
 struct DecoderOps *DecoderModuleEntry(void)
 {
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
-    SysBase = *((struct ExecBase **)4L);
+    FlacModuleSetExecBase(*((void **)4L));
 #endif
-    printf("FLAC MODULE BUILD MARKER 12345\n");
-    fflush(stdout);
     return &gFlacOps;
 }
