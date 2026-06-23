@@ -25,7 +25,9 @@
 
 /* PCM output: one decoded frame (1024 samples * 2 channels max).
  * SBR doubles to 2048 samples/ch, but SBR is disabled in this build. */
-#define AAC_OUT_CAP  (1024UL * 2UL)
+/* Leave margin for decoders that can report larger frames (for example SBR
+ * builds producing 2048 samples/ch stereo).  Capacity is interleaved shorts. */
+#define AAC_OUT_CAP  (2048UL * 2UL)
 
 /* Refill the I/O buffer when fewer than this many bytes remain.
  * AAC_MAINBUF_SIZE guarantees at least one full frame fits after refill. */
@@ -164,7 +166,8 @@ static int AacDecodeFrame(AacState *st)
     }
 
     AACGetLastFrameInfo(st->aacHandle, &fi);
-    if (fi.outputSamps <= 0 || fi.nChans != st->channels)
+    if (fi.outputSamps <= 0 || fi.nChans != st->channels ||
+        (unsigned long)fi.outputSamps > AAC_OUT_CAP)
         return -1;
 
     st->outbufFill = (unsigned long)fi.outputSamps;
@@ -178,6 +181,8 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     AacState    *st;
     AACFrameInfo fi;
     int          offset, err;
+
+    if (!readFn || !infoOut) return NULL;
 
     st = (AacState *)ModuleAlloc(sizeof(AacState));
     if (!st) return NULL;
@@ -200,11 +205,18 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     st->aacHandle = AACInitDecoder();
     if (!st->aacHandle) { AacFreeState(st); return NULL; }
 
-    /* Prime buffer and find first sync word */
-    if (!AacRefillBuf(st)) { AacFreeState(st); return NULL; }
+    /* Prime buffer and find first ADTS sync word.  Do not feed MP4/M4A
+     * container data or empty/unsynchronised input into AACDecode(). */
+    if (!AacRefillBuf(st) || !st->iobufReadPtr || st->iobufLeft < 2) {
+        AacFreeState(st); return NULL;
+    }
+    if (st->iobufReadPtr[0] != 0xff ||
+        (st->iobufReadPtr[1] != 0xf1 && st->iobufReadPtr[1] != 0xf9)) {
+        AacFreeState(st); return NULL;
+    }
 
     offset = AACFindSyncWord(st->iobufReadPtr, st->iobufLeft);
-    if (offset < 0) { AacFreeState(st); return NULL; }
+    if (offset < 0 || offset >= st->iobufLeft) { AacFreeState(st); return NULL; }
     st->iobufReadPtr += offset;
     st->iobufLeft    -= offset;
 
@@ -217,7 +229,8 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
 
     AACGetLastFrameInfo(st->aacHandle, &fi);
     if (fi.nChans <= 0 || fi.sampRateOut <= 0 ||
-        fi.nChans > 2  || fi.outputSamps <= 0) {
+        fi.nChans > 2  || fi.outputSamps <= 0 ||
+        (unsigned long)fi.outputSamps > AAC_OUT_CAP) {
         AacFreeState(st); return NULL;
     }
 
@@ -241,7 +254,7 @@ static DecLong AacDecode(DecHandle handle, short *outBuf,
     DecULong     produced = 0;
     unsigned long ch;
 
-    if (!st)       return -1;
+    if (!st || !outBuf || maxSamplesPerChan == 0) return -1;
     if (st->error) return -1;
     if (st->done)  return 0;
 
