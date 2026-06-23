@@ -7186,6 +7186,7 @@ typedef struct GenericDecodeStream {
 	RateState                rateState;
 	FakeStereo               fakeStereo;
 	int                      firstFillDebugPrinted;
+	int                      firstDecodeDebugPrinted;
 } GenericDecodeStream;
 
 static void GenericDecodeStreamInit(GenericDecodeStream *gs,
@@ -7300,7 +7301,16 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 		if (AmigaPlaybackStopRequested(opt, "inside generic mono decode loop"))
 			break;
 
+		if (opt->debugDecoder && !gs->firstDecodeDebugPrinted)
+			fprintf(stderr, "generic-debug: first decode call entered maxSamplesPerChan=%lu\n",
+				(unsigned long)GENERIC_DECODE_CHUNK);
 		nDecoded = gs->ops->decode(gs->handle, gs->decodeBuf, GENERIC_DECODE_CHUNK);
+		if (opt->debugDecoder && !gs->firstDecodeDebugPrinted) {
+			fprintf(stderr, "generic-debug: first decode call result rc=%ld pcmSamplesProduced=%ld sampleRate=%ld channels=%ld\n",
+				(long)nDecoded, (long)(nDecoded > 0 ? nDecoded : 0),
+				(long)gs->sampleRate, (long)gs->channels);
+			gs->firstDecodeDebugPrinted = 1;
+		}
 
 #if defined(AMIGA_M68K)
 		if (SetSignal(0, 0) & SIGBREAKF_CTRL_C)
@@ -7456,7 +7466,16 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 			break;
 		}
 
+		if (opt->debugDecoder && !gs->firstDecodeDebugPrinted)
+			fprintf(stderr, "generic-debug: first decode call entered maxSamplesPerChan=%lu\n",
+				(unsigned long)GENERIC_DECODE_CHUNK);
 		nDecoded = gs->ops->decode(gs->handle, gs->decodeBuf, GENERIC_DECODE_CHUNK);
+		if (opt->debugDecoder && !gs->firstDecodeDebugPrinted) {
+			fprintf(stderr, "generic-debug: first decode call result rc=%ld pcmSamplesProduced=%ld sampleRate=%ld channels=%ld\n",
+				(long)nDecoded, (long)(nDecoded > 0 ? nDecoded : 0),
+				(long)gs->sampleRate, (long)gs->channels);
+			gs->firstDecodeDebugPrinted = 1;
+		}
 		decodeCalls++;
 
 #if defined(AMIGA_M68K)
@@ -7640,6 +7659,7 @@ static unsigned long GenericDecodeStreamFillPlaybackBuffer(
 typedef struct LoadedDecoderModule {
 	BPTR                     segment;
 	const struct DecoderOps *ops;
+	char                     path[600];
 } LoadedDecoderModule;
 
 /* Scan gDecoderModulesPath for a module whose extension list matches ext.
@@ -7722,7 +7742,11 @@ static int LoadDecoderModuleForExt(const char *ext,
 		}
 
 		entry = (DecoderModuleEntryFn)((unsigned char *)BADDR(seg) + 4);
+		if (debugDecoder)
+			fprintf(stderr, "decoder module discovery: entry pointer=%p\n", (void *)entry);
 		ops   = entry();
+		if (debugDecoder)
+			fprintf(stderr, "decoder module discovery: ops pointer=%p\n", (void *)ops);
 		if (!ops || !ops->info) {
 			if (debugDecoder)
 				fprintf(stderr, "decoder module discovery: %s has no DecoderOps/info\n",
@@ -7770,6 +7794,8 @@ static int LoadDecoderModuleForExt(const char *ext,
 				}
 				out->segment = seg;
 				out->ops     = ops;
+				strncpy(out->path, path, sizeof(out->path) - 1);
+				out->path[sizeof(out->path) - 1] = '\0';
 				FreeMem(fib, sizeof(*fib));
 				UnLock(lock);
 				return 1;
@@ -7792,6 +7818,7 @@ static void UnloadDecoderModule(LoadedDecoderModule *mod)
 		UnLoadSeg(mod->segment);
 		mod->segment = (BPTR)0;
 		mod->ops     = NULL;
+		mod->path[0] = '\0';
 	}
 }
 
@@ -7819,6 +7846,38 @@ static DecLong DecModSeekCb(void *userData, DecLong offset, int whence)
 	}
 	InputSourceSeek(src, pos);
 	return 0;
+}
+
+
+static int ValidateAacAdtsInput(InputSource *input, int debugDecoder)
+{
+	unsigned char probe[16];
+	unsigned long pos;
+	size_t nRead;
+	int i;
+
+	pos = InputSourceTell(input);
+	nRead = InputSourceRead(input, probe, sizeof(probe));
+	InputSourceSeek(input, pos);
+
+	if (debugDecoder) {
+		fprintf(stderr, "generic-debug: input bytes available=%lu first16=", (unsigned long)nRead);
+		for (i = 0; i < (int)nRead; i++)
+			fprintf(stderr, "%s%02lx", i ? " " : "", (unsigned long)probe[i]);
+		fprintf(stderr, "\n");
+	}
+
+	if (nRead >= 8 && probe[4] == 'f' && probe[5] == 't' &&
+		probe[6] == 'y' && probe[7] == 'p') {
+		fprintf(stderr, "Unsupported AAC container - ADTS .aac only\n");
+		return 0;
+	}
+	if (nRead < 2 || probe[0] != 0xff ||
+		(probe[1] != 0xf1 && probe[1] != 0xf9)) {
+		fprintf(stderr, "Unsupported AAC container - ADTS .aac only\n");
+		return 0;
+	}
+	return 1;
 }
 
 /* --- AmigaPlayStreamingGeneric ------------------------------------------ */
@@ -8158,15 +8217,35 @@ static int AmigaGenericFormatPlay(const char *filename, const char *ext,
 	if (AmigaPlaybackStopRequested(opt, "after generic input open"))
 		goto done_input;
 
+	if (opt->debugDecoder)
+		fprintf(stderr, "generic-debug: selected file extension=.%s decoder type=%s\n",
+			ext ? ext : "(null)", (ext && StrCaseCmp(ext, "mp3") == 0) ? "internal-mp3" : "external-module");
+	if (ext && StrCaseCmp(ext, "aac") == 0 && !ValidateAacAdtsInput(&input, opt->debugDecoder)) {
+		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+		gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
+		goto done_input;
+	}
+
 	/* Find and load the decoder module */
 	if (!LoadDecoderModuleForExt(ext, &mod, opt->debugDecoder)) {
 		fprintf(stderr, "no decoder module found for .%s files\n", ext);
 		goto done_input;
 	}
 
+	if (opt->debugDecoder)
+		fprintf(stderr, "generic-debug: decoder module path/name=%s/%s load=success entry ops=%p\n",
+			mod.path[0] ? mod.path : "(unknown)",
+			(mod.ops && mod.ops->info && mod.ops->info->name) ? mod.ops->info->name : "(null)",
+			(void *)mod.ops);
+
 	/* Open the stream — module probes headers and reports format */
 	GuiPublishStartupStage(GUISTART_INPUT_PREPARE);
+	if (opt->debugDecoder)
+		fprintf(stderr, "generic-debug: AAC/open init entering inputPos=%lu\n", InputSourceTell(&input));
 	handle = mod.ops->open(DecModReadCb, DecModSeekCb, &input, &sinfo);
+	if (opt->debugDecoder)
+		fprintf(stderr, "generic-debug: AAC/open init result handle=%p sampleRate=%lu channels=%u bits=%u\n",
+			(void *)handle, sinfo.sampleRate, sinfo.channels, sinfo.bitsPerSample);
 	if (!handle) {
 		fprintf(stderr, "decoder module failed to open: %s\n", filename);
 		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
