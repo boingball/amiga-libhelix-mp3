@@ -16,7 +16,7 @@
 #include "aac_alloc.h"
 #include "aac/aacdec.h"
 
-#define AAC_MODULE_BUILD_ID "AAC MODULE BUILD MARKER 12345 rev 2"
+#define AAC_MODULE_BUILD_ID "AAC MODULE BUILD MARKER 12345 rev 3"
 
 /* Compressed input ring buffer.  Must hold at least two maximum ADTS frames
  * (AAC_MAINBUF_SIZE = 768*2 = 1536 bytes each) to guarantee AACDecode always
@@ -251,7 +251,8 @@ static int AacDecodeFrame(AacState *st)
         return -1;
     }
 
-    /* Store total interleaved shorts; decode() converts to ABI sample frames. */
+    /* Store total interleaved shorts only.  Do not multiply by channels here;
+     * decode() divides by channels when returning ABI sample frames. */
     st->outbufFill = (unsigned long)fi.outputSamps;
     st->outbufPos  = 0;
     return 1;

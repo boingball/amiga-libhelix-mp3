@@ -7320,13 +7320,22 @@ static void GenericPrintFirstDecodePcmDebug(const GenericDecodeStream *gs,
 	}
 
 	fprintf(stderr,
-		"generic-debug: first decoded PCM channels=%ld bitsPerSample=%ld moduleFrames=%ld moduleTotalSamples=%ld moduleBytes=%ld calculatedFrames=%ld calculatedBytes=%ld first16=",
+		"generic-debug: first decoded PCM channels=%ld bitsPerSample=%ld moduleFrames=%ld moduleTotalSamples=%ld moduleBytes=%ld calculatedFrames=%ld calculatedBytes=%ld min16=%ld max16=%ld first16=",
 		(long)gs->channels, (long)gs->bitsPerSample, frames, totalSamples, calculatedBytes,
-		frames, calculatedBytes);
+		frames, calculatedBytes, (long)minSample, (long)maxSample);
 	for (i = 0; i < 16 && i < totalSamples; i++)
 		fprintf(stderr, "%s%ld", i ? "," : "", (long)gs->decodeBuf[i]);
-	fprintf(stderr, " minSample=%ld maxSample=%ld\n",
-		(long)minSample, (long)maxSample);
+	fprintf(stderr, "\n");
+
+	if (gs->ops && gs->ops->info && gs->ops->info->extensions &&
+		StrCaseCmp(gs->ops->info->extensions, "aac") == 0) {
+		fprintf(stderr,
+			"AAC decode: outputSamps=%ld channels=%ld frames=%ld pcmBytes=%ld hostConsumeBytes=%ld\n",
+			totalSamples, (long)gs->channels, frames, calculatedBytes, calculatedBytes);
+		fprintf(stderr,
+			"AAC test: decoded %ld total samples, %ld frames/ch, %ld bytes\n",
+			totalSamples, frames, calculatedBytes);
+	}
 }
 
 static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
@@ -8493,8 +8502,8 @@ static int AmigaAacSmokeTest(const char *filename, const DecodeOptions *opt)
 		fprintf(stderr, "AAC test: decode one frame failed rc=%ld\n", (long)nDecoded);
 		goto done_handle;
 	}
-	printf("AAC test: decoded %ld sample frames (%ld total int16 samples, %ld bytes)\n",
-		(long)nDecoded, (long)nDecoded * (long)sinfo.channels,
+	printf("AAC test: decoded %ld total samples, %ld frames/ch, %ld bytes\n",
+		(long)nDecoded * (long)sinfo.channels, (long)nDecoded,
 		(long)nDecoded * (long)sinfo.channels * (long)sizeof(short));
 	ret = 0;
 
