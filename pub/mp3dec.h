@@ -180,6 +180,7 @@ int MP3GetFastLowrateStride(HMP3Decoder hMP3Decoder);
 int MP3GetFastLowrateActiveSubbands(HMP3Decoder hMP3Decoder);
 void MP3SetSuperfastLowrate(HMP3Decoder hMP3Decoder, int enabled);
 int MP3SuperfastLowrateEnabled(HMP3Decoder hMP3Decoder);
+void MP3SetSubbandCap(HMP3Decoder hMP3Decoder, int nActiveSubbands);
 void MP3SetExperimentalIMDCTThin(HMP3Decoder hMP3Decoder, int enabled);
 int MP3ExperimentalIMDCTThinActive(HMP3Decoder hMP3Decoder);
 void MP3SetExperimentalPolyphase(int enabled);

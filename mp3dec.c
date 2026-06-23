@@ -281,6 +281,21 @@ int MP3SuperfastLowrateEnabled(HMP3Decoder hMP3Decoder)
 	return mp3DecInfo ? mp3DecInfo->superfastLowrate : 0;
 }
 
+void MP3SetSubbandCap(HMP3Decoder hMP3Decoder, int nActiveSubbands)
+{
+	MP3DecInfo *mp3DecInfo = (MP3DecInfo *)hMP3Decoder;
+
+	if (!mp3DecInfo)
+		return;
+	if (nActiveSubbands <= 0 || nActiveSubbands > NBANDS)
+		nActiveSubbands = NBANDS;
+	/* Never raise the count above what the stride has already determined. */
+	if (mp3DecInfo->fastLowrateActiveSubbands > 0 &&
+		mp3DecInfo->fastLowrateActiveSubbands < nActiveSubbands)
+		nActiveSubbands = mp3DecInfo->fastLowrateActiveSubbands;
+	mp3DecInfo->fastLowrateActiveSubbands = nActiveSubbands;
+}
+
 
 void MP3SetExperimentalIMDCTThin(HMP3Decoder hMP3Decoder, int enabled)
 {

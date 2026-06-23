@@ -333,6 +333,7 @@ typedef struct DecodeOptions {
 	int expHuff;
 	int expImdctThin;
 	int expReducedTaps;
+	int subbandCap;
 	int expFdct32Quarter;
 	int help;
 	int debugArgv;
@@ -705,6 +706,9 @@ static void PrintUsage(const char *prog)
 	printf("  --fast-lowrate lower-quality Amiga conversion; requires --rate\n");
 	printf("  --superfast-lowrate sparse low-rate mode; use --rate 8287, 8820, 11025, or 22050\n");
 	printf("                 defaults to 11025 if no --rate is specified\n");
+	printf("  --ultrafast  cap IMDCT to 26 subbands (~18 kHz) at full 44.1 kHz rate;\n");
+	printf("                 saves ~18%% IMDCT work with negligible audible impact\n");
+	printf("  --subband-cap N limit IMDCT to N active subbands 1-32 (use after --rate/--fast-lowrate)\n");
 	printf("  --quality N set quality/speed level (0 fastest, 1 fast, 2 balanced, 3 accurate)\n");
 	printf("               default: 1 for --fast-lowrate --rate 11025 or 22050, otherwise 3\n");
 	printf("               0 enables Superfast FDCT32 quarter + Huffman asm; 1 adds reduced taps; 3 is original behavior\n");
@@ -1009,6 +1013,16 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 			opt->noMonoMSSideSkip = 1;
 		} else if (!strcmp(argv[i], "--exp-reduced-taps")) {
 			opt->expReducedTaps = 1;
+		} else if (!strcmp(argv[i], "--ultrafast")) {
+			opt->subbandCap = 26;
+		} else if (!strcmp(argv[i], "--subband-cap")) {
+			if (++i >= argc)
+				return -1;
+			opt->subbandCap = atoi(argv[i]);
+			if (opt->subbandCap < 1 || opt->subbandCap > 32) {
+				fprintf(stderr, "error: --subband-cap N must be 1-32\n");
+				return -1;
+			}
 		} else if (!strcmp(argv[i], "--exp-fdct32-quarter")) {
 			opt->expFdct32Quarter = 1;
 		} else if (!strcmp(argv[i], "--quality")) {
@@ -9074,6 +9088,8 @@ int main(int argc, char **argv)
 			"this build still generates full polyphase output before decimation\n");
 #endif
 	}
+	if (opt.subbandCap > 0)
+		MP3SetSubbandCap(decoder, opt.subbandCap);
 	if (opt.play && opt.outputRate == 28600)
 		fprintf(stderr,
 			"28600 PAL-top playback uses normal post-decode decimation and may underrun on 030 systems.\n");
