@@ -4800,13 +4800,14 @@ static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Args *args)
 	AddArg(args, "--play");
 	if (gui->fastMem)
 		AddArg(args, "--fast-mem");
-	if (gui->superfastLowrate) {
+	if (gui->superfastLowrate ||
+		(gui->ultrafast && strcmp(kRates[gui->rateIndex], "28600") != 0)) {
 		AddArg(args, "--fast-lowrate");
 		AddArg(args, "--superfast-lowrate");
 	} else if (gui->fastLowrate && strcmp(kRates[gui->rateIndex], "28600")) {
 		AddArg(args, "--fast-lowrate");
 	}
-	if (gui->ultrafast)
+	if (gui->ultrafast && strcmp(kRates[gui->rateIndex], "28600") == 0)
 		AddArg(args, "--ultrafast");
 	if (gui->fakeStereo) {
 		AddArg(args, "--fake-stereo");

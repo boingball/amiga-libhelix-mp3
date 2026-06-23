@@ -631,13 +631,14 @@ static void BuildPlaybackArgs(MrApp *app, MrPlayArgs *args)
 	AddArg(args, "--play");
 	if (app->fastMem)
 		AddArg(args, "--fast-mem");
-	if (app->superfastLowrate) {
+	if (app->superfastLowrate ||
+		(app->ultrafast && strcmp(kRates[app->rateIndex], "28600") != 0)) {
 		AddArg(args, "--fast-lowrate");
 		AddArg(args, "--superfast-lowrate");
 	} else if (app->fastLowrate && strcmp(kRates[app->rateIndex], "28600")) {
 		AddArg(args, "--fast-lowrate");
 	}
-	if (app->ultrafast)
+	if (app->ultrafast && strcmp(kRates[app->rateIndex], "28600") == 0)
 		AddArg(args, "--ultrafast");
 	if (app->fakeStereo) {
 		AddArg(args, "--fake-stereo");
