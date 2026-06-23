@@ -107,6 +107,7 @@
 #define MR_PLAYLIST_MAX  128
 #define MR_ART_W        64
 #define MR_ART_H        64
+#define MR_ART_COLOR_CACHE 64
 #define MR_MAX_JPEG_DIM 1024
 #define MR_QUALITY_MIN   0
 #define MR_QUALITY_MAX   3
@@ -370,7 +371,7 @@ typedef struct MrApp {
 	int   artCacheBypass;
 	int   artPensBuilt;
 	int   artPenCacheUsed;
-	struct { unsigned long key; long pen; } artPenCache[64];
+	struct { unsigned long key; long pen; } artPenCache[MR_ART_COLOR_CACHE];
 	unsigned char artRGBBuf[MR_ART_W * MR_ART_H * 3];
 	unsigned char artPenIdx[MR_ART_W * MR_ART_H];
 	int   playlistCount;
@@ -1861,12 +1862,20 @@ static void BuildArtColorPens(MrApp *app)
 {
 	struct ColorMap *cm;
 	int i;
+	static const unsigned char bayer[8][8] = {
+		{0,32,8,40,2,34,10,42},{48,16,56,24,50,18,58,26},{12,44,4,36,14,46,6,38},{60,28,52,20,62,30,54,22},
+		{3,35,11,43,1,33,9,41},{51,19,59,27,49,17,57,25},{15,47,7,39,13,45,5,37},{63,31,55,23,61,29,53,21}
+	};
 	ReleaseArtColorPens(app);
 	if (!app || !app->win || !app->artValid)
 		return;
 	cm = app->win->WScreen->ViewPort.ColorMap;
 	if (!cm)
 		return;
+
+	/* Pass 1: cache the first unique source colours we can obtain pens for.
+	 * The artwork usually has many more than 64 colours, so later pixels must
+	 * be matched to the nearest cached colour instead of falling back to grey. */
 	for (i = 0; i < MR_ART_W * MR_ART_H; i++) {
 		const unsigned char *p = &app->artRGBBuf[i * 3];
 		unsigned long key = ((unsigned long)p[0] << 16) | ((unsigned long)p[1] << 8) | p[2];
@@ -1874,7 +1883,7 @@ static void BuildArtColorPens(MrApp *app)
 		for (j = 0; j < app->artPenCacheUsed; j++)
 			if (app->artPenCache[j].key == key)
 				break;
-		if (j == app->artPenCacheUsed && app->artPenCacheUsed < 64) {
+		if (j == app->artPenCacheUsed && app->artPenCacheUsed < MR_ART_COLOR_CACHE) {
 			ULONG r32 = (ULONG)p[0] | ((ULONG)p[0] << 8) | ((ULONG)p[0] << 16) | ((ULONG)p[0] << 24);
 			ULONG g32 = (ULONG)p[1] | ((ULONG)p[1] << 8) | ((ULONG)p[1] << 16) | ((ULONG)p[1] << 24);
 			ULONG b32 = (ULONG)p[2] | ((ULONG)p[2] << 8) | ((ULONG)p[2] << 16) | ((ULONG)p[2] << 24);
@@ -1883,9 +1892,36 @@ static void BuildArtColorPens(MrApp *app)
 				OBP_FailIfBad, (Tag)FALSE, TAG_DONE);
 			app->artPenCacheUsed++;
 		}
-		app->artPenIdx[i] = (unsigned char)j;
 	}
-	app->artPensBuilt = (app->artPenCacheUsed > 0);
+	if (!app->artPenCacheUsed)
+		return;
+
+	/* Pass 2: match every pixel to the closest cached colour after a small
+	 * Bayer dither offset, mirroring the GadTools colour-art path. */
+	for (i = 0; i < MR_ART_W * MR_ART_H; i++) {
+		const unsigned char *p = &app->artRGBBuf[i * 3];
+		int dv = (int)bayer[(i / MR_ART_W) & 7][i & 7] - 32;
+		int dscale = dv * 3 / 4;
+		int rd = (int)p[0] + dscale;
+		int gd = (int)p[1] + dscale;
+		int bd = (int)p[2] + dscale;
+		int bestj = 0;
+		unsigned long bestDist = 0xffffffffUL;
+		int j;
+		if (rd < 0) rd = 0; else if (rd > 255) rd = 255;
+		if (gd < 0) gd = 0; else if (gd > 255) gd = 255;
+		if (bd < 0) bd = 0; else if (bd > 255) bd = 255;
+		for (j = 0; j < app->artPenCacheUsed; j++) {
+			unsigned long k = app->artPenCache[j].key;
+			int dr = (int)((k >> 16) & 0xff) - rd;
+			int dg = (int)((k >>  8) & 0xff) - gd;
+			int db = (int)( k        & 0xff) - bd;
+			unsigned long dist = (unsigned long)(dr * dr + dg * dg + db * db);
+			if (dist < bestDist) { bestDist = dist; bestj = j; }
+		}
+		app->artPenIdx[i] = (unsigned char)bestj;
+	}
+	app->artPensBuilt = 1;
 }
 
 static void ArtworkCacheName(MrApp *app, char *dst, size_t dstSize)
