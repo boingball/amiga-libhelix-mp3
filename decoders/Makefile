@@ -131,6 +131,21 @@ aac_entry.o aac_alloc.o aac_module.o: %.o: %.c
 # Compile every libhelix-aac .c with the forced-include shim so that
 # malloc/calloc/realloc/free/exit are redirected and Arduino headers are
 # resolved through aac-arduino-shim/.
+
+# Use patched dequant.c: fixes signed 32-bit overflow in DequantBlock() for
+# large spectral coefficients (x >= 64) that caused white-noise on bass/beats.
+AAC_PATCH_FLAGS := $(AAC_CFLAGS) \
+	    -include aac_standalone.h \
+	    -Dmalloc=AacModuleMalloc \
+	    -Dcalloc=AacModuleCalloc \
+	    -Drealloc=AacModuleRealloc \
+	    -Dfree=AacModuleFree \
+	    -Dexit=AacModuleExit \
+	    -DNDEBUG
+
+aac/dequant.o: libhelix-aac-patch/dequant.c
+	$(CC) $(AAC_PATCH_FLAGS) -c -o $@ $<
+
 aac/%.o: aac/%.c
 	$(CC) $(AAC_CFLAGS) \
 	    -include aac_standalone.h \
