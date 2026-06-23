@@ -48,6 +48,7 @@
 #include <intuition/gadgetclass.h>
 #include <intuition/icclass.h>
 #include <libraries/gadtools.h>
+#include <hardware/cia.h>
 
 #include <classes/window.h>
 #include <gadgets/layout.h>
@@ -143,6 +144,11 @@ enum {
 	GID_TRACK,
 	GID_GENRE,
 	GID_RATING,
+	GID_STAR1,
+	GID_STAR2,
+	GID_STAR3,
+	GID_STAR4,
+	GID_STAR5,
 	GID_LAST
 };
 
@@ -179,7 +185,6 @@ static const STRPTR kChannelLabels[] = {
 };
 static const STRPTR kSpeedLabels[] = {
 	(STRPTR)"Normal",
-	(STRPTR)"Fast low-rate",
 	(STRPTR)"Superfast low-rate",
 	NULL
 };
@@ -311,6 +316,7 @@ typedef struct MrApp {
 	Object         *trackGad;
 	Object         *genreGad;
 	Object         *ratingGad;
+	Object         *starGad[5];
 	Object         *gaugeGad;
 	Object         *statusGad;
 
@@ -342,6 +348,10 @@ typedef struct MrApp {
 	int   playlistNextPending;
 	int   volumePercent;
 	int   bufferSeconds;
+	int   rating;
+	int   totalSecs;
+	int   elapsedSecs;
+	unsigned long lastFrames;
 
 	unsigned long playbackRunId;
 	int   playbackActive;
@@ -349,6 +359,10 @@ typedef struct MrApp {
 	int   stoppedByUser;
 	int   lastPhaseShown;
 } MrApp;
+
+static void UpdateTimeDisplay(MrApp *app);
+static void RefreshFileInfoAndTags(MrApp *app);
+static void ApplyHardwareAudioFilter(MrApp *app);
 
 /* ------------------------------------------------------------------------- */
 /* Small helpers                                                             */
@@ -362,6 +376,25 @@ static void SafeCopy(char *dst, size_t size, const char *src)
 		src = "";
 	strncpy(dst, src, size - 1);
 	dst[size - 1] = '\0';
+}
+
+
+static int ClampInt(int value, int minValue, int maxValue)
+{
+	if (value < minValue)
+		return minValue;
+	if (value > maxValue)
+		return maxValue;
+	return value;
+}
+
+static void FormatTime(int secs, char *buf)
+{
+	if (secs < 0) {
+		SafeCopy(buf, 8, "--:--");
+		return;
+	}
+	sprintf(buf, "%02d:%02d", secs / 60, secs % 60);
 }
 
 static void SetStatus(MrApp *app, const char *text)
@@ -439,10 +472,10 @@ static void BuildPlaybackArgs(MrApp *app, MrPlayArgs *args)
 	AddArg(args, "--rate");
 	AddArg(args, kRates[app->rateIndex]);
 	AddArg(args, "--buffer-seconds");
-	sprintf(num, "%d", app->bufferSeconds);
+	sprintf(num, "%d", ClampInt(app->bufferSeconds, 1, 10));
 	AddArg(args, num);
 	AddArg(args, "--volume");
-	sprintf(num, "%d", app->volumePercent);
+	sprintf(num, "%d", ClampInt(app->volumePercent, 0, 100));
 	AddArg(args, num);
 	AddArg(args, "--quality");
 	sprintf(num, "%d", app->qualityIndex);
@@ -707,10 +740,15 @@ static void PollPlaybackStatus(MrApp *app)
 	spareMs = gGuiPlaybackStatus.spareMs;
 	halfMs  = gGuiPlaybackStatus.halfBufferMs;
 
-	if (halfMs > 0) {
-		long level = (spareMs * 100L) / (long)(halfMs * 2UL);
-		SetGauge(app, (int)level);
+	if (rate > 0 && frames != app->lastFrames) {
+		app->lastFrames = frames;
+		app->elapsedSecs = (int)((frames * 1152UL) / (unsigned long)rate);
+		if (app->totalSecs > 0 && app->elapsedSecs > app->totalSecs) app->elapsedSecs = app->totalSecs;
+		UpdateTimeDisplay(app);
+		SetGauge(app, (app->progressEnabled && app->totalSecs > 0) ? (app->elapsedSecs * 100) / app->totalSecs : 0);
 	}
+	(void)spareMs;
+	(void)halfMs;
 
 	if (phase == app->lastPhaseShown)
 		return;
@@ -930,7 +968,7 @@ static int MrOpenWindow(MrApp *app)
 	                GA_ID, GID_BUFFER,
 	                GA_RelVerify, TRUE,
 	                SLIDER_Min, 1,
-	                SLIDER_Max, 30,
+	                SLIDER_Max, 10,
 	                SLIDER_Level, (ULONG)app->bufferSeconds,
 	                SLIDER_Orientation, SORIENT_HORIZ,
 	                SLIDER_LevelFormat, (ULONG)"%ld s",
@@ -954,7 +992,7 @@ static int MrOpenWindow(MrApp *app)
 	                GA_ID, GID_SPEED,
 	                GA_RelVerify, TRUE,
 	                CHOOSER_LabelArray, (ULONG)kSpeedLabels,
-	                CHOOSER_Selected, (ULONG)(app->superfastLowrate ? 2 : (app->fastLowrate ? 1 : 0)),
+	                CHOOSER_Selected, (ULONG)(app->superfastLowrate ? 1 : 0),
 	                TAG_DONE);
 
 	app->widthGad = (Object *)NewObject(CHOOSER_GetClass(), NULL,
@@ -1005,14 +1043,15 @@ static int MrOpenWindow(MrApp *app)
 	                STRINGA_MaxChars, 128,
 	                TAG_DONE);
 
-	app->timeGad = ReadonlyString(GID_TIME, "00:00 / 00:00", 32);
+	app->timeGad = ReadonlyString(GID_TIME, "00:00 / --:--", 32);
 	app->fileInfoGad = ReadonlyString(GID_FILEINFO, "No file info", 128);
-	app->titleGad = ReadonlyString(GID_TITLE, "", 64);
-	app->artistGad = ReadonlyString(GID_ARTIST, "", 64);
-	app->albumGad = ReadonlyString(GID_ALBUM, "", 64);
-	app->trackGad = ReadonlyString(GID_TRACK, "", 16);
-	app->genreGad = ReadonlyString(GID_GENRE, "", 32);
-	app->ratingGad = ReadonlyString(GID_RATING, "Rating: -", 16);
+	app->titleGad = ReadonlyString(GID_TITLE, "-", 64);
+	app->artistGad = ReadonlyString(GID_ARTIST, "-", 64);
+	app->albumGad = ReadonlyString(GID_ALBUM, "-", 64);
+	app->trackGad = ReadonlyString(GID_TRACK, "-", 16);
+	app->genreGad = ReadonlyString(GID_GENRE, "-", 32);
+	app->ratingGad = ReadonlyString(GID_RATING, "0/5", 16);
+	{ int i; for (i = 0; i < 5; i++) app->starGad[i] = (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, GID_STAR1 + i, GA_RelVerify, TRUE, GA_Text, (ULONG)"-", TAG_DONE); }
 
 	if (!CheckGadget(app->fileGad, "file") || !CheckGadget(app->rateGad, "rate") ||
 		!CheckGadget(app->qualityGad, "quality") || !CheckGadget(app->channelGad, "channel") ||
@@ -1026,7 +1065,10 @@ static int MrOpenWindow(MrApp *app)
 		!CheckGadget(app->timeGad, "time") || !CheckGadget(app->fileInfoGad, "file info") ||
 		!CheckGadget(app->titleGad, "title") || !CheckGadget(app->artistGad, "artist") ||
 		!CheckGadget(app->albumGad, "album") || !CheckGadget(app->trackGad, "track") ||
-		!CheckGadget(app->genreGad, "genre") || !CheckGadget(app->ratingGad, "rating"))
+		!CheckGadget(app->genreGad, "genre") || !CheckGadget(app->ratingGad, "rating") ||
+		!CheckGadget(app->starGad[0], "star1") || !CheckGadget(app->starGad[1], "star2") ||
+		!CheckGadget(app->starGad[2], "star3") || !CheckGadget(app->starGad[3], "star4") ||
+		!CheckGadget(app->starGad[4], "star5"))
 		return 0;
 
 	root = (Object *)NewObject(LAYOUT_GetClass(), NULL,
@@ -1070,6 +1112,11 @@ static int MrOpenWindow(MrApp *app)
 			ADD_LABELLED(app->trackGad, "Track"),
 			ADD_LABELLED(app->genreGad, "Genre"),
 			ADD_LABELLED(app->ratingGad, "Rating"),
+			LAYOUT_AddChild, (ULONG)app->starGad[0],
+			LAYOUT_AddChild, (ULONG)app->starGad[1],
+			LAYOUT_AddChild, (ULONG)app->starGad[2],
+			LAYOUT_AddChild, (ULONG)app->starGad[3],
+			LAYOUT_AddChild, (ULONG)app->starGad[4],
                   TAG_DONE),
 		CHILD_WeightedHeight, 0,
 
@@ -1126,6 +1173,8 @@ static int MrOpenWindow(MrApp *app)
 		WA_SizeGadget, TRUE,
 		WA_IDCMP, IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW |
 			IDCMP_IDCMPUPDATE | IDCMP_MENUPICK,
+		WA_Width, 640,
+		WA_Height, 260,
 		WINDOW_Position, WPOS_CENTERSCREEN,
 		WINDOW_ParentGroup, (ULONG)root,
                 TAG_DONE);
@@ -1142,6 +1191,7 @@ static int MrOpenWindow(MrApp *app)
 	}
 	app->menuStrip = CreateMenus(kMenus, TAG_DONE);
 	if (app->menuStrip) {
+		SyncMenuChecks(app);
 		SetMenuStrip(app->win, app->menuStrip);
 	} else {
 		fprintf(stderr, "minimp3r: could not create menus.\n");
@@ -1163,6 +1213,149 @@ static void MrCloseWindow(MrApp *app)
 		app->winObj = NULL;
 		app->win = NULL;
 	}
+}
+
+
+typedef struct MrMp3Info {
+	char title[64], artist[64], album[64], track[16], genre[32];
+	int bitrateKbps, sampleRate, channels, channelMode, durationSecs, rating;
+	unsigned long fileSize;
+} MrMp3Info;
+
+static void CopyTrim(char *dst, size_t size, const unsigned char *src, int n)
+{
+	int end = n;
+	while (end > 0 && (src[end - 1] == ' ' || src[end - 1] == 0)) end--;
+	if ((size_t)end >= size) end = (int)size - 1;
+	memcpy(dst, src, end); dst[end] = 0;
+}
+
+
+static int Id3Synchsafe(const unsigned char *p)
+{
+	return ((p[0] & 0x7f) << 21) | ((p[1] & 0x7f) << 14) | ((p[2] & 0x7f) << 7) | (p[3] & 0x7f);
+}
+
+static void CopyId3Text(char *dst, size_t size, const unsigned char *p, long n)
+{
+	if (n <= 1) return;
+	if (p[0] == 0 || p[0] == 3) CopyTrim(dst, size, p + 1, (int)(n - 1));
+	else if (n > 3) CopyTrim(dst, size, p + 3, (int)(n - 3));
+}
+
+static int RatingFromPopmByte(unsigned char b)
+{
+	if (b == 0) return 0;
+	if (b < 32) return 1;
+	if (b < 96) return 2;
+	if (b < 160) return 3;
+	if (b < 224) return 4;
+	return 5;
+}
+
+static void ReadId3v2(FILE *f, MrMp3Info *info)
+{
+	unsigned char hdr[10], fh[10]; long end;
+	if (fseek(f, 0, SEEK_SET) != 0 || fread(hdr, 1, 10, f) != 10 || memcmp(hdr, "ID3", 3)) return;
+	end = 10 + Id3Synchsafe(hdr + 6);
+	while (ftell(f) + 10 <= end && fread(fh, 1, 10, f) == 10) {
+		long sz = Id3Synchsafe(fh + 4); unsigned char *payload;
+		if (fh[0] == 0 || sz <= 0 || ftell(f) + sz > end) break;
+		payload = (unsigned char *)malloc((size_t)sz);
+		if (!payload) { fseek(f, sz, SEEK_CUR); continue; }
+		if (fread(payload, 1, (size_t)sz, f) != (size_t)sz) { free(payload); break; }
+		if (!memcmp(fh, "TIT2", 4) && !info->title[0]) CopyId3Text(info->title, sizeof(info->title), payload, sz);
+		else if (!memcmp(fh, "TPE1", 4) && !info->artist[0]) CopyId3Text(info->artist, sizeof(info->artist), payload, sz);
+		else if (!memcmp(fh, "TALB", 4) && !info->album[0]) CopyId3Text(info->album, sizeof(info->album), payload, sz);
+		else if (!memcmp(fh, "TRCK", 4) && !info->track[0]) CopyId3Text(info->track, sizeof(info->track), payload, sz);
+		else if (!memcmp(fh, "TCON", 4) && !info->genre[0]) CopyId3Text(info->genre, sizeof(info->genre), payload, sz);
+		else if (!memcmp(fh, "POPM", 4)) { long i; for (i = 0; i + 1 < sz; i++) if (payload[i] == 0) { info->rating = RatingFromPopmByte(payload[i + 1]); break; } }
+		free(payload);
+	}
+}
+
+static void ReadId3v1(FILE *f, MrMp3Info *info)
+{
+	unsigned char b[128];
+	static const char *genres[] = { "Blues","Classic Rock","Country","Dance","Disco","Funk","Grunge","Hip-Hop","Jazz","Metal","New Age","Oldies","Other","Pop","R&B","Rap","Reggae","Rock" };
+	if (fseek(f, -128, SEEK_END) != 0 || fread(b, 1, 128, f) != 128 || memcmp(b, "TAG", 3)) return;
+	CopyTrim(info->title, sizeof(info->title), b + 3, 30);
+	CopyTrim(info->artist, sizeof(info->artist), b + 33, 30);
+	CopyTrim(info->album, sizeof(info->album), b + 63, 30);
+	if (b[125] == 0 && b[126] != 0) sprintf(info->track, "%u", (unsigned)b[126]);
+	if (b[127] < sizeof(genres) / sizeof(genres[0])) SafeCopy(info->genre, sizeof(info->genre), genres[b[127]]);
+}
+
+static void ReadMpegHeader(FILE *f, MrMp3Info *info, long *firstFrame)
+{
+	unsigned char h[4]; long pos = 0;
+	static const int br[16] = {0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0};
+	static const int sr[4] = {44100,48000,32000,0};
+	fseek(f, 0, SEEK_SET);
+	while (fread(h, 1, 4, f) == 4 && pos < 65536) {
+		if (h[0] == 0xff && (h[1] & 0xe0) == 0xe0) {
+			int bi = (h[2] >> 4) & 15, si = (h[2] >> 2) & 3;
+			info->bitrateKbps = br[bi]; info->sampleRate = sr[si];
+			info->channelMode = (h[3] >> 6) & 3; info->channels = info->channelMode == 3 ? 1 : 2;
+			*firstFrame = pos; return;
+		}
+		pos++; fseek(f, pos, SEEK_SET);
+	}
+}
+
+static void ReadMp3Info(const char *path, MrMp3Info *info)
+{
+	FILE *f; long first = -1, sz;
+	memset(info, 0, sizeof(*info));
+	f = fopen(path, "rb"); if (!f) return;
+	ReadId3v2(f, info);
+	ReadMpegHeader(f, info, &first);
+	if (fseek(f, 0, SEEK_END) == 0) { sz = ftell(f); if (sz > 0) info->fileSize = (unsigned long)sz; }
+	if (info->bitrateKbps > 0 && first >= 0 && info->fileSize > (unsigned long)first)
+		info->durationSecs = (int)(((info->fileSize - (unsigned long)first) * 8UL) / ((unsigned long)info->bitrateKbps * 1000UL));
+	ReadId3v1(f, info);
+	fclose(f);
+}
+
+static void UpdateTimeDisplay(MrApp *app)
+{
+	char e[8], t[8], buf[24];
+	FormatTime(app->elapsedSecs, e); FormatTime(app->totalSecs > 0 ? app->totalSecs : -1, t);
+	sprintf(buf, "%s / %s", e, t);
+	if (app->timeGad && app->win) SetGadgetAttrs((struct Gadget *)app->timeGad, app->win, NULL, STRINGA_TextVal, (ULONG)buf, TAG_DONE);
+}
+
+static void UpdateRatingDisplay(MrApp *app)
+{
+	char buf[16]; int i;
+	sprintf(buf, "%d/5", app->rating);
+	if (app->ratingGad && app->win) SetGadgetAttrs((struct Gadget *)app->ratingGad, app->win, NULL, STRINGA_TextVal, (ULONG)buf, TAG_DONE);
+	for (i = 0; i < 5; i++) if (app->starGad[i] && app->win) SetGadgetAttrs((struct Gadget *)app->starGad[i], app->win, NULL, GA_Text, (ULONG)(i < app->rating ? "*" : "-"), TAG_DONE);
+}
+
+static void RefreshFileInfoAndTags(MrApp *app)
+{
+	MrMp3Info info; char fileInfo[128]; const char *ch;
+	if (!app->inputName[0]) return;
+	ReadMp3Info(app->inputName, &info);
+	app->rating = info.rating; app->totalSecs = info.durationSecs; app->elapsedSecs = 0; app->lastFrames = 0;
+	ch = info.channels == 1 ? "mono" : (info.channels == 2 ? "stereo" : "-");
+	sprintf(fileInfo, "%d kbps, %d Hz, %s, %02d:%02d, %lu KB", info.bitrateKbps, info.sampleRate, ch, info.durationSecs / 60, info.durationSecs % 60, (info.fileSize + 1023UL) / 1024UL);
+	if (app->titleGad && app->win) SetGadgetAttrs((struct Gadget *)app->titleGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.title[0] ? info.title : "-"), TAG_DONE);
+	if (app->artistGad && app->win) SetGadgetAttrs((struct Gadget *)app->artistGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.artist[0] ? info.artist : "-"), TAG_DONE);
+	if (app->albumGad && app->win) SetGadgetAttrs((struct Gadget *)app->albumGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.album[0] ? info.album : "-"), TAG_DONE);
+	if (app->trackGad && app->win) SetGadgetAttrs((struct Gadget *)app->trackGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.track[0] ? info.track : "-"), TAG_DONE);
+	if (app->genreGad && app->win) SetGadgetAttrs((struct Gadget *)app->genreGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.genre[0] ? info.genre : "-"), TAG_DONE);
+	if (app->fileInfoGad && app->win) SetGadgetAttrs((struct Gadget *)app->fileInfoGad, app->win, NULL, STRINGA_TextVal, (ULONG)fileInfo, TAG_DONE);
+	UpdateRatingDisplay(app); UpdateTimeDisplay(app); SetGauge(app, 0); SetStatus(app, "File ready (No art).");
+}
+
+static void ApplyHardwareAudioFilter(MrApp *app)
+{
+	Forbid();
+	if (app && app->hardwareFilter) ciaa.ciapra &= (UBYTE)~CIAF_LED;
+	else ciaa.ciapra |= CIAF_LED;
+	Permit();
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1209,7 +1402,7 @@ GETFILE_FullFile, (ULONG)app->inputName,
 TAG_DONE);
 }
 
-SetStatus(app, "File selected.");
+RefreshFileInfoAndTags(app);
 }
 }
 
@@ -1282,6 +1475,7 @@ static void LoadPlaylistPath(MrApp *app, const char *m3uPath, const char *drawer
 		app->playlistCurrent = 0;
 		SafeCopy(app->inputName, sizeof(app->inputName), app->playlist[0]);
 		UpdateFileGadget(app);
+		RefreshFileInfoAndTags(app);
 		SetStatus(app, "Playlist loaded (No art).");
 	} else {
 		SetStatus(app, "Playlist had no playable entries.");
@@ -1310,6 +1504,26 @@ static void BrowseForPlaylist(MrApp *app)
 	FreeAslRequest(fr);
 }
 
+static void SetMenuItemChecked(MrApp *app, int menuNum, int itemNum, int checked)
+{
+	struct MenuItem *item;
+	if (!app->menuStrip) return;
+	item = ItemAddress(app->menuStrip, SHIFTMENU(menuNum) | SHIFTITEM(itemNum));
+	if (!item) return;
+	if (checked) item->Flags |= CHECKED;
+	else item->Flags &= ~CHECKED;
+}
+
+static void SyncMenuChecks(MrApp *app)
+{
+	SetMenuItemChecked(app, MENUNUM_PLAYBACK, ITEMNUM_DTP, app->decodeThenPlay);
+	SetMenuItemChecked(app, MENUNUM_PLAYBACK, ITEMNUM_BENCH, app->bench);
+	SetMenuItemChecked(app, MENUNUM_PLAYBACK, ITEMNUM_ARTWORK, app->artEnabled);
+	SetMenuItemChecked(app, MENUNUM_PLAYBACK, ITEMNUM_ARTCACHE, app->artCacheEnabled);
+	SetMenuItemChecked(app, MENUNUM_PLAYBACK, ITEMNUM_ARTCOLOR, app->artColorEnabled);
+	SetMenuItemChecked(app, MENUNUM_PLAYBACK, ITEMNUM_PROGRESS, app->progressEnabled);
+}
+
 static void HandleMenu(MrApp *app, UWORD code, int *done)
 {
 	while (code != MENUNULL) {
@@ -1318,7 +1532,15 @@ static void HandleMenu(MrApp *app, UWORD code, int *done)
 			ULONG ud = (ULONG)GTMENUITEM_USERDATA(item);
 			int mn = (int)(ud / 100), it = (int)(ud % 100);
 			if (mn == MENUNUM_PROJECT && it == ITEMNUM_QUIT) *done = 1;
-			else if (mn == MENUNUM_PROJECT && it == ITEMNUM_ABOUT) SetStatus(app, "MiniAMP3 ReAction frontend.");
+			else if (mn == MENUNUM_PROJECT && it == ITEMNUM_ABOUT) {
+				struct EasyStruct es;
+				es.es_StructSize = sizeof(es);
+				es.es_Flags = 0;
+				es.es_Title = (UBYTE *)"About MiniAMP3";
+				es.es_TextFormat = (UBYTE *)"MiniAMP3\nHelix fixed-point MP3 decoder\nAmigaOS ReAction frontend";
+				es.es_GadgetFormat = (UBYTE *)"OK";
+				EasyRequest(app->win, &es, NULL, TAG_DONE);
+			}
 			else if (mn == MENUNUM_PLAYBACK && it == ITEMNUM_DTP) app->decodeThenPlay = !app->decodeThenPlay;
 			else if (mn == MENUNUM_PLAYBACK && it == ITEMNUM_BENCH) app->bench = !app->bench;
 			else if (mn == MENUNUM_PLAYBACK && it == ITEMNUM_ARTWORK) { app->artEnabled = !app->artEnabled; SetStatus(app, "No art placeholder."); }
@@ -1326,6 +1548,7 @@ static void HandleMenu(MrApp *app, UWORD code, int *done)
 			else if (mn == MENUNUM_PLAYBACK && it == ITEMNUM_ARTCOLOR) app->artColorEnabled = !app->artColorEnabled;
 			else if (mn == MENUNUM_PLAYBACK && it == ITEMNUM_PROGRESS) app->progressEnabled = !app->progressEnabled;
 			else if (mn == MENUNUM_PLAYBACK) SetStatus(app, "Artwork action placeholder (No art).");
+			SyncMenuChecks(app);
 			code = item->NextSelect;
 		} else code = MENUNULL;
 	}
@@ -1349,17 +1572,22 @@ static void SyncFromGadgets(MrApp *app)
 		app->qualityIndex = (int)v;
 	if (app->channelGad && GetAttr(CHOOSER_Selected, app->channelGad, &v))
 		app->mono = ((int)v == 1);
-	if (app->volumeGad && GetAttr(SLIDER_Level, app->volumeGad, &v))
-		app->volumePercent = (int)v;
+	if (app->volumeGad && GetAttr(SLIDER_Level, app->volumeGad, &v)) {
+		int oldPercent = app->volumePercent;
+		app->volumePercent = ClampInt((int)v, 0, 100);
+		if (app->volumePercent != oldPercent) {
+			gMiniAmp3RequestedVolume = (unsigned short)app->volumePercent;
+			gMiniAmp3VolumeSequence++;
+		}
+	}
 	if (app->bufferGad && GetAttr(SLIDER_Level, app->bufferGad, &v))
-		app->bufferSeconds = (int)v;
+		app->bufferSeconds = ClampInt((int)v, 1, 10);
 	if (app->fastMemGad && GetAttr(GA_Selected, app->fastMemGad, &v))
 		app->fastMem = (v != 0);
 	if (app->fastLowGad && GetAttr(GA_Selected, app->fastLowGad, &v))
 		app->fastLowrate = (v != 0);
 	if (app->speedGad && GetAttr(CHOOSER_Selected, app->speedGad, &v)) {
-		app->fastLowrate = ((int)v >= 1);
-		app->superfastLowrate = ((int)v >= 2);
+		app->superfastLowrate = ((int)v >= 1);
 	}
 	if (app->widthGad && GetAttr(CHOOSER_Selected, app->widthGad, &v)) {
 		app->fakeStereo = ((int)v > 0);
@@ -1393,11 +1621,12 @@ int main(int argc, char **argv)
 	app.fastMem = 0;
 	app.fastLowrate = 0;
 	app.volumePercent = 100;
-	app.bufferSeconds = 8;
+	app.bufferSeconds = 10;
 	app.fakeStereoDelayIndex = 0;
 	app.artEnabled = 1;
 	app.artCacheEnabled = 1;
-	app.progressEnabled = 1;
+	app.artColorEnabled = 0;
+	app.progressEnabled = 0;
 	app.playlistCurrent = -1;
 	app.lastPhaseShown = -1;
 
@@ -1487,10 +1716,17 @@ int main(int argc, char **argv)
 						break;
 					case GID_FILTER:
 						app.hardwareFilter = !app.hardwareFilter;
-						SetStatus(&app, app.hardwareFilter ? "Hardware filter on." : "Hardware filter off.");
+						ApplyHardwareAudioFilter(&app);
+						SetGadgetAttrs((struct Gadget *)app.filterGad, app.win, NULL, GA_Text, (ULONG)(app.hardwareFilter ? "FLT*" : "FLT"), TAG_DONE);
+						SetStatus(&app, app.hardwareFilter ? "Hardware filter enabled." : "Hardware filter disabled.");
 						break;
 					case GID_PLAYLIST:
 						BrowseForPlaylist(&app);
+						break;
+					case GID_STAR1: case GID_STAR2: case GID_STAR3: case GID_STAR4: case GID_STAR5:
+						app.rating = (int)(result & WMHI_GADGETMASK) - GID_STAR1 + 1;
+						UpdateRatingDisplay(&app);
+						SetStatus(&app, "Rating updated for this file only.");
 						break;
 					default:
 						/* Keep app state current for the other controls. */
