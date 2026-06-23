@@ -22,6 +22,7 @@
 	.globl	StereoFastPolyphaseStride4Half_Amiga_m68k_PhaseCounts
 	.globl	StereoFastPolyphaseStride5_Amiga_m68k
 	.globl	StereoFastPolyphaseStride5_Amiga_m68k_PhaseCounts
+	.globl	AmigaM68KPolyphaseFullRateStereo
 /* void AmigaM68KPolyphaseMonoFast(short *pcm, int *vbuf, const int *coefBase)
  * 4(%sp)  = pcm
  * 8(%sp)  = vbuf
@@ -860,6 +861,57 @@ StereoFastPolyphaseStride5Phase4_Amiga_m68k:
 	moveq	#14,%d0
 	movem.l	(%sp)+,%d2-%d3/%d5/%a2-%a6
 	rts
+
+/* void AmigaM68KPolyphaseFullRateStereo(short *pcm, int *vbuf, const int *coefBase)
+ * Full-rate (stride-1) stereo polyphase synthesis: emits all 32 interleaved
+ * stereo pairs (64 shorts, LRLRLR...) into pcm[0..63].
+ * Stereo counterpart of AmigaM68KPolyphaseMonoFast.  Uses STEREO_PROD_ADD/SUB
+ * which loads each filter coefficient once and applies it to both L and R.
+ * coefBase must be pre-shifted via PolyAsmCoef().
+ * Register layout: a0=pcm, a1=vbuf(L base), a2=coefBase, d3=L acc, d5=R acc
+ */
+AmigaM68KPolyphaseFullRateStereo:
+	movem.l	%d2-%d3/%d5/%a2-%a6,-(%sp)
+	move.l	36(%sp),%a0		| pcm
+	move.l	40(%sp),%a1		| vbuf
+	move.l	44(%sp),%a2		| coefBase
+
+	STEREO_SAMPLE0 0
+	STEREO_PAIR_LO 1,4
+	STEREO_PAIR_LO 2,8
+	STEREO_PAIR_LO 3,12
+	STEREO_PAIR_LO 4,16
+	STEREO_PAIR_LO 5,20
+	STEREO_PAIR_LO 6,24
+	STEREO_PAIR_LO 7,28
+	STEREO_PAIR_LO 8,32
+	STEREO_PAIR_LO 9,36
+	STEREO_PAIR_LO 10,40
+	STEREO_PAIR_LO 11,44
+	STEREO_PAIR_LO 12,48
+	STEREO_PAIR_LO 13,52
+	STEREO_PAIR_LO 14,56
+	STEREO_PAIR_LO 15,60
+	STEREO_SAMPLE16 64
+	STEREO_PAIR_HI 15,68
+	STEREO_PAIR_HI 14,72
+	STEREO_PAIR_HI 13,76
+	STEREO_PAIR_HI 12,80
+	STEREO_PAIR_HI 11,84
+	STEREO_PAIR_HI 10,88
+	STEREO_PAIR_HI 9,92
+	STEREO_PAIR_HI 8,96
+	STEREO_PAIR_HI 7,100
+	STEREO_PAIR_HI 6,104
+	STEREO_PAIR_HI 5,108
+	STEREO_PAIR_HI 4,112
+	STEREO_PAIR_HI 3,116
+	STEREO_PAIR_HI 2,120
+	STEREO_PAIR_HI 1,124
+
+	movem.l	(%sp)+,%d2-%d3/%d5/%a2-%a6
+	rts
+
 
 	.even
 	.data

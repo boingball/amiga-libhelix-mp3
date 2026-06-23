@@ -336,6 +336,9 @@ extern int StereoFastPolyphaseStride4Phase2_Amiga_m68k(short *pcm, int *vbuf,
 extern int StereoFastPolyphaseStride4Phase3_Amiga_m68k(short *pcm, int *vbuf,
 	const int *coefBase) __asm__("StereoFastPolyphaseStride4Phase3_Amiga_m68k")
 	__attribute__((weak));
+extern void AmigaM68KPolyphaseFullRateStereo(short *pcm, int *vbuf,
+	const int *coefBase) __asm__("AmigaM68KPolyphaseFullRateStereo")
+	__attribute__((weak));
 
 /*
  * The m68k assembly polyphase kernels previously shifted every coefficient left
@@ -2114,6 +2117,12 @@ void PolyphaseMono(short *pcm, int *vbuf, const int *coefBase)
 
 void PolyphaseStereo(short *pcm, int *vbuf, const int *coefBase)
 {
+#if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE) && defined(AMIGA_M68K_ASM_POLYPHASE)
+	if (AmigaM68KPolyphaseFullRateStereo) {
+		AmigaM68KPolyphaseFullRateStereo(pcm, vbuf, PolyAsmCoef(coefBase));
+		return;
+	}
+#endif
 #if defined(AMIGA_M68K) && defined(AMIGA_FAST_POLYPHASE)
 	PolyphaseStereoFast(pcm, vbuf, coefBase);
 #else
