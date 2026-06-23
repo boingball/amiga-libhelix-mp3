@@ -303,6 +303,7 @@ typedef struct MrApp {
 	Object         *winObj;
 	struct Window  *win;
 	struct Menu    *menuStrip;
+	APTR            visualInfo;
 
 	Object         *fileGad;
 	Object         *rateGad;
@@ -368,6 +369,7 @@ typedef struct MrApp {
 	int   progressEnabled;
 	int   playlistCount;
 	int   playlistCurrent;
+	int   playlistSelected;
 	int   playlistNextPending;
 	int   volumePercent;
 	int   bufferSeconds;
@@ -1226,8 +1228,7 @@ static int MrOpenWindow(MrApp *app)
 	app->artGad = (Object *)NewObject(BUTTON_GetClass(), NULL,
 	                GA_ID, GID_LAST,
 	                GA_ReadOnly, TRUE,
-	                GA_Disabled, TRUE,
-	                GA_Text, (ULONG)"No art",
+	                GA_Text, (ULONG)"",
 	                TAG_DONE);
 	{ int i; for (i = 0; i < 5; i++) app->starGad[i] = (Object *)NewObject(BUTTON_GetClass(), NULL, GA_ID, GID_STAR1 + i, GA_RelVerify, TRUE, GA_Text, (ULONG)"-", TAG_DONE); }
 
@@ -1351,7 +1352,10 @@ static int MrOpenWindow(MrApp *app)
 			LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
 			ADD_LABELLED(app->fileInfoGad, "File info"),
 			ADD_LABELLED(app->timeGad, "Time"),
-			CHILD_MaxWidth, 96,
+			/* Wide enough for the full "00:00 / 00:00" read-out; the previous
+			 * 96px clipped the elapsed half off the left. */
+			CHILD_MinWidth, 120,
+			CHILD_MaxWidth, 132,
 			CHILD_WeightedWidth, 0,
 			TAG_DONE),
 		CHILD_WeightedHeight, 0,
@@ -1388,6 +1392,7 @@ static int MrOpenWindow(MrApp *app)
 		WA_SizeGadget, TRUE,
 		WA_IDCMP, IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW |
 			IDCMP_IDCMPUPDATE | IDCMP_MENUPICK | IDCMP_NEWSIZE,
+		WA_NewLookMenus, TRUE,
 		WA_Width, 440,
 		WA_Height, 290,
 		WINDOW_Position, WPOS_CENTERSCREEN,
@@ -1404,12 +1409,21 @@ static int MrOpenWindow(MrApp *app)
 		fprintf(stderr, "minimp3r: could not open the window.\n");
 		return 0;
 	}
+	/* A visual-info handle is needed both to lay the menu strip out (without
+	 * LayoutMenus the items have no size, so the drop-downs never render) and
+	 * to draw the recessed artwork bevel. */
+	app->visualInfo = GetVisualInfoA(app->win->WScreen, NULL);
 	app->menuStrip = CreateMenus(kMenus, TAG_DONE);
-	if (app->menuStrip) {
+	if (app->menuStrip && app->visualInfo &&
+		LayoutMenus(app->menuStrip, app->visualInfo, TAG_DONE)) {
 		SyncMenuChecks(app);
 		SetMenuStrip(app->win, app->menuStrip);
 	} else {
 		fprintf(stderr, "minimp3r: could not create menus.\n");
+		if (app->menuStrip) {
+			FreeMenus(app->menuStrip);
+			app->menuStrip = NULL;
+		}
 	}
 	return 1;
 }
@@ -1423,6 +1437,10 @@ static void MrCloseWindow(MrApp *app)
 	if (app->menuStrip) {
 		FreeMenus(app->menuStrip);
 		app->menuStrip = NULL;
+	}
+	if (app->visualInfo) {
+		FreeVisualInfo(app->visualInfo);
+		app->visualInfo = NULL;
 	}
 	if (app->winObj) {
 		DisposeObject(app->winObj);	/* disposes the whole gadget tree too */
@@ -1776,14 +1794,11 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 static void UpdateArtwork(MrApp *app, MrMp3Info *info)
 {
 	app->artValid = 0;
-	if (app->artGad && app->win)
-		SetGadgetAttrs((struct Gadget *)app->artGad, app->win, NULL, GA_Text, (ULONG)"No art", TAG_DONE);
 	if (app->artEnabled && info && info->artData && info->artBytes > 4 &&
-		DecodeJpegToGrey(info->artData, info->artBytes, app->artGreyBuf, MR_ART_W, MR_ART_H, info->artIsPng) == 0) {
+		DecodeJpegToGrey(info->artData, info->artBytes, app->artGreyBuf, MR_ART_W, MR_ART_H, info->artIsPng) == 0)
 		app->artValid = 1;
-		if (app->artGad && app->win)
-			SetGadgetAttrs((struct Gadget *)app->artGad, app->win, NULL, GA_Text, (ULONG)"", TAG_DONE);
-	}
+	/* The panel (frame + thumbnail or "No art") is hand-drawn over the
+	 * placeholder gadget rather than via the button's own text. */
 	DrawArtPanel(app);
 }
 
@@ -1791,7 +1806,7 @@ static void DrawArtPanel(MrApp *app)
 {
 	struct Gadget *gad;
 	struct RastPort *rp;
-	int x, y, w, h;
+	int availW, availH, w, h, ox, oy, x, y;
 	static const unsigned char bayer[8][8] = {
 		{0,32,8,40,2,34,10,42},{48,16,56,24,50,18,58,26},{12,44,4,36,14,46,6,38},{60,28,52,20,62,30,54,22},
 		{3,35,11,43,1,33,9,41},{51,19,59,27,49,17,57,25},{15,47,7,39,13,45,5,37},{63,31,55,23,61,29,53,21}
@@ -1799,11 +1814,25 @@ static void DrawArtPanel(MrApp *app)
 	if (!app || !app->win || !app->artGad) return;
 	gad = (struct Gadget *)app->artGad;
 	rp = app->win->RPort;
-	x = gad->LeftEdge + 4; y = gad->TopEdge + 4;
-	w = gad->Width - 8; h = gad->Height - 8;
-	if (w > MR_ART_W) { x += (w - MR_ART_W) / 2; w = MR_ART_W; }
-	if (h > MR_ART_H) { y += (h - MR_ART_H) / 2; h = MR_ART_H; }
+	/* The artwork placeholder button reserves the rectangle in the layout;
+	 * its laid-out bounds tell us where to paint.  Bail out until the layout
+	 * has actually sized it (early refreshes can fire with a zero rect). */
+	if (gad->Width <= 8 || gad->Height <= 8) return;
+	availW = gad->Width - 8; availH = gad->Height - 8;
+	w = availW < MR_ART_W ? availW : MR_ART_W;
+	h = availH < MR_ART_H ? availH : MR_ART_H;
 	if (w <= 0 || h <= 0) return;
+	ox = gad->LeftEdge + 4 + (availW - w) / 2;
+	oy = gad->TopEdge + 4 + (availH - h) / 2;
+
+	/* Recessed frame, exactly like the GadTools frontend, so the panel is
+	 * always visible even before any artwork has decoded. */
+	if (app->visualInfo)
+		DrawBevelBox(rp, ox - 2, oy - 2, w + 4, h + 4,
+			GT_VisualInfo, (ULONG)app->visualInfo,
+			GTBB_Recessed, TRUE,
+			TAG_DONE);
+
 	if (app->artValid) {
 		int pens[3] = {0, 1, 1};
 		struct DrawInfo *dri = GetScreenDrawInfo(app->win->WScreen);
@@ -1819,8 +1848,18 @@ static void DrawArtPanel(MrApp *app)
 				int xx = (x * MR_ART_W) / w;
 				int g = app->artGreyBuf[yy * MR_ART_W + xx] + (((int)bayer[yy & 7][xx & 7] - 32) * 3 / 4);
 				SetAPen(rp, (UWORD)pens[g >= 171 ? 2 : (g >= 85 ? 1 : 0)]);
-				WritePixel(rp, gad->LeftEdge + 4 + x + ((gad->Width - 8 - w) / 2), gad->TopEdge + 4 + y + ((gad->Height - 8 - h) / 2));
+				WritePixel(rp, ox + x, oy + y);
 			}
+		}
+	} else {
+		/* Paint our own "No art" panel rather than relying on the button's
+		 * text, which the layout can repaint over (leaving it blank). */
+		SetAPen(rp, 0);
+		RectFill(rp, ox, oy, ox + w - 1, oy + h - 1);
+		if (w >= 48 && h >= 8) {
+			SetAPen(rp, 1);
+			Move(rp, ox + (w - 48) / 2, oy + h / 2 + 2);
+			Text(rp, "No art", 6);
 		}
 	}
 }
@@ -2000,6 +2039,7 @@ static void LoadPlaylistPath(MrApp *app, const char *m3uPath, const char *drawer
 	char full[MR_MAX_PATH];
 	app->playlistCount = 0;
 	app->playlistCurrent = -1;
+	app->playlistSelected = -1;
 	fh = Open((STRPTR)m3uPath, MODE_OLDFILE);
 	if (!fh) {
 		SetStatus(app, "Could not open playlist.");
@@ -2020,6 +2060,7 @@ static void LoadPlaylistPath(MrApp *app, const char *m3uPath, const char *drawer
 	Close(fh);
 	if (app->playlistCount > 0) {
 		app->playlistCurrent = 0;
+		app->playlistSelected = 0;
 		SafeCopy(app->inputName, sizeof(app->inputName), app->playlist[0]);
 		UpdateFileGadget(app);
 		RefreshFileInfoAndTags(app);
@@ -2027,6 +2068,7 @@ static void LoadPlaylistPath(MrApp *app, const char *m3uPath, const char *drawer
 		UpdateNextButtonState(app);
 		SetStatus(app, app->artValid ? "Playlist loaded." : "Playlist loaded (No art).");
 	} else {
+		app->playlistSelected = -1;
 		RefreshPlaylistView(app);
 		UpdateNextButtonState(app);
 		SetStatus(app, "Playlist had no playable entries.");
@@ -2035,8 +2077,12 @@ static void LoadPlaylistPath(MrApp *app, const char *m3uPath, const char *drawer
 
 enum {
 	PL_GID_LIST = 200,
-	PL_GID_LOAD_M3U,
+	PL_GID_ADD,
+	PL_GID_REMOVE,
+	PL_GID_CLEAR,
 	PL_GID_PLAY,
+	PL_GID_LOAD_M3U,
+	PL_GID_SAVE_M3U,
 	PL_GID_CLOSE
 };
 
@@ -2063,11 +2109,159 @@ static void RefreshPlaylistView(MrApp *app)
 		app->plNodes[i].ln_Pri = 0;
 		AddTail(&app->plList, &app->plNodes[i]);
 	}
-	if (app->plWin && app->plGadList)
+	if (app->plWin && app->plGadList) {
+		int sel = app->playlistSelected >= 0 ? app->playlistSelected : app->playlistCurrent;
 		GT_SetGadgetAttrs(app->plGadList, app->plWin, NULL,
 			GTLV_Labels, (ULONG)&app->plList,
-			GTLV_Selected, app->playlistCurrent >= 0 ? (ULONG)app->playlistCurrent : (ULONG)~0,
+			GTLV_Selected, sel >= 0 ? (ULONG)sel : (ULONG)~0,
 			TAG_DONE);
+	}
+}
+
+/* Append one or more files (ASL multi-select) to the playlist. */
+static void PlaylistAddFiles(MrApp *app)
+{
+	struct FileRequester *fr;
+	char path[MR_MAX_PATH];
+	int added = 0;
+
+	fr = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+		ASLFR_TitleText, (ULONG)"Add to playlist",
+		ASLFR_DoMultiSelect, TRUE,
+		ASLFR_DoPatterns, TRUE,
+		ASLFR_InitialPattern, (ULONG)"#?.(mp3|flac|wav|aif|aiff)",
+		ASLFR_InitialDrawer, (ULONG)(app->lastDrawer[0] ? app->lastDrawer : NULL),
+		TAG_DONE);
+	if (!fr) {
+		SetStatus(app, "Could not allocate file requester.");
+		return;
+	}
+	if (AslRequestTags(fr, ASLFR_Window, (ULONG)(app->plWin ? app->plWin : app->win),
+		ASLFR_SleepWindow, TRUE, TAG_DONE)) {
+		if (fr->fr_Drawer && fr->fr_Drawer[0])
+			SafeCopy(app->lastDrawer, sizeof(app->lastDrawer), (const char *)fr->fr_Drawer);
+		if (fr->fr_NumArgs > 0 && fr->fr_ArgList) {
+			int i;
+			for (i = 0; i < (int)fr->fr_NumArgs && app->playlistCount < MR_PLAYLIST_MAX; i++) {
+				path[0] = '\0';
+				if (fr->fr_Drawer && fr->fr_Drawer[0]) {
+					SafeCopy(path, sizeof(path), (const char *)fr->fr_Drawer);
+					AddPart((STRPTR)path, fr->fr_ArgList[i].wa_Name, sizeof(path));
+				} else {
+					SafeCopy(path, sizeof(path), (const char *)fr->fr_ArgList[i].wa_Name);
+				}
+				if (!path[0]) continue;
+				SafeCopy(app->playlist[app->playlistCount++], MR_MAX_PATH, path);
+				added++;
+			}
+		} else if (fr->fr_File && fr->fr_File[0] && app->playlistCount < MR_PLAYLIST_MAX) {
+			path[0] = '\0';
+			if (fr->fr_Drawer && fr->fr_Drawer[0])
+				SafeCopy(path, sizeof(path), (const char *)fr->fr_Drawer);
+			if (AddPart((STRPTR)path, fr->fr_File, sizeof(path))) {
+				SafeCopy(app->playlist[app->playlistCount++], MR_MAX_PATH, path);
+				added++;
+			}
+		}
+	}
+	FreeAslRequest(fr);
+	if (added > 0) {
+		char msg[48];
+		if (app->playlistSelected < 0)
+			app->playlistSelected = app->playlistCount - added;
+		RefreshPlaylistView(app);
+		UpdateNextButtonState(app);
+		sprintf(msg, "Added %d track%s to playlist.", added, added == 1 ? "" : "s");
+		SetStatus(app, msg);
+	} else {
+		SetStatus(app, app->playlistCount >= MR_PLAYLIST_MAX ?
+			"Playlist is full." : "No tracks added.");
+	}
+}
+
+/* Remove the currently selected entry from the playlist. */
+static void PlaylistRemoveSelected(MrApp *app)
+{
+	int sel = app->playlistSelected;
+	int i;
+	if (sel < 0 || sel >= app->playlistCount) {
+		SetStatus(app, "Select a track to remove first.");
+		return;
+	}
+	for (i = sel; i < app->playlistCount - 1; i++)
+		SafeCopy(app->playlist[i], MR_MAX_PATH, app->playlist[i + 1]);
+	app->playlistCount--;
+	if (app->playlistCurrent > sel) app->playlistCurrent--;
+	else if (app->playlistCurrent == sel) app->playlistCurrent = -1;
+	if (app->playlistSelected >= app->playlistCount)
+		app->playlistSelected = app->playlistCount - 1;
+	RefreshPlaylistView(app);
+	UpdateNextButtonState(app);
+	SetStatus(app, "Track removed from playlist.");
+}
+
+static void PlaylistClearAll(MrApp *app)
+{
+	app->playlistCount = 0;
+	app->playlistCurrent = -1;
+	app->playlistSelected = -1;
+	RefreshPlaylistView(app);
+	UpdateNextButtonState(app);
+	SetStatus(app, "Playlist cleared.");
+}
+
+/* Write the current playlist out as a simple #EXTM3U file. */
+static void PlaylistSaveM3U(MrApp *app)
+{
+	struct FileRequester *fr;
+	char m3uPath[MR_MAX_PATH];
+	char line[MR_MAX_PATH + 2];
+	BPTR fh;
+	int i, len;
+
+	if (app->playlistCount <= 0) {
+		SetStatus(app, "Playlist is empty - nothing to save.");
+		return;
+	}
+	fr = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+		ASLFR_TitleText, (ULONG)"Save M3U playlist",
+		ASLFR_DoSaveMode, TRUE,
+		ASLFR_InitialFile, (ULONG)"playlist.m3u",
+		ASLFR_InitialDrawer, (ULONG)(app->lastDrawer[0] ? app->lastDrawer : NULL),
+		TAG_DONE);
+	if (!fr) {
+		SetStatus(app, "Could not allocate file requester.");
+		return;
+	}
+	m3uPath[0] = '\0';
+	if (AslRequestTags(fr, ASLFR_Window, (ULONG)(app->plWin ? app->plWin : app->win),
+		ASLFR_SleepWindow, TRUE, TAG_DONE)) {
+		if (fr->fr_Drawer && fr->fr_Drawer[0])
+			SafeCopy(m3uPath, sizeof(m3uPath), (const char *)fr->fr_Drawer);
+		if (fr->fr_File && fr->fr_File[0])
+			AddPart((STRPTR)m3uPath, fr->fr_File, sizeof(m3uPath));
+	}
+	FreeAslRequest(fr);
+	if (!m3uPath[0])
+		return;
+	fh = Open((STRPTR)m3uPath, MODE_NEWFILE);
+	if (!fh) {
+		SetStatus(app, "Cannot create M3U file.");
+		return;
+	}
+	Write(fh, (APTR)"#EXTM3U\n", 8);
+	for (i = 0; i < app->playlistCount; i++) {
+		SafeCopy(line, sizeof(line) - 1, app->playlist[i]);
+		len = (int)strlen(line);
+		line[len++] = '\n';
+		if (Write(fh, (APTR)line, len) != len) {
+			Close(fh);
+			SetStatus(app, "Error writing M3U file.");
+			return;
+		}
+	}
+	Close(fh);
+	SetStatus(app, "Playlist saved as M3U.");
 }
 
 static void ClosePlaylistWindow(MrApp *app)
@@ -2113,27 +2307,41 @@ static void OpenPlaylistWindow(MrApp *app)
 	gad = app->plGadContext;
 	RefreshPlaylistView(app);
 	memset(&ng, 0, sizeof(ng));
+	{
+	int sel = app->playlistSelected >= 0 ? app->playlistSelected : app->playlistCurrent;
 	ng.ng_LeftEdge = 8; ng.ng_TopEdge = 20; ng.ng_Width = 344; ng.ng_Height = 120;
 	ng.ng_GadgetID = PL_GID_LIST; ng.ng_Flags = 0; ng.ng_VisualInfo = app->plVisualInfo;
 	app->plGadList = gad = CreateGadget(LISTVIEW_KIND, gad, &ng,
 		GTLV_Labels, (ULONG)&app->plList,
-		GTLV_Selected, app->playlistCurrent >= 0 ? (ULONG)app->playlistCurrent : (ULONG)~0,
+		GTLV_Selected, sel >= 0 ? (ULONG)sel : (ULONG)~0,
 		GA_RelVerify, TRUE, TAG_DONE);
+	}
 	if (!gad) goto fail;
-	ng.ng_TopEdge = 148; ng.ng_Width = 112; ng.ng_Height = 18; ng.ng_Flags = PLACETEXT_IN;
+	/* Row 1: Add | Remove | Clear | Play */
+	ng.ng_TopEdge = 148; ng.ng_Width = 84; ng.ng_Height = 18; ng.ng_Flags = PLACETEXT_IN;
+	ng.ng_LeftEdge = 8; ng.ng_GadgetText = (UBYTE *)"Add"; ng.ng_GadgetID = PL_GID_ADD;
+	gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 96; ng.ng_GadgetText = (UBYTE *)"Remove"; ng.ng_GadgetID = PL_GID_REMOVE;
+	gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 184; ng.ng_GadgetText = (UBYTE *)"Clear"; ng.ng_GadgetID = PL_GID_CLEAR;
+	gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 272; ng.ng_GadgetText = (UBYTE *)"Play"; ng.ng_GadgetID = PL_GID_PLAY;
+	gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+	/* Row 2: Load M3U | Save M3U | Close */
+	ng.ng_TopEdge = 170; ng.ng_Width = 114;
 	ng.ng_LeftEdge = 8; ng.ng_GadgetText = (UBYTE *)"Load M3U"; ng.ng_GadgetID = PL_GID_LOAD_M3U;
 	gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
-	ng.ng_LeftEdge = 128; ng.ng_GadgetText = (UBYTE *)"Play"; ng.ng_GadgetID = PL_GID_PLAY;
+	ng.ng_LeftEdge = 126; ng.ng_GadgetText = (UBYTE *)"Save M3U"; ng.ng_GadgetID = PL_GID_SAVE_M3U;
 	gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
-	ng.ng_LeftEdge = 248; ng.ng_GadgetText = (UBYTE *)"Close"; ng.ng_GadgetID = PL_GID_CLOSE;
+	ng.ng_LeftEdge = 244; ng.ng_GadgetText = (UBYTE *)"Close"; ng.ng_GadgetID = PL_GID_CLOSE;
 	gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
 	memset(&nw, 0, sizeof(nw));
 	nw.LeftEdge = app->win->LeftEdge + 20; nw.TopEdge = app->win->TopEdge + 20;
-	nw.Width = 368; nw.Height = 176;
+	nw.Width = 368; nw.Height = 200;
 	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW;
 	nw.Flags = WFLG_CLOSEGADGET | WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_SMART_REFRESH;
 	nw.Title = (UBYTE *)"MiniAMP3 Playlist";
-	nw.MinWidth = nw.MaxWidth = 368; nw.MinHeight = nw.MaxHeight = 176;
+	nw.MinWidth = nw.MaxWidth = 368; nw.MinHeight = nw.MaxHeight = 200;
 	nw.Type = WBENCHSCREEN;
 	app->plWin = OpenWindowTags(&nw, TAG_DONE);
 	if (!app->plWin) goto fail;
@@ -2179,6 +2387,7 @@ static void PlaylistLoadCurrent(MrApp *app, int index, int startPlayback)
 	if (index < 0 || index >= app->playlistCount)
 		return;
 	app->playlistCurrent = index;
+	app->playlistSelected = index;
 	SafeCopy(app->inputName, sizeof(app->inputName), app->playlist[index]);
 	UpdateFileGadget(app);
 	RefreshFileInfoAndTags(app);
@@ -2204,14 +2413,43 @@ static void HandlePlaylistWindow(MrApp *app)
 			ClosePlaylistWindow(app);
 			return;
 		}
+		if (cls == IDCMP_REFRESHWINDOW) {
+			GT_BeginRefresh(app->plWin);
+			GT_EndRefresh(app->plWin, TRUE);
+			continue;
+		}
 		if (cls == IDCMP_GADGETUP) {
-			if (gid == PL_GID_LIST) {
-				PlaylistLoadCurrent(app, (int)code, 0);
-			} else if (gid == PL_GID_LOAD_M3U) {
+			switch (gid) {
+			case PL_GID_LIST:
+				/* Single click just selects; the Play button (or a second
+				 * click via the main window) starts playback. */
+				app->playlistSelected = (int)code;
+				break;
+			case PL_GID_ADD:
+				PlaylistAddFiles(app);
+				break;
+			case PL_GID_REMOVE:
+				PlaylistRemoveSelected(app);
+				break;
+			case PL_GID_CLEAR:
+				PlaylistClearAll(app);
+				break;
+			case PL_GID_PLAY: {
+				int idx = app->playlistSelected >= 0 ?
+					app->playlistSelected : app->playlistCurrent;
+				if (idx >= 0 && idx < app->playlistCount)
+					PlaylistLoadCurrent(app, idx, 1);
+				else
+					SetStatus(app, "Select a track to play first.");
+				break;
+			}
+			case PL_GID_LOAD_M3U:
 				BrowseForPlaylist(app);
-			} else if (gid == PL_GID_PLAY) {
-				PlaylistLoadCurrent(app, app->playlistCurrent, 1);
-			} else if (gid == PL_GID_CLOSE) {
+				break;
+			case PL_GID_SAVE_M3U:
+				PlaylistSaveM3U(app);
+				break;
+			case PL_GID_CLOSE:
 				ClosePlaylistWindow(app);
 				return;
 			}
@@ -2345,6 +2583,7 @@ int main(int argc, char **argv)
 	app.artColorEnabled = 0;
 	app.progressEnabled = 0;
 	app.playlistCurrent = -1;
+	app.playlistSelected = -1;
 	app.lastPhaseShown = -1;
 
 	/* Let the playback child find any installed *.decoder modules, exactly as
@@ -2388,6 +2627,10 @@ int main(int argc, char **argv)
 	GetAttr(WINDOW_SigMask, app.winObj, &winSig);
 	timerSig = 1UL << app.timerPort->mp_SigBit;
 	doneSig  = 1UL << app.donePort->mp_SigBit;
+
+	/* Paint the (empty) artwork panel once now that the layout has sized the
+	 * placeholder, so the recessed box is shown before the first file loads. */
+	DrawArtPanel(&app);
 
 	while (!done) {
 		ULONG plSig = (app.plWin && app.plWin->UserPort) ? (1UL << app.plWin->UserPort->mp_SigBit) : 0;
