@@ -7849,22 +7849,51 @@ static DecLong DecModSeekCb(void *userData, DecLong offset, int whence)
 }
 
 
+static int FindAdtsSyncLocal(const unsigned char *buf, size_t n)
+{
+	size_t i;
+	if (!buf || n < 2)
+		return -1;
+	for (i = 0; i + 1 < n; i++) {
+		if (buf[i] == 0xff && (buf[i + 1] & 0xf0) == 0xf0 &&
+			(buf[i + 1] & 0x06) == 0)
+			return (int)i;
+	}
+	return -1;
+}
+
 static int ValidateAacAdtsInput(InputSource *input, int debugDecoder)
 {
 	unsigned char probe[16];
 	unsigned long pos;
 	size_t nRead;
 	int i;
+	int sync;
+	int profile = -1;
+	int sfIndex = -1;
+	int chanCfg = -1;
+	int frameLen = -1;
 
 	pos = InputSourceTell(input);
 	nRead = InputSourceRead(input, probe, sizeof(probe));
 	InputSourceSeek(input, pos);
+	sync = FindAdtsSyncLocal(probe, nRead);
+	if (sync >= 0 && nRead >= (size_t)sync + 7U) {
+		const unsigned char *h = probe + sync;
+		profile = (h[2] >> 6) & 0x03;
+		sfIndex = (h[2] >> 2) & 0x0f;
+		chanCfg = ((h[2] & 0x01) << 2) | ((h[3] >> 6) & 0x03);
+		frameLen = ((h[3] & 0x03) << 11) | (h[4] << 3) | ((h[5] >> 5) & 0x07);
+	}
 
 	if (debugDecoder) {
-		fprintf(stderr, "generic-debug: input bytes available=%lu first16=", (unsigned long)nRead);
+		fprintf(stderr, "generic-debug: AAC module selected\n");
+		fprintf(stderr, "generic-debug: AAC first 16 bytes available=%lu first16=", (unsigned long)nRead);
 		for (i = 0; i < (int)nRead; i++)
 			fprintf(stderr, "%s%02lx", i ? " " : "", (unsigned long)probe[i]);
 		fprintf(stderr, "\n");
+		fprintf(stderr, "generic-debug: AACFindSyncWord result=%d profile=%d sampleRateIndex=%d channels=%d frameLength=%d\n",
+			sync, profile, sfIndex, chanCfg, frameLen);
 	}
 
 	if (nRead >= 8 && probe[4] == 'f' && probe[5] == 't' &&
@@ -7872,9 +7901,9 @@ static int ValidateAacAdtsInput(InputSource *input, int debugDecoder)
 		fprintf(stderr, "Unsupported AAC container - ADTS .aac only\n");
 		return 0;
 	}
-	if (nRead < 2 || probe[0] != 0xff ||
-		(probe[1] != 0xf1 && probe[1] != 0xf9)) {
-		fprintf(stderr, "Unsupported AAC container - ADTS .aac only\n");
+	if (sync != 0 || nRead < 7 || profile != 1 || sfIndex == 0x0f ||
+		chanCfg < 1 || chanCfg > 2 || frameLen < 7) {
+		fprintf(stderr, "Unsupported AAC stream - expected ADTS AAC LC mono/stereo\n");
 		return 0;
 	}
 	return 1;
@@ -8232,6 +8261,8 @@ static int AmigaGenericFormatPlay(const char *filename, const char *ext,
 		goto done_input;
 	}
 
+	if (opt->debugDecoder && ext && StrCaseCmp(ext, "aac") == 0)
+		fprintf(stderr, "generic-debug: AAC module loaded\n");
 	if (opt->debugDecoder)
 		fprintf(stderr, "generic-debug: decoder module path/name=%s/%s load=success entry ops=%p\n",
 			mod.path[0] ? mod.path : "(unknown)",
