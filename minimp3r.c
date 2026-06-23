@@ -364,6 +364,8 @@ static void UpdateTimeDisplay(MrApp *app);
 static void RefreshFileInfoAndTags(MrApp *app);
 static void ApplyHardwareAudioFilter(MrApp *app);
 
+static void SyncMenuChecks(MrApp *app);
+
 /* ------------------------------------------------------------------------- */
 /* Small helpers                                                             */
 /* ------------------------------------------------------------------------- */
@@ -1352,10 +1354,12 @@ static void RefreshFileInfoAndTags(MrApp *app)
 
 static void ApplyHardwareAudioFilter(MrApp *app)
 {
-	Forbid();
-	if (app && app->hardwareFilter) ciaa.ciapra &= (UBYTE)~CIAF_LED;
-	else ciaa.ciapra |= CIAF_LED;
-	Permit();
+volatile UBYTE *ciapra = (volatile UBYTE *)0xbfe001;
+
+if (app && app->hardwareFilter)
+*ciapra &= (UBYTE)~CIAF_LED;
+else
+*ciapra |= (UBYTE)CIAF_LED;
 }
 
 /* ------------------------------------------------------------------------- */
