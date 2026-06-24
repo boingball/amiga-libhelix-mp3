@@ -16,6 +16,17 @@
 #include "aac_alloc.h"
 #include "aac/aacdec.h"
 
+#ifndef AAC_MODULE_DEBUG
+#define AAC_MODULE_DEBUG 0
+#endif
+
+#if AAC_MODULE_DEBUG
+extern void AacModuleDebug(const char *fmt, ...);
+#define AAC_DEBUG(...) AacModuleDebug(__VA_ARGS__)
+#else
+#define AAC_DEBUG(...) ((void)0)
+#endif
+
 #define AAC_MODULE_BUILD_ID "AAC MODULE BUILD MARKER 12345 rev 3"
 
 /* Compressed input ring buffer.  Must hold at least two maximum ADTS frames
@@ -95,14 +106,22 @@ typedef struct AacState {
     unsigned long lastInputBefore;
     unsigned long lastInputAfter;
     unsigned long lastSamplesProduced;
+    unsigned long lastFrameLen;
     int           lastDecodeErr;
+    int           lastPeakMin;
+    int           lastPeakMax;
+    unsigned long lastFullScaleCount;
 } AacState;
 
 static int AacRefillBuf(AacState *st);
 
-static int AacValidateAdtsHeader(const unsigned char *p, int n)
+static int AacParseAdtsHeader(const unsigned char *p, int n,
+                               int *frameLenOut, int *channelsOut)
 {
-    int profile, sfIndex, chanCfg, frameLen;
+    int sfIndex, chanCfg, frameLen;
+
+    if (frameLenOut) *frameLenOut = 0;
+    if (channelsOut) *channelsOut = 0;
 
     if (!p || n < 7)
         return 0;
@@ -112,19 +131,33 @@ static int AacValidateAdtsHeader(const unsigned char *p, int n)
     if ((p[1] & 0x06) != 0)
         return 0;
 
-    profile = (p[2] >> 6) & 0x03;
     sfIndex = (p[2] >> 2) & 0x0f;
     chanCfg = ((p[2] & 0x01) << 2) | ((p[3] >> 6) & 0x03);
     frameLen = ((p[3] & 0x03) << 11) | (p[4] << 3) | ((p[5] >> 5) & 0x07);
 
-    if (profile != 1)          /* AAC LC */
-        return 0;
     if (sfIndex == 0x0f)       /* explicit frequency not valid in ADTS */
         return 0;
-    if (chanCfg == 0 || chanCfg > 2)
+    if (chanCfg != 1 && chanCfg != 2)
         return 0;
-    if (frameLen < 7 || frameLen > n)
+    if (frameLen < 7)
         return 0;
+
+    if (frameLenOut) *frameLenOut = frameLen;
+    if (channelsOut) *channelsOut = chanCfg;
+    return 1;
+}
+
+static int AacEnsureFullFrame(AacState *st, int frameLen)
+{
+    if (!st || frameLen < 7 || (unsigned long)frameLen > st->iobufCap)
+        return 0;
+
+    while (st->iobufLeft < frameLen) {
+        if (st->eof)
+            return 0;
+        if (!AacRefillBuf(st) && st->iobufLeft < frameLen)
+            return 0;
+    }
 
     return 1;
 }
@@ -182,80 +215,161 @@ static int AacRefillBuf(AacState *st)
     return (st->iobufLeft > 0);
 }
 
+/* Scan decoded PCM for suspicious full-scale bursts before exposing it. */
+static int AacPcmBurstCheck(AacState *st, int outputSamps)
+{
+    int i, sample, peakMin, peakMax;
+    unsigned long fullScaleCount = 0;
+    unsigned long suspiciousThreshold;
+
+    if (!st || outputSamps <= 0)
+        return 0;
+
+    peakMin = 32767;
+    peakMax = -32768;
+    for (i = 0; i < outputSamps; i++) {
+        sample = st->outbuf[i];
+        if (sample < peakMin) peakMin = sample;
+        if (sample > peakMax) peakMax = sample;
+        if (sample <= -32760 || sample >= 32760)
+            fullScaleCount++;
+    }
+
+    st->lastPeakMin = peakMin;
+    st->lastPeakMax = peakMax;
+    st->lastFullScaleCount = fullScaleCount;
+
+    suspiciousThreshold = (unsigned long)(outputSamps / 8);
+    if (suspiciousThreshold < 16) suspiciousThreshold = 16;
+    if (fullScaleCount > suspiciousThreshold) {
+        AAC_DEBUG("aac-debug: suspicious full-scale PCM burst frameLen=%lu outputSamps=%ld fullScale=%lu threshold=%lu peakMin=%ld peakMax=%ld\n",
+                  st->lastFrameLen, (long)outputSamps, fullScaleCount,
+                  suspiciousThreshold, (long)peakMin, (long)peakMax);
+#if AAC_MODULE_DEBUG
+        return 0;
+#endif
+    }
+
+    return 1;
+}
+
 /*
  * Decode exactly one AAC frame into st->outbuf.
  * Returns 1 with PCM ready, 0 for EOF, -1 for a recoverable frame error.
  */
 static int AacDecodeFrame(AacState *st)
 {
-    int offset, err;
+    int offset, err, frameLen, adtsChannels;
     AACFrameInfo fi;
-    unsigned char *oldInputPtr;
-    int oldBytesLeft;
-    unsigned long oldInputOff;
 
     if (st->error)
         return -1;
 
-    if ((unsigned long)st->iobufLeft < AAC_REFILL_THRESH)
-        AacRefillBuf(st);
+    for (;;) {
+        if ((unsigned long)st->iobufLeft < AAC_REFILL_THRESH)
+            AacRefillBuf(st);
 
-    if (st->iobufLeft <= 0) {
-        st->done = 1;
-        return 0;
+        if (st->iobufLeft <= 0) {
+            st->done = 1;
+            return 0;
+        }
+
+        offset = AacFindSyncBounded(st);
+        if (offset < 0) {
+            st->done = st->eof;
+            return st->done ? 0 : -1;
+        }
+        st->iobufReadPtr += offset;
+        st->iobufLeft    -= offset;
+
+        if (!AacParseAdtsHeader(st->iobufReadPtr, st->iobufLeft,
+                                &frameLen, &adtsChannels)) {
+            st->iobufReadPtr++;
+            st->iobufLeft--;
+            st->errCount++;
+            if (st->errCount >= AAC_MAX_ERRORS) {
+                st->error = 1;
+                return -1;
+            }
+            continue;
+        }
+
+        st->lastFrameLen = (unsigned long)frameLen;
+        if (!AacEnsureFullFrame(st, frameLen)) {
+            st->done = 1;
+            return 0;
+        }
+
+        st->lastBytesBefore = (unsigned long)st->iobufLeft;
+        st->lastInputBefore = (unsigned long)(st->iobufReadPtr - st->iobuf);
+        st->lastSamplesProduced = 0;
+        st->lastPeakMin = 0;
+        st->lastPeakMax = 0;
+        st->lastFullScaleCount = 0;
+
+        err = AACDecode(st->aacHandle, &st->iobufReadPtr, &st->iobufLeft, st->outbuf);
+        st->lastDecodeErr = err;
+        st->lastBytesAfter = (unsigned long)(st->iobufLeft < 0 ? 0 : st->iobufLeft);
+        st->lastInputAfter = (unsigned long)(st->iobufReadPtr - st->iobuf);
+
+        if (err != 0) {
+            AAC_DEBUG("aac-debug: decode error err=%ld frameLen=%lu bytesBefore=%lu bytesAfter=%lu consecutiveErrors=%ld\n",
+                      (long)err, st->lastFrameLen, st->lastBytesBefore,
+                      st->lastBytesAfter, (long)(st->errCount + 1));
+            st->iobufReadPtr = st->iobuf + st->lastInputBefore;
+            st->iobufLeft = (int)st->lastBytesBefore;
+            if (st->iobufLeft > 1) {
+                int next = AACFindSyncWord(st->iobufReadPtr + 1, st->iobufLeft - 1);
+                int advance = (next >= 0) ? (next + 1) : 1;
+                st->iobufReadPtr += advance;
+                st->iobufLeft -= advance;
+            }
+            st->errCount++;
+            if (st->errCount >= AAC_MAX_ERRORS) {
+                st->error = 1;
+                return -1;
+            }
+            continue;
+        }
+
+        AACGetLastFrameInfo(st->aacHandle, &fi);
+        st->lastSamplesProduced = (unsigned long)(fi.outputSamps > 0 ? fi.outputSamps : 0);
+        if (fi.outputSamps <= 0 || (unsigned long)fi.outputSamps > AAC_OUT_CAP ||
+            (fi.nChans != 1 && fi.nChans != 2) ||
+            fi.sampRateOut < 8000 || fi.sampRateOut > 96000 ||
+            fi.nChans != adtsChannels) {
+            AAC_DEBUG("aac-debug: invalid frame info frameLen=%lu outputSamps=%ld sampleRate=%ld channels=%ld consecutiveErrors=%ld\n",
+                      st->lastFrameLen, (long)fi.outputSamps,
+                      (long)fi.sampRateOut, (long)fi.nChans,
+                      (long)(st->errCount + 1));
+            st->errCount++;
+            if (st->errCount >= AAC_MAX_ERRORS) {
+                st->error = 1;
+                return -1;
+            }
+            continue;
+        }
+
+        if (!AacPcmBurstCheck(st, fi.outputSamps)) {
+            st->errCount++;
+            if (st->errCount >= AAC_MAX_ERRORS) {
+                st->error = 1;
+                return -1;
+            }
+            continue;
+        }
+
+        AAC_DEBUG("aac-debug: frameLen=%lu bytesBefore=%lu bytesAfter=%lu outputSamps=%ld sampleRate=%ld channels=%ld peakMin=%ld peakMax=%ld fullScale=%lu consecutiveErrors=%ld\n",
+                  st->lastFrameLen, st->lastBytesBefore, st->lastBytesAfter,
+                  (long)fi.outputSamps, (long)fi.sampRateOut, (long)fi.nChans,
+                  (long)st->lastPeakMin, (long)st->lastPeakMax,
+                  st->lastFullScaleCount, (long)st->errCount);
+
+        st->channels = fi.nChans;
+        st->outbufFill = (unsigned long)fi.outputSamps;
+        st->outbufPos  = 0;
+        return 1;
     }
-
-    offset = AacFindSyncBounded(st);
-    if (offset < 0) {
-        st->error = 1;
-        return -1;
-    }
-    st->iobufReadPtr += offset;
-    st->iobufLeft    -= offset;
-
-    if (!AacValidateAdtsHeader(st->iobufReadPtr, st->iobufLeft)) {
-        st->error = 1;
-        return -1;
-    }
-
-    oldInputPtr = st->iobufReadPtr;
-    oldBytesLeft = st->iobufLeft;
-    oldInputOff = (unsigned long)(oldInputPtr - st->iobuf);
-    st->lastBytesBefore = (unsigned long)oldBytesLeft;
-    st->lastInputBefore = oldInputOff;
-    st->lastSamplesProduced = 0;
-
-    err = AACDecode(st->aacHandle, &st->iobufReadPtr, &st->iobufLeft, st->outbuf);
-    st->lastDecodeErr = err;
-    st->lastBytesAfter = (unsigned long)(st->iobufLeft < 0 ? 0 : st->iobufLeft);
-    st->lastInputAfter = (unsigned long)(st->iobufReadPtr - st->iobuf);
-    if (err != 0) {
-        st->error = 1;
-        return -1;
-    }
-
-    AACGetLastFrameInfo(st->aacHandle, &fi);
-    if (fi.outputSamps <= 0 || fi.nChans != st->channels ||
-        (unsigned long)fi.outputSamps > AAC_OUT_CAP) {
-        st->error = 1;
-        return -1;
-    }
-
-    /* Helix AAC reports outputSamps as total interleaved PCM shorts across
-     * all channels (stereo AAC-LC normally reports 2048 total samples:
-     * 1024 sample frames * 2 channels). */
-    st->lastSamplesProduced = (unsigned long)fi.outputSamps;
-    if (st->iobufReadPtr == oldInputPtr && st->iobufLeft == oldBytesLeft &&
-        fi.outputSamps <= 0) {
-        st->error = 1;
-        return -1;
-    }
-
-    /* Store total interleaved shorts only.  Do not multiply by channels here;
-     * decode() divides by channels when returning ABI sample frames. */
-    st->outbufFill = (unsigned long)fi.outputSamps;
-    st->outbufPos  = 0;
-    return 1;
 }
 
 static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
@@ -263,7 +377,7 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
 {
     AacState    *st;
     AACFrameInfo fi;
-    int          offset, err;
+    int          offset, frameLen, adtsChannels;
 
     if (!readFn || !infoOut) return NULL;
 
@@ -297,57 +411,33 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     if (!AacRefillBuf(st) || !st->iobufReadPtr || st->iobufLeft < 2) {
         AacFreeState(st); return NULL;
     }
-    if (st->iobufReadPtr[0] != 0xff ||
-        (st->iobufReadPtr[1] != 0xf1 && st->iobufReadPtr[1] != 0xf9)) {
-        AacFreeState(st); return NULL;
-    }
-
     offset = AacFindSyncBounded(st);
     if (offset < 0 || offset >= st->iobufLeft) { AacFreeState(st); return NULL; }
     st->iobufReadPtr += offset;
     st->iobufLeft    -= offset;
 
-    if (!AacValidateAdtsHeader(st->iobufReadPtr, st->iobufLeft)) {
+    if (!AacParseAdtsHeader(st->iobufReadPtr, st->iobufLeft,
+                            &frameLen, &adtsChannels) ||
+        !AacEnsureFullFrame(st, frameLen)) {
         AacFreeState(st); return NULL;
     }
 
-    st->channels = ((st->iobufReadPtr[2] & 0x01) << 2) |
-                   ((st->iobufReadPtr[3] >> 6) & 0x03);
+    st->channels = adtsChannels;
+    st->lastFrameLen = (unsigned long)frameLen;
 
-    /* Decode first frame — probes sample rate, channel count, bit depth */
-    {
-        unsigned char *oldInputPtr = st->iobufReadPtr;
-        int oldBytesLeft = st->iobufLeft;
-        st->lastBytesBefore = (unsigned long)oldBytesLeft;
-        st->lastInputBefore = (unsigned long)(oldInputPtr - st->iobuf);
-        err = AACDecode(st->aacHandle,
-                        &st->iobufReadPtr,
-                        &st->iobufLeft,
-                        st->outbuf);
-        st->lastDecodeErr = err;
-        st->lastBytesAfter = (unsigned long)(st->iobufLeft < 0 ? 0 : st->iobufLeft);
-        st->lastInputAfter = (unsigned long)(st->iobufReadPtr - st->iobuf);
-        if (err != 0) {
-            AacFreeState(st); return NULL;
-        }
+    /* Decode first frame — probes sample rate, channel count, bit depth. */
+    if (AacDecodeFrame(st) <= 0) {
+        AacFreeState(st); return NULL;
     }
 
     AACGetLastFrameInfo(st->aacHandle, &fi);
-    if (st->iobufReadPtr == st->iobuf + st->lastInputBefore &&
-        st->iobufLeft == (int)st->lastBytesBefore && fi.outputSamps <= 0) {
-        AacFreeState(st); return NULL;
-    }
-    if (fi.nChans <= 0 || fi.sampRateOut <= 0 ||
-        fi.nChans > 2  || fi.outputSamps <= 0 ||
-        (unsigned long)fi.outputSamps > AAC_OUT_CAP) {
+    if (fi.outputSamps <= 0 || (unsigned long)fi.outputSamps > AAC_OUT_CAP ||
+        (fi.nChans != 1 && fi.nChans != 2) ||
+        fi.sampRateOut < 8000 || fi.sampRateOut > 96000) {
         AacFreeState(st); return NULL;
     }
 
-    st->channels   = fi.nChans;
-    /* fi.outputSamps is total interleaved shorts, not samples/channel. */
-    st->outbufFill = (unsigned long)fi.outputSamps;
-    st->outbufPos  = 0;
-    st->lastSamplesProduced = (unsigned long)fi.outputSamps;
+    st->channels = fi.nChans;
 
     infoOut->sampleRate    = (DecULong)fi.sampRateOut;
     infoOut->channels      = (unsigned short)fi.nChans;
