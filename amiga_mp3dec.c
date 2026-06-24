@@ -342,6 +342,7 @@ typedef struct DecodeOptions {
 	int debugTone;
 	int debugCleanup;
 	int debugDecoder;
+	int externalGainShift;
 	int testAac;
 	int play;
 	int stereo;
@@ -699,6 +700,7 @@ static void PrintUsage(const char *prog)
 	printf("  --play-lifecycle-test legacy alias for --selftest-play-cleanup\n");
 	printf("  --buffer-seconds N playback seconds per half-buffer (default 4, clamped 1-10)\n");
 	printf("  --volume N   audio.device master volume percent for --play (0-100, default 100)\n");
+	printf("  --external-gain N software gain for external decoder playback (0-3, default 0)\n");
 	printf("  --fast-mem   preload the compressed MP3 into Fast RAM before decoding/playback\n");
 	printf("  --decode-only decode frames only; skip PCM conversion and output\n");
 	printf("  --no-output  run conversion/compression paths but discard output bytes\n");
@@ -848,6 +850,7 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 	opt->qualitySpecified = 0;
 	opt->bufferSeconds = 4;
 	opt->volumePercent = 100;
+	opt->externalGainShift = 0;
 	opt->fakeStereoDelay = FAKE_STEREO_DEFAULT_DELAY;
 	opt->fakeStereoShift = FAKE_STEREO_DEFAULT_SHIFT;
 #if defined(DEBUG_DECODER) && DEBUG_DECODER
@@ -929,6 +932,14 @@ static int ParseOptions(int argc, char **argv, DecodeOptions *opt)
 				fprintf(stderr, "--volume requires an integer from 0 to 100\n");
 				return -1;
 			}
+		} else if (!strcmp(argv[i], "--external-gain")) {
+			if (++i >= argc)
+				return -1;
+			if (argv[i][0] < '0' || argv[i][0] > '3' || argv[i][1] != '\0') {
+				fprintf(stderr, "--external-gain requires 0, 1, 2, or 3\n");
+				return -1;
+			}
+			opt->externalGainShift = argv[i][0] - '0';
 		} else if (!strcmp(argv[i], "--fast-mem")) {
 			opt->fastMem = 1;
 		} else if (!strcmp(argv[i], "--decode-only")) {
@@ -1897,6 +1908,18 @@ static short ClipToS16(int v)
 	if (v < -32768)
 		return -32768;
 	return (short)v;
+}
+
+static short ApplyExternalPlaybackGain(short sample, int gainShift)
+{
+	int scaled;
+
+	if (gainShift <= 0)
+		return sample;
+	if (gainShift > 3)
+		gainShift = 3;
+	scaled = ((int)sample) << gainShift;
+	return ClipToS16(scaled);
 }
 
 static int MixFrame(const short *in, short *out, int inSamps, int channels, int mono)
@@ -7341,6 +7364,102 @@ static void GenericMeasureS8(const signed char *pcm, long count,
 	*maxOut = maxSample;
 }
 
+static const char *GenericDecoderName(const GenericDecodeStream *gs);
+
+typedef struct ExternalGainStats {
+	short preMin16;
+	short preMax16;
+	short postMin16;
+	short postMax16;
+	unsigned long clippedSamples;
+} ExternalGainStats;
+
+static void ExternalGainStatsInit(ExternalGainStats *stats)
+{
+	if (!stats)
+		return;
+	stats->preMin16 = 32767;
+	stats->preMax16 = -32768;
+	stats->postMin16 = 32767;
+	stats->postMax16 = -32768;
+	stats->clippedSamples = 0;
+}
+
+static short GenericApplyExternalPlaybackGain(short sample, int gainShift,
+	ExternalGainStats *stats)
+{
+	int scaled;
+	short out;
+
+	if (stats) {
+		if (sample < stats->preMin16) stats->preMin16 = sample;
+		if (sample > stats->preMax16) stats->preMax16 = sample;
+	}
+	if (gainShift <= 0) {
+		out = sample;
+	} else {
+		if (gainShift > 3)
+			gainShift = 3;
+		scaled = ((int)sample) << gainShift;
+		out = ApplyExternalPlaybackGain(sample, gainShift);
+		if (stats && (scaled > 32767 || scaled < -32768))
+			stats->clippedSamples++;
+	}
+	if (stats) {
+		if (out < stats->postMin16) stats->postMin16 = out;
+		if (out > stats->postMax16) stats->postMax16 = out;
+	}
+	return out;
+}
+
+static void GenericDebugExternalGain(const GenericDecodeStream *gs,
+	const DecodeOptions *opt, const char *path, const ExternalGainStats *stats,
+	const signed char *pcm, long byteCount, long finalReturnBytes)
+{
+	signed char min8;
+	signed char max8;
+
+	if (!opt || (!opt->debugDecoder && !opt->debugPlay) || !stats)
+		return;
+	GenericMeasureS8(pcm, byteCount, &min8, &max8);
+	printf("generic-debug: external gain decoder=%s path=%s gainShift=%ld preMin16=%ld preMax16=%ld postMin16=%ld postMax16=%ld clippedSamples=%lu s8Min=%ld s8Max=%ld finalByteCount=%ld\n",
+		GenericDecoderName(gs), path ? path : "unknown",
+		(long)opt->externalGainShift, (long)stats->preMin16,
+		(long)stats->preMax16, (long)stats->postMin16,
+		(long)stats->postMax16, stats->clippedSamples,
+		(long)min8, (long)max8, finalReturnBytes);
+}
+
+static int GenericDecoderIsAac(const GenericDecodeStream *gs)
+{
+	return gs && gs->ops && gs->ops->info && gs->ops->info->extensions &&
+		StrCaseCmp(gs->ops->info->extensions, "aac") == 0;
+}
+
+static int GenericCheckAacBurstFrame(const GenericDecodeStream *gs,
+	const DecodeOptions *opt, const short *pcm, long sampleCount,
+	const char *path)
+{
+	long i;
+	unsigned long nearFullScale = 0;
+	short min16;
+	short max16;
+
+	if (!GenericDecoderIsAac(gs) || !pcm || sampleCount <= 0)
+		return 0;
+	for (i = 0; i < sampleCount; i++) {
+		if (pcm[i] >= 30000 || pcm[i] <= -30000)
+			nearFullScale++;
+	}
+	GenericMeasureS16(pcm, sampleCount, &min16, &max16);
+	if (nearFullScale > (unsigned long)(sampleCount / 8) &&
+		opt && (opt->debugDecoder || opt->debugPlay))
+		printf("generic-debug: suspicious AAC PCM decoder=%s path=%s samples=%ld nearFullScale=%lu min16=%ld max16=%ld action=%s\n",
+			GenericDecoderName(gs), path ? path : "unknown", sampleCount,
+			nearFullScale, (long)min16, (long)max16,
+			nearFullScale > (unsigned long)(sampleCount / 2) ? "muted" : "logged");
+	return nearFullScale > (unsigned long)(sampleCount / 2);
+}
 
 static void GenericPrintS16List(const short *pcm, long count)
 {
@@ -7540,6 +7659,10 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 		GenericDebugAfterS16Process(gs, opt, "mono-mix/downsample",
 			gs->writeBuf, (long)outSamps, (long)outSamps,
 			(long)outSamps * (long)sizeof(short));
+		if (GenericCheckAacBurstFrame(gs, opt, gs->writeBuf, (long)outSamps,
+			"interleaved-s8-mono")) {
+			memset(gs->writeBuf, 0, (size_t)outSamps * sizeof(short));
+		}
 
 		if (gs->stats)
 			gs->stats->outputSamples += (unsigned long)outSamps;
@@ -7551,17 +7674,20 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 		if (direct > maxBytes - produced)
 			direct = maxBytes - produced;
 		i = 0;
+		{
+		ExternalGainStats gainStats;
+		ExternalGainStatsInit(&gainStats);
 		if (direct >= 4) {
 			int d4 = direct & ~3;
 			for (; i < d4; i += 4) {
-				dest[produced + i]     = Sample16ToS8(gs->writeBuf[i]);
-				dest[produced + i + 1] = Sample16ToS8(gs->writeBuf[i + 1]);
-				dest[produced + i + 2] = Sample16ToS8(gs->writeBuf[i + 2]);
-				dest[produced + i + 3] = Sample16ToS8(gs->writeBuf[i + 3]);
+				dest[produced + i]     = Sample16ToS8(GenericApplyExternalPlaybackGain(gs->writeBuf[i], opt->externalGainShift, &gainStats));
+				dest[produced + i + 1] = Sample16ToS8(GenericApplyExternalPlaybackGain(gs->writeBuf[i + 1], opt->externalGainShift, &gainStats));
+				dest[produced + i + 2] = Sample16ToS8(GenericApplyExternalPlaybackGain(gs->writeBuf[i + 2], opt->externalGainShift, &gainStats));
+				dest[produced + i + 3] = Sample16ToS8(GenericApplyExternalPlaybackGain(gs->writeBuf[i + 3], opt->externalGainShift, &gainStats));
 			}
 		}
 		for (; i < direct; i++)
-			dest[produced + i] = Sample16ToS8(gs->writeBuf[i]);
+			dest[produced + i] = Sample16ToS8(GenericApplyExternalPlaybackGain(gs->writeBuf[i], opt->externalGainShift, &gainStats));
 		produced += direct;
 
 		spill = outSamps - direct;
@@ -7570,7 +7696,11 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 			gs->spillCount = spill;
 			for (i = 0; i < spill; i++)
 				gs->spill.interleaved[i] =
-					Sample16ToS8(gs->writeBuf[direct + i]);
+					Sample16ToS8(GenericApplyExternalPlaybackGain(gs->writeBuf[direct + i], opt->externalGainShift, &gainStats));
+		}
+		GenericDebugExternalGain(gs, opt, "interleaved-s8-mono",
+			&gainStats, dest + produced - direct, (long)direct,
+			(long)produced);
 		}
 		GenericDebugAfterS8(gs, opt, "interleaved-s8-mono",
 			dest + produced - direct, (long)direct, (long)produced);
@@ -7737,6 +7867,14 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 		GenericDebugAfterS16Process(gs, opt, "stereo-mix/downsample",
 			pcm, (long)frames, (long)frames * (long)channels,
 			(long)frames * (long)channels * (long)sizeof(short));
+		if (GenericCheckAacBurstFrame(gs, opt, pcm,
+			(long)frames * (long)channels, "planar-s8-stereo")) {
+			memset(gs->writeBuf, 0, (size_t)OUTBUF_SAMPS * sizeof(short));
+			memset(gs->rateBuf, 0, (size_t)OUTBUF_SAMPS * sizeof(short));
+			memset(gs->decodeBuf, 0, (size_t)OUTBUF_SAMPS * sizeof(short));
+			pcm = gs->decodeBuf;
+			channels = 1;
+		}
 
 		if (gs->stats)
 			gs->stats->decodedFrames++;
@@ -7748,6 +7886,9 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 		if (direct > maxFrames - produced)
 			direct = maxFrames - produced;
 
+		{
+		ExternalGainStats gainStats;
+		ExternalGainStatsInit(&gainStats);
 		for (i = 0; i < direct; i++) {
 			short wl, wr;
 			signed char sl, sr;
@@ -7766,6 +7907,10 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 				if (wr < min16) min16 = wr;
 				if (wr > max16) max16 = wr;
 			}
+			wl = GenericApplyExternalPlaybackGain(wl, opt->externalGainShift,
+				&gainStats);
+			wr = GenericApplyExternalPlaybackGain(wr, opt->externalGainShift,
+				&gainStats);
 			sl = Sample16ToS8(wl);
 			sr = Sample16ToS8(wr);
 			left[produced  + i] = sl;
@@ -7793,19 +7938,23 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 		for (i = direct; i < frames; i++) {
 			int s = i - direct;
 			if (channels >= 2) {
-				gs->spill.planar[0][s] = Sample16ToS8(pcm[2 * i]);
-				gs->spill.planar[1][s] = Sample16ToS8(pcm[2 * i + 1]);
+				gs->spill.planar[0][s] = Sample16ToS8(GenericApplyExternalPlaybackGain(pcm[2 * i], opt->externalGainShift, &gainStats));
+				gs->spill.planar[1][s] = Sample16ToS8(GenericApplyExternalPlaybackGain(pcm[2 * i + 1], opt->externalGainShift, &gainStats));
 			} else if (gs->fakeStereo.enabled) {
 				short wl, wr;
 				FakeStereoProcess(&gs->fakeStereo, pcm[i], &wl, &wr);
-				gs->spill.planar[0][s] = Sample16ToS8(wl);
-				gs->spill.planar[1][s] = Sample16ToS8(wr);
+				gs->spill.planar[0][s] = Sample16ToS8(GenericApplyExternalPlaybackGain(wl, opt->externalGainShift, &gainStats));
+				gs->spill.planar[1][s] = Sample16ToS8(GenericApplyExternalPlaybackGain(wr, opt->externalGainShift, &gainStats));
 			} else {
-				gs->spill.planar[0][s] = Sample16ToS8(pcm[i]);
+				gs->spill.planar[0][s] = Sample16ToS8(GenericApplyExternalPlaybackGain(pcm[i], opt->externalGainShift, &gainStats));
 				gs->spill.planar[1][s] = gs->spill.planar[0][s];
 			}
 		}
 		produced += direct;
+		GenericDebugExternalGain(gs, opt, "planar-s8-stereo-left",
+			&gainStats, left + produced - direct, (long)direct,
+			(long)produced * 2L);
+		}
 		GenericDebugAfterS8(gs, opt, "planar-s8-stereo-left",
 			left + produced - direct, (long)direct, (long)produced * 2L);
 	}
