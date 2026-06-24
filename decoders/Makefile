@@ -108,8 +108,9 @@ flac.decoder: $(FLAC_OBJS) decoder_module.h flac/src/foxen-flac.h
 
 # Exclude SBR files — enabled by default to keep memory footprint small.
 # Remove the filter-out to build with HE-AAC/SBR support.
-AAC_LIB_SRCS := $(filter-out $(wildcard aac/sbr%.c), $(wildcard aac/*.c))
-AAC_SRCS     := aac_entry.c aac_alloc.c aac_module.c $(AAC_LIB_SRCS)
+# Temporarily exclude TNS for AAC diagnostics.
+AAC_LIB_SRCS := $(filter-out aac/tns.c $(wildcard aac/sbr%.c), $(wildcard aac/*.c))
+AAC_SRCS     := aac_entry.c aac_alloc.c aac_module.c aac_tns_disable.c $(AAC_LIB_SRCS)
 AAC_OBJS     := $(AAC_SRCS:.c=.o)
 
 aac: aac.decoder
@@ -117,7 +118,7 @@ aac: aac.decoder
 # Arduino/pgmspace shim directory — intercepted before any system headers.
 AAC_SHIM_DIR := aac-arduino-shim
 
-AAC_CFLAGS := $(CFLAGS) -I. -I$(AAC_SHIM_DIR) -Iaac -DARDUINO
+AAC_CFLAGS := $(CFLAGS) -I. -I$(AAC_SHIM_DIR) -Iaac -DARDUINO -DAMIGA_AAC_DISABLE_TNS_TEST
 
 aac_entry.o aac_alloc.o aac_module.o: decoder_module.h
 aac_alloc.o aac_module.o: aac_alloc.h
