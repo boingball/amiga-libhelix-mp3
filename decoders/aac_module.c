@@ -16,7 +16,7 @@
 #include "aac_alloc.h"
 #include "aac/aacdec.h"
 
-#define AAC_MODULE_BUILD_ID "AAC MODULE BUILD MARKER 12345 rev 2"
+#define AAC_MODULE_BUILD_ID "AAC MODULE BUILD MARKER 12345 rev 2 AAC MODULE CRASH TRACE SHELL 20260624"
 
 /* Compressed input ring buffer.  Must hold at least two maximum ADTS frames
  * (AAC_MAINBUF_SIZE = 768*2 = 1536 bytes each) to guarantee AACDecode always
@@ -99,6 +99,177 @@ typedef struct AacState {
 } AacState;
 
 static int AacRefillBuf(AacState *st);
+
+#define AAC_TRACE_MARKER "AAC MODULE CRASH TRACE SHELL 20260624"
+
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+static void *gAacTraceExec;
+static void *gAacTraceDos;
+
+static void *AacTraceOpenLibrary(const char *name, unsigned long version)
+{
+    register void *a6 __asm("a6") = gAacTraceExec;
+    register const char *a1 __asm("a1") = name;
+    register unsigned long d0 __asm("d0") = version;
+
+    if (!gAacTraceExec)
+        return 0;
+    __asm volatile ("jsr a6@(-552:W)"
+                    : "+r" (d0)
+                    : "r" (a1), "r" (a6)
+                    : "a0", "d1", "d2", "cc", "memory");
+    return (void *)d0;
+}
+
+static long AacTraceOutput(void)
+{
+    register void *a6 __asm("a6") = gAacTraceDos;
+    register long d0 __asm("d0");
+
+    if (!gAacTraceDos)
+        return 0;
+    __asm volatile ("jsr a6@(-60:W)"
+                    : "=r" (d0)
+                    : "r" (a6)
+                    : "a0", "a1", "d1", "d2", "cc", "memory");
+    return d0;
+}
+
+static void AacTraceWrite(long fh, const char *buf, unsigned long len)
+{
+    register void *a6 __asm("a6") = gAacTraceDos;
+    register long d1 __asm("d1") = fh;
+    register const char *d2 __asm("d2") = buf;
+    register unsigned long d3 __asm("d3") = len;
+
+    if (!gAacTraceDos || !fh || !buf || len == 0)
+        return;
+    __asm volatile ("jsr a6@(-48:W)"
+                    :
+                    : "r" (d1), "r" (d2), "r" (d3), "r" (a6)
+                    : "d0", "a0", "a1", "cc", "memory");
+}
+
+static void AacTraceInit(void)
+{
+    static const char dosName[] = "dos.library";
+    if (!gAacTraceExec)
+        gAacTraceExec = *((void **)4L);
+    if (!gAacTraceDos)
+        gAacTraceDos = AacTraceOpenLibrary(dosName, 0);
+}
+#else
+static void AacTraceInit(void) { }
+#endif
+
+static void AacTraceAppendChar(char *buf, unsigned long *pos, unsigned long cap, char c)
+{
+    if (*pos + 1 < cap)
+        buf[(*pos)++] = c;
+}
+
+static void AacTraceAppendStr(char *buf, unsigned long *pos, unsigned long cap, const char *s)
+{
+    while (s && *s)
+        AacTraceAppendChar(buf, pos, cap, *s++);
+}
+
+static void AacTraceAppendLong(char *buf, unsigned long *pos, unsigned long cap, long v)
+{
+    char tmp[12];
+    unsigned long n = 0;
+    unsigned long u;
+    if (v < 0) {
+        AacTraceAppendChar(buf, pos, cap, '-');
+        u = (unsigned long)(-v);
+    } else {
+        u = (unsigned long)v;
+    }
+    do {
+        tmp[n++] = (char)('0' + (u % 10));
+        u /= 10;
+    } while (u && n < sizeof(tmp));
+    while (n)
+        AacTraceAppendChar(buf, pos, cap, tmp[--n]);
+}
+
+static void AacTraceAppendULong(char *buf, unsigned long *pos, unsigned long cap, unsigned long v)
+{
+    char tmp[12];
+    unsigned long n = 0;
+    do {
+        tmp[n++] = (char)('0' + (v % 10));
+        v /= 10;
+    } while (v && n < sizeof(tmp));
+    while (n)
+        AacTraceAppendChar(buf, pos, cap, tmp[--n]);
+}
+
+static void AacTraceAppendFieldUL(char *buf, unsigned long *pos, unsigned long cap,
+                                  const char *name, unsigned long v)
+{
+    AacTraceAppendChar(buf, pos, cap, ' ');
+    AacTraceAppendStr(buf, pos, cap, name);
+    AacTraceAppendChar(buf, pos, cap, '=');
+    AacTraceAppendULong(buf, pos, cap, v);
+}
+
+static void AacTraceAppendFieldL(char *buf, unsigned long *pos, unsigned long cap,
+                                 const char *name, long v)
+{
+    AacTraceAppendChar(buf, pos, cap, ' ');
+    AacTraceAppendStr(buf, pos, cap, name);
+    AacTraceAppendChar(buf, pos, cap, '=');
+    AacTraceAppendLong(buf, pos, cap, v);
+}
+
+static void AacTracePoint(AacState *st, const char *point, long err,
+                          const AACFrameInfo *fi, long decodeReturn)
+{
+    char line[320];
+    unsigned long pos = 0;
+    unsigned long readOff = 0;
+    unsigned long bytesBefore = 0;
+    unsigned long bytesAfter = 0;
+    unsigned long outputSamps = 0;
+    long nChans = 0;
+    long sampRateOut = 0;
+
+    if (st && st->iobuf && st->iobufReadPtr)
+        readOff = (unsigned long)(st->iobufReadPtr - st->iobuf);
+    if (st) {
+        bytesBefore = st->lastBytesBefore;
+        bytesAfter = st->lastBytesAfter;
+    }
+    if (fi) {
+        outputSamps = (unsigned long)(fi->outputSamps < 0 ? 0 : fi->outputSamps);
+        nChans = fi->nChans;
+        sampRateOut = fi->sampRateOut;
+    }
+
+    AacTraceInit();
+    AacTraceAppendStr(line, &pos, sizeof(line), AAC_TRACE_MARKER);
+    AacTraceAppendChar(line, &pos, sizeof(line), ' ');
+    AacTraceAppendStr(line, &pos, sizeof(line), point);
+    AacTraceAppendFieldL(line, &pos, sizeof(line), "iobufLeft", st ? st->iobufLeft : -1);
+    AacTraceAppendFieldUL(line, &pos, sizeof(line), "readOff", readOff);
+    AacTraceAppendFieldUL(line, &pos, sizeof(line), "bytesBefore", bytesBefore);
+    AacTraceAppendFieldUL(line, &pos, sizeof(line), "bytesAfter", bytesAfter);
+    AacTraceAppendFieldL(line, &pos, sizeof(line), "aacErr", err);
+    AacTraceAppendFieldUL(line, &pos, sizeof(line), "outputSamps", outputSamps);
+    AacTraceAppendFieldL(line, &pos, sizeof(line), "nChans", nChans);
+    AacTraceAppendFieldL(line, &pos, sizeof(line), "sampRateOut", sampRateOut);
+    AacTraceAppendFieldUL(line, &pos, sizeof(line), "outbufFill", st ? st->outbufFill : 0);
+    AacTraceAppendFieldUL(line, &pos, sizeof(line), "outbufPos", st ? st->outbufPos : 0);
+    AacTraceAppendFieldL(line, &pos, sizeof(line), "decodeRet", decodeReturn);
+    AacTraceAppendChar(line, &pos, sizeof(line), '\n');
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+    AacTraceWrite(AacTraceOutput(), line, pos);
+#else
+    (void)line; (void)pos;
+#endif
+}
+
 
 static int AacValidateAdtsHeader(const unsigned char *p, int n)
 {
@@ -194,6 +365,8 @@ static int AacDecodeFrame(AacState *st)
     int oldBytesLeft;
     unsigned long oldInputOff;
 
+    AacTracePoint(st, "06 decode op entry", st ? st->lastDecodeErr : 0, 0, 0);
+
     if (st->error)
         return -1;
 
@@ -225,16 +398,19 @@ static int AacDecodeFrame(AacState *st)
     st->lastInputBefore = oldInputOff;
     st->lastSamplesProduced = 0;
 
+    AacTracePoint(st, "07 before normal AACDecode", st->lastDecodeErr, 0, 0);
     err = AACDecode(st->aacHandle, &st->iobufReadPtr, &st->iobufLeft, st->outbuf);
     st->lastDecodeErr = err;
     st->lastBytesAfter = (unsigned long)(st->iobufLeft < 0 ? 0 : st->iobufLeft);
     st->lastInputAfter = (unsigned long)(st->iobufReadPtr - st->iobuf);
+    AacTracePoint(st, "08 after normal AACDecode returns", err, 0, 0);
     if (err != 0) {
         st->error = 1;
         return -1;
     }
 
     AACGetLastFrameInfo(st->aacHandle, &fi);
+    AacTracePoint(st, "09 after AACGetLastFrameInfo normal", err, &fi, 0);
     if (fi.outputSamps <= 0 || fi.nChans != st->channels ||
         (unsigned long)fi.outputSamps > AAC_OUT_CAP) {
         st->error = 1;
@@ -254,6 +430,7 @@ static int AacDecodeFrame(AacState *st)
     /* Store total interleaved shorts; decode() converts to ABI sample frames. */
     st->outbufFill = (unsigned long)fi.outputSamps;
     st->outbufPos  = 0;
+    AacTracePoint(st, "10 decode return value", err, &fi, 1);
     return 1;
 }
 
@@ -263,6 +440,9 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     AacState    *st;
     AACFrameInfo fi;
     int          offset, err;
+
+    AacTraceInit();
+    AacTracePoint(0, "01 AacOpen entry", 0, 0, 0);
 
     if (!readFn || !infoOut) return NULL;
 
@@ -289,6 +469,7 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     /* AACInitDecoder() allocates its internal state via malloc()
      * which is remapped to AacModuleMalloc through the -D flags. */
     st->aacHandle = AACInitDecoder();
+    AacTracePoint(st, "02 after AACInitDecoder", st->aacHandle ? 0 : -1, 0, 0);
     if (!st->aacHandle) { AacFreeState(st); return NULL; }
 
     /* Prime buffer and find first ADTS sync word.  Do not feed MP4/M4A
@@ -319,6 +500,7 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
         int oldBytesLeft = st->iobufLeft;
         st->lastBytesBefore = (unsigned long)oldBytesLeft;
         st->lastInputBefore = (unsigned long)(oldInputPtr - st->iobuf);
+        AacTracePoint(st, "03 before first/probe AACDecode", st->lastDecodeErr, 0, 0);
         err = AACDecode(st->aacHandle,
                         &st->iobufReadPtr,
                         &st->iobufLeft,
@@ -326,12 +508,14 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
         st->lastDecodeErr = err;
         st->lastBytesAfter = (unsigned long)(st->iobufLeft < 0 ? 0 : st->iobufLeft);
         st->lastInputAfter = (unsigned long)(st->iobufReadPtr - st->iobuf);
+        AacTracePoint(st, "04 after first/probe AACDecode returns", err, 0, 0);
         if (err != 0) {
             AacFreeState(st); return NULL;
         }
     }
 
     AACGetLastFrameInfo(st->aacHandle, &fi);
+    AacTracePoint(st, "05 after AACGetLastFrameInfo probe", st->lastDecodeErr, &fi, 0);
     if (st->iobufReadPtr == st->iobuf + st->lastInputBefore &&
         st->iobufLeft == (int)st->lastBytesBefore && fi.outputSamps <= 0) {
         AacFreeState(st); return NULL;
