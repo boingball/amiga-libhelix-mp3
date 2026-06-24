@@ -7341,6 +7341,84 @@ static void GenericMeasureS8(const signed char *pcm, long count,
 	*maxOut = maxSample;
 }
 
+
+static void GenericPrintS16List(const short *pcm, long count)
+{
+	long i;
+	for (i = 0; i < 16 && i < count; i++)
+		printf("%s%ld", i ? "," : "", (long)pcm[i]);
+}
+
+static void GenericPrintS8List(const signed char *pcm, long count)
+{
+	long i;
+	for (i = 0; i < 16 && i < count; i++)
+		printf("%s%ld", i ? "," : "", (long)pcm[i]);
+}
+
+static void GenericDebugBeforeDecode(const GenericDecodeStream *gs,
+	const DecodeOptions *opt, const char *path)
+{
+	if (!opt || (!opt->debugDecoder && !opt->debugPlay))
+		return;
+	printf("generic-debug: before decode decoder=%s maxSamplesPerChan=%lu channels=%ld sourceRate=%ld outputRate=%ld outputMode=%s path=%s\n",
+		GenericDecoderName(gs), (unsigned long)GENERIC_DECODE_CHUNK,
+		(long)(gs ? gs->channels : 0), (long)(gs ? gs->sampleRate : 0),
+		(long)(opt->outputRate > 0 ? opt->outputRate : (gs ? gs->sampleRate : 0)),
+		opt->stereo ? "stereo" : "mono", path ? path : "unknown");
+}
+
+static void GenericDebugAfterDecode(const GenericDecodeStream *gs,
+	const DecodeOptions *opt, DecLong rc)
+{
+	long frames = (long)(rc > 0 ? rc : 0);
+	long interleavedShorts = frames * (long)(gs ? gs->channels : 0);
+	short min16;
+	short max16;
+
+	if (!opt || (!opt->debugDecoder && !opt->debugPlay))
+		return;
+	GenericMeasureS16(gs ? gs->decodeBuf : NULL, interleavedShorts, &min16, &max16);
+	printf("generic-debug: after decode decoder=%s rc=%ld meaning=samples-per-channel/frames interleavedInputShorts=%ld rawMin16=%ld rawMax16=%ld rawFirst16=",
+		GenericDecoderName(gs), (long)rc, interleavedShorts,
+		(long)min16, (long)max16);
+	GenericPrintS16List(gs ? gs->decodeBuf : NULL, interleavedShorts);
+	printf("\n");
+}
+
+static void GenericDebugAfterS16Process(const GenericDecodeStream *gs,
+	const DecodeOptions *opt, const char *stage, const short *pcm,
+	long frames, long shorts, long bytes)
+{
+	short min16;
+	short max16;
+
+	if (!opt || (!opt->debugDecoder && !opt->debugPlay))
+		return;
+	GenericMeasureS16(pcm, shorts, &min16, &max16);
+	printf("generic-debug: after %s decoder=%s producedFrames=%ld producedShorts=%ld producedBytes=%ld min16=%ld max16=%ld first16=",
+		stage ? stage : "mix/downsample", GenericDecoderName(gs), frames,
+		shorts, bytes, (long)min16, (long)max16);
+	GenericPrintS16List(pcm, shorts);
+	printf("\n");
+}
+
+static void GenericDebugAfterS8(const GenericDecodeStream *gs,
+	const DecodeOptions *opt, const char *path, const signed char *pcm,
+	long byteCount, long finalReturnBytes)
+{
+	signed char min8;
+	signed char max8;
+
+	if (!opt || (!opt->debugDecoder && !opt->debugPlay))
+		return;
+	GenericMeasureS8(pcm, byteCount, &min8, &max8);
+	printf("generic-debug: after Sample16ToS8 decoder=%s path=%s s8Min=%ld s8Max=%ld first16=",
+		GenericDecoderName(gs), path ? path : "unknown", (long)min8, (long)max8);
+	GenericPrintS8List(pcm, byteCount);
+	printf(" finalByteCount=%ld\n", finalReturnBytes);
+}
+
 static void GenericPrintFirstDecodePcmDebug(const GenericDecodeStream *gs,
 	const DecodeOptions *opt, DecLong moduleFrames)
 {
@@ -7386,6 +7464,7 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 		if (AmigaPlaybackStopRequested(opt, "inside generic mono decode loop"))
 			break;
 
+		GenericDebugBeforeDecode(gs, opt, "interleaved-s8-mono");
 		if (opt->debugDecoder && !gs->firstDecodeDebugPrinted)
 			fprintf(stderr, "generic-debug: first decode call entered maxSamplesPerChan=%lu\n",
 				(unsigned long)GENERIC_DECODE_CHUNK);
@@ -7393,6 +7472,7 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 			gs->ops->info->extensions && StrCaseCmp(gs->ops->info->extensions, "aac") == 0)
 			fprintf(stderr, "AAC: before first decode\n");
 		nDecoded = gs->ops->decode(gs->handle, gs->decodeBuf, GENERIC_DECODE_CHUNK);
+		GenericDebugAfterDecode(gs, opt, nDecoded);
 		if (opt->debugDecoder && !gs->firstDecodeDebugPrinted && gs->ops && gs->ops->info &&
 			gs->ops->info->extensions && StrCaseCmp(gs->ops->info->extensions, "aac") == 0)
 			fprintf(stderr, "AAC: after first decode rc=%ld\n", (long)nDecoded);
@@ -7457,6 +7537,9 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 			memmove(gs->writeBuf, gs->rateBuf,
 				(size_t)outSamps * sizeof(short));
 		}
+		GenericDebugAfterS16Process(gs, opt, "mono-mix/downsample",
+			gs->writeBuf, (long)outSamps, (long)outSamps,
+			(long)outSamps * (long)sizeof(short));
 
 		if (gs->stats)
 			gs->stats->outputSamples += (unsigned long)outSamps;
@@ -7489,6 +7572,8 @@ static int GenericDecodeStreamFillS8(GenericDecodeStream *gs,
 				gs->spill.interleaved[i] =
 					Sample16ToS8(gs->writeBuf[direct + i]);
 		}
+		GenericDebugAfterS8(gs, opt, "interleaved-s8-mono",
+			dest + produced - direct, (long)direct, (long)produced);
 		if ((opt->debugDecoder || opt->debugPlay) && !gs->firstFillDebugPrinted && direct > 0) {
 			signed char min8;
 			signed char max8;
@@ -7573,6 +7658,7 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 			break;
 		}
 
+		GenericDebugBeforeDecode(gs, opt, "planar-s8-stereo");
 		if (opt->debugDecoder && !gs->firstDecodeDebugPrinted)
 			fprintf(stderr, "generic-debug: first decode call entered maxSamplesPerChan=%lu\n",
 				(unsigned long)GENERIC_DECODE_CHUNK);
@@ -7580,6 +7666,7 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 			gs->ops->info->extensions && StrCaseCmp(gs->ops->info->extensions, "aac") == 0)
 			fprintf(stderr, "AAC: before first decode\n");
 		nDecoded = gs->ops->decode(gs->handle, gs->decodeBuf, GENERIC_DECODE_CHUNK);
+		GenericDebugAfterDecode(gs, opt, nDecoded);
 		if (opt->debugDecoder && !gs->firstDecodeDebugPrinted && gs->ops && gs->ops->info &&
 			gs->ops->info->extensions && StrCaseCmp(gs->ops->info->extensions, "aac") == 0)
 			fprintf(stderr, "AAC: after first decode rc=%ld\n", (long)nDecoded);
@@ -7647,6 +7734,9 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 			pcm      = gs->rateBuf;
 			channels = 2;
 		}
+		GenericDebugAfterS16Process(gs, opt, "stereo-mix/downsample",
+			pcm, (long)frames, (long)frames * (long)channels,
+			(long)frames * (long)channels * (long)sizeof(short));
 
 		if (gs->stats)
 			gs->stats->decodedFrames++;
@@ -7716,6 +7806,8 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 			}
 		}
 		produced += direct;
+		GenericDebugAfterS8(gs, opt, "planar-s8-stereo-left",
+			left + produced - direct, (long)direct, (long)produced * 2L);
 	}
 	if (firstFill) {
 		int i;
