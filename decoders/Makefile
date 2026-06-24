@@ -118,7 +118,7 @@ aac: aac.decoder
 # Arduino/pgmspace shim directory — intercepted before any system headers.
 AAC_SHIM_DIR := aac-arduino-shim
 
-AAC_CFLAGS := $(CFLAGS) -I. -I$(AAC_SHIM_DIR) -Iaac -DARDUINO -DAMIGA_AAC_DISABLE_TNS_TEST
+AAC_CFLAGS := $(CFLAGS) -I. -I$(AAC_SHIM_DIR) -Iaac -DARDUINO
 
 aac_entry.o aac_alloc.o aac_module.o: decoder_module.h
 aac_alloc.o aac_module.o: aac_alloc.h
