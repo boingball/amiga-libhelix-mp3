@@ -48,6 +48,14 @@ extern void AacModuleDebug(const char *fmt, ...);
 #define AAC_MAX_ERRORS  64
 #define AAC_SYNC_SEARCH_GUARD  4
 
+/* White-noise / mis-decode burst detector thresholds (see AacPcmBurstCheck).
+ * A garbage frame surfaces as broadband, near-full-scale noise that is several
+ * times louder than the surrounding music; these constants keep genuine loud
+ * passages and sharp transients from being discarded. */
+#define AAC_GLITCH_ABS_FLOOR   24000UL  /* frame peak must be near full scale  */
+#define AAC_GLITCH_REF_FLOOR    1024UL  /* need an established signal reference */
+#define AAC_GLITCH_RATIO           4UL  /* peak jump vs recent envelope        */
+
 #define AAC_ERR_INVALID_FRAME  (-1)
 
 
@@ -111,6 +119,7 @@ typedef struct AacState {
     int           lastPeakMin;
     int           lastPeakMax;
     unsigned long lastFullScaleCount;
+    unsigned long recentPeak;   /* decaying envelope of accepted-frame peaks */
 } AacState;
 
 static int AacRefillBuf(AacState *st);
@@ -246,15 +255,23 @@ static int AacRefillBuf(AacState *st)
     return (st->iobufLeft > 0);
 }
 
-/* Scan decoded PCM for suspicious full-scale bursts before exposing it. */
+/*
+ * Inspect a freshly decoded frame and reject it if it is a mis-decode burst.
+ * Returns 1 to accept the PCM, 0 to drop the frame (the caller advances past
+ * the consumed input and decodes the next frame, so a dropped frame becomes a
+ * ~23 ms gap instead of an audible white-noise burst).
+ */
 static int AacPcmBurstCheck(AacState *st, int outputSamps)
 {
-    int i, sample, peakMin, peakMax;
-    unsigned long fullScaleCount = 0;
-    unsigned long suspiciousThreshold;
+    int i, sample, absSample, peakMin, peakMax;
+    unsigned long framePeak;
+    unsigned long loudCount = 0;        /* samples above quarter scale */
+    unsigned long fullScaleCount = 0;   /* samples pinned to the rails */
+    unsigned long loudThreshold;
+    unsigned long refPeak;
 
     if (!st || outputSamps <= 0)
-        return 0;
+        return 1;
 
     peakMin = 32767;
     peakMax = -32768;
@@ -262,24 +279,55 @@ static int AacPcmBurstCheck(AacState *st, int outputSamps)
         sample = st->outbuf[i];
         if (sample < peakMin) peakMin = sample;
         if (sample > peakMax) peakMax = sample;
-        if (sample <= -32760 || sample >= 32760)
-            fullScaleCount++;
+        absSample = sample < 0 ? -sample : sample;
+        if (absSample > 8192) loudCount++;
+        if (sample <= -32760 || sample >= 32760) fullScaleCount++;
     }
+
+    framePeak = (unsigned long)(peakMax > 0 ? peakMax : 0);
+    if (peakMin < 0 && (unsigned long)(-peakMin) > framePeak)
+        framePeak = (unsigned long)(-peakMin);
 
     st->lastPeakMin = peakMin;
     st->lastPeakMax = peakMax;
     st->lastFullScaleCount = fullScaleCount;
 
-    suspiciousThreshold = (unsigned long)(outputSamps / 8);
-    if (suspiciousThreshold < 16) suspiciousThreshold = 16;
-    if (fullScaleCount > suspiciousThreshold) {
-        AAC_DEBUG("aac-debug: suspicious full-scale PCM burst frameLen=%lu outputSamps=%ld fullScale=%lu threshold=%lu peakMin=%ld peakMax=%ld\n",
+    /* Pure rail-pinned noise: real music essentially never holds more than
+     * half a frame at the exact clipping rails, so treat this as garbage
+     * regardless of the surrounding level. */
+    if (fullScaleCount > (unsigned long)outputSamps / 2) {
+        AAC_DEBUG("aac-debug: dropped rail-pinned burst frameLen=%lu outputSamps=%ld fullScale=%lu peakMin=%ld peakMax=%ld\n",
                   st->lastFrameLen, (long)outputSamps, fullScaleCount,
-                  suspiciousThreshold, (long)peakMin, (long)peakMax);
-#if AAC_MODULE_DEBUG
+                  (long)peakMin, (long)peakMax);
         return 0;
-#endif
     }
+
+    /*
+     * Contextual glitch: a broadband frame, near full scale, that jumps several
+     * times above the recent music level.  Require all three signals so that
+     * genuine loud passages and sharp transients survive.  The reference is
+     * built only from accepted frames, so a burst cannot raise the bar and mask
+     * the next one; the reference floor keeps onsets after silence (where no
+     * reference exists yet) from being discarded.
+     */
+    loudThreshold = (unsigned long)outputSamps / 4;
+    refPeak = st->recentPeak;
+
+    if (loudCount > loudThreshold &&
+        framePeak >= AAC_GLITCH_ABS_FLOOR &&
+        refPeak >= AAC_GLITCH_REF_FLOOR &&
+        framePeak > refPeak * AAC_GLITCH_RATIO) {
+        AAC_DEBUG("aac-debug: dropped white-noise burst frameLen=%lu outputSamps=%ld framePeak=%lu recentPeak=%lu loud=%lu/%lu fullScale=%lu\n",
+                  st->lastFrameLen, (long)outputSamps, framePeak, refPeak,
+                  loudCount, loudThreshold, fullScaleCount);
+        return 0;
+    }
+
+    /* Accepted: fold this frame's peak into the decaying envelope. */
+    refPeak -= refPeak >> 3;            /* gentle decay between frames */
+    if (framePeak > refPeak)
+        refPeak = framePeak;
+    st->recentPeak = refPeak;
 
     return 1;
 }
