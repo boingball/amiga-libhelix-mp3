@@ -28,7 +28,7 @@ CFLAGS := $(CPU) -O2 -fomit-frame-pointer -std=gnu89 -Wall -I. \
 # Post-link: mark hunks as "any RAM, prefer Fast" (same as main binary)
 FIXHUNKS := python3 ../tools/amiga_fast_preferred_hunks.py
 
-.PHONY: all flac aac clean
+.PHONY: all flac aac clean FORCE
 
 # The normal decoder build must produce every supported external module.
 all: flac aac
@@ -132,6 +132,24 @@ aac_entry.o aac_alloc.o aac_module.o: %.o: %.c
 # malloc/calloc/realloc/free/exit are redirected and Arduino headers are
 # resolved through aac-arduino-shim/.
 aac/%.o: aac/%.c
+	$(CC) $(AAC_CFLAGS) \
+	    -include aac_standalone.h \
+	    -Dmalloc=AacModuleMalloc \
+	    -Dcalloc=AacModuleCalloc \
+	    -Drealloc=AacModuleRealloc \
+	    -Dfree=AacModuleFree \
+	    -Dexit=AacModuleExit \
+	    -DNDEBUG \
+	    -c -o $@ $<
+
+# Keep AAC dequantization on the upstream libhelix-aac implementation.  A local
+# overflow-saturation override for dequant.c caused Amiga software failure
+# #80000004 during AAC playback, and stale aac/dequant.o files can otherwise
+# survive a Makefile revert because make does not treat recipe changes as target
+# dependencies.  Always rebuild this one object from the canonical source so the
+# decoder returns to the last known-good AAC state (plays, though hot material may
+# still clip) instead of accidentally linking an unsafe patched object.
+aac/dequant.o: aac/dequant.c FORCE
 	$(CC) $(AAC_CFLAGS) \
 	    -include aac_standalone.h \
 	    -Dmalloc=AacModuleMalloc \
