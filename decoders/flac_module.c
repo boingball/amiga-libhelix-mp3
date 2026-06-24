@@ -46,7 +46,7 @@ static void ModuleFree(void *ptr, unsigned long bytes)
 /* Output sample buffer capacity: full block * channels (interleaved int32_t) */
 #define FLAC_OUT_CAP ((unsigned long)(FLAC_BLK) * (unsigned long)(FLAC_CH))
 #define FLAC_STALL_LIMIT 64
-#define FLAC_MODULE_BUILD_ID "FLAC MODULE BUILD MARKER 12345 rev 2"
+#define FLAC_MODULE_BUILD_ID "FLAC MODULE BUILD MARKER 12345 rev 3"
 
 static const char *FlacStateName(fx_flac_state_t state)
 {
@@ -73,7 +73,8 @@ typedef struct FlacState {
     unsigned long  outbufPos; /* read cursor (in int32_t samples) */
 
     int  channels;
-    int  shift;     /* right-shift to reduce to 16-bit range */
+    int  bitsPerSample;
+    int  shift;     /* right-shift from foxen-flac left-aligned int32 to s16 */
 
     DecoderReadCb  readFn;
     DecoderSeekCb  seekFn;
@@ -89,7 +90,60 @@ typedef struct FlacState {
     unsigned long lastBytesFed;
     unsigned long lastBytesConsumed;
     unsigned long lastSamplesProduced;
+    unsigned long decodeCalls;
+    void         *lastHostOutBuf;
+    void         *lastSourceBuf;
+    unsigned long lastFramesDecoded;
+    unsigned long lastFramesCopied;
+    int32_t       lastSrcMin;
+    int32_t       lastSrcMax;
+    short         lastOutMin;
+    short         lastOutMax;
+    short         lastOutFirst16[16];
 } FlacState;
+
+static void FlacScanI32(const int32_t *buf, unsigned long count, int32_t *minOut, int32_t *maxOut)
+{
+    unsigned long i;
+    int32_t mn, mx;
+
+    if (!buf || count == 0) {
+        *minOut = 0;
+        *maxOut = 0;
+        return;
+    }
+
+    mn = buf[0];
+    mx = buf[0];
+    for (i = 1; i < count; i++) {
+        if (buf[i] < mn) mn = buf[i];
+        if (buf[i] > mx) mx = buf[i];
+    }
+    *minOut = mn;
+    *maxOut = mx;
+}
+
+static void FlacScanS16(const short *buf, unsigned long count, short *minOut, short *maxOut)
+{
+    unsigned long i;
+    short mn, mx;
+
+    if (!buf || count == 0) {
+        *minOut = 0;
+        *maxOut = 0;
+        return;
+    }
+
+    mn = buf[0];
+    mx = buf[0];
+    for (i = 1; i < count; i++) {
+        if (buf[i] < mn) mn = buf[i];
+        if (buf[i] > mx) mx = buf[i];
+    }
+    *minOut = mn;
+    *maxOut = mx;
+}
+
 static void FlacFreeState(FlacState *st)
 {
     if (!st) return;
@@ -225,6 +279,27 @@ static int FlacRunDecoder(FlacState *st)
             }
             st->outbufFill = (unsigned long)produced;
             st->outbufPos  = 0;
+            FlacScanI32(st->outbuf, st->outbufFill, &st->lastSrcMin, &st->lastSrcMax);
+            FLAC_DEBUG("flac-debug: decoded block samples=%lu frames=%lu src=%p srcMin=%ld srcMax=%ld first16=%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\n",
+                   st->outbufFill,
+                   (unsigned long)(st->outbufFill / (unsigned long)st->channels),
+                   (void *)st->outbuf, (long)st->lastSrcMin, (long)st->lastSrcMax,
+                   (long)((st->outbufFill > 0) ? st->outbuf[0] : 0),
+                   (long)((st->outbufFill > 1) ? st->outbuf[1] : 0),
+                   (long)((st->outbufFill > 2) ? st->outbuf[2] : 0),
+                   (long)((st->outbufFill > 3) ? st->outbuf[3] : 0),
+                   (long)((st->outbufFill > 4) ? st->outbuf[4] : 0),
+                   (long)((st->outbufFill > 5) ? st->outbuf[5] : 0),
+                   (long)((st->outbufFill > 6) ? st->outbuf[6] : 0),
+                   (long)((st->outbufFill > 7) ? st->outbuf[7] : 0),
+                   (long)((st->outbufFill > 8) ? st->outbuf[8] : 0),
+                   (long)((st->outbufFill > 9) ? st->outbuf[9] : 0),
+                   (long)((st->outbufFill > 10) ? st->outbuf[10] : 0),
+                   (long)((st->outbufFill > 11) ? st->outbuf[11] : 0),
+                   (long)((st->outbufFill > 12) ? st->outbuf[12] : 0),
+                   (long)((st->outbufFill > 13) ? st->outbuf[13] : 0),
+                   (long)((st->outbufFill > 14) ? st->outbuf[14] : 0),
+                   (long)((st->outbufFill > 15) ? st->outbuf[15] : 0));
             return 1;
         }
 
@@ -348,11 +423,13 @@ static DecHandle FlacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
     }
 
     st->channels = (int)nch;
-    /* fx_flac_process() returns signed PCM sample values in int32_t slots.
-     * Preserve native 16-bit streams instead of shifting them down again; for
-     * wider streams, discard only the extra low-order bits needed to produce
-     * signed 16-bit PCM for the host DecoderOps ABI. */
-    st->shift    = (ss > 16) ? (int)(ss - 16) : 0;
+    st->bitsPerSample = (int)ss;
+    /* foxen-flac stores decoded PCM left-aligned in signed int32_t slots:
+     *     stored_value = pcm_sample << (32 - bits_per_sample)
+     * The DecoderOps ABI requires interleaved signed 16-bit PCM, so always
+     * take the signed high word.  This preserves 16-bit FLAC without applying
+     * gain and correctly reduces 24/32-bit FLAC to signed 16-bit. */
+    st->shift    = 16;
 
     infoOut->sampleRate    = (DecULong)sr;
     infoOut->channels      = (unsigned short)st->channels;
@@ -377,22 +454,28 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
 
     if (!st)
         return -1;
-
-    FLAC_DEBUG("flac-debug: FlacDecode enter maxSamplesPerChannel=%lu st->pcmFrames=%lu st->pcmPos=%lu st->done=%d st->eof=%d st->error=%d st->iobufFill=%lu st->iobufPos=%lu\n",
-           (unsigned long)maxSamplesPerChan,
-           (unsigned long)(st->channels ? (st->outbufFill / (unsigned long)st->channels) : 0UL),
-           (unsigned long)(st->channels ? (st->outbufPos / (unsigned long)st->channels) : 0UL),
-           st->done, st->eof, st->error, st->iobufFill, st->iobufPos);
-
     if (st->error)
         return -1;
     if (st->done)
         return 0;
 
     ch = st->channels;
+    if (!outBuf || maxSamplesPerChan == 0 || ch <= 0)
+        return 0;
+
+    st->decodeCalls++;
+    st->lastHostOutBuf = (void *)outBuf;
+    st->lastFramesCopied = 0;
+
+    FLAC_DEBUG("flac-debug: FlacDecode enter call=%lu outBuf=%p maxSamplesPerChannel=%lu channels=%d bits=%d shift=%d st->pcmFrames=%lu st->pcmPos=%lu st->done=%d st->eof=%d st->error=%d st->iobufFill=%lu st->iobufPos=%lu\n",
+           st->decodeCalls, (void *)outBuf,
+           (unsigned long)maxSamplesPerChan, ch, st->bitsPerSample, st->shift,
+           (unsigned long)(st->outbufFill / (unsigned long)ch),
+           (unsigned long)(st->outbufPos / (unsigned long)ch),
+           st->done, st->eof, st->error, st->iobufFill, st->iobufPos);
 
     while (produced < maxSamplesPerChan) {
-        /* Drain already-decoded samples */
+        /* Drain already-decoded interleaved samples into the exact host buffer. */
         if (st->outbufPos < st->outbufFill) {
             unsigned long avail = (st->outbufFill - st->outbufPos) / (unsigned long)ch;
             take = (unsigned long)(maxSamplesPerChan - produced);
@@ -401,11 +484,10 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
             src = st->outbuf + st->outbufPos;
             dst = outBuf + produced * (unsigned long)ch;
             total = take * (unsigned long)ch;
+            st->lastSourceBuf = (void *)src;
+            FlacScanI32(src, total, &st->lastSrcMin, &st->lastSrcMax);
 #if defined(AMIGA_M68K) && defined(__GNUC__)
-            /*
-             * Fast path for streams where the selected scale is exactly a
-             * high-word extraction from the int32_t PCM slot.
-             */
+            /* On big-endian m68k, int32 >> 16 is the first word of each slot. */
             if (__builtin_expect(st->shift == 16 && total > 0, 1)) {
                 const int32_t *s = src;
                 short *d = dst;
@@ -425,12 +507,30 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
             for (i = 0; i < total; i++)
                 dst[i] = (short)(src[i] >> st->shift);
 
+            FlacScanS16(dst, total, &st->lastOutMin, &st->lastOutMax);
+            for (i = 0; i < 16UL; i++)
+                st->lastOutFirst16[i] = (i < total) ? dst[i] : 0;
+            st->lastFramesDecoded = st->outbufFill / (unsigned long)ch;
+            st->lastFramesCopied += take;
+            FLAC_DEBUG("flac-debug: copy call=%lu outBuf=%p src=%p decodedFrames=%lu copiedFrames=%lu srcMin=%ld srcMax=%ld outMin=%ld outMax=%ld outFirst16=%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\n",
+                   st->decodeCalls, (void *)outBuf, (void *)src,
+                   st->lastFramesDecoded, take, (long)st->lastSrcMin, (long)st->lastSrcMax,
+                   (long)st->lastOutMin, (long)st->lastOutMax,
+                   (long)st->lastOutFirst16[0], (long)st->lastOutFirst16[1],
+                   (long)st->lastOutFirst16[2], (long)st->lastOutFirst16[3],
+                   (long)st->lastOutFirst16[4], (long)st->lastOutFirst16[5],
+                   (long)st->lastOutFirst16[6], (long)st->lastOutFirst16[7],
+                   (long)st->lastOutFirst16[8], (long)st->lastOutFirst16[9],
+                   (long)st->lastOutFirst16[10], (long)st->lastOutFirst16[11],
+                   (long)st->lastOutFirst16[12], (long)st->lastOutFirst16[13],
+                   (long)st->lastOutFirst16[14], (long)st->lastOutFirst16[15]);
+
             st->outbufPos += take * (unsigned long)ch;
             produced      += (DecULong)take;
             continue;
         }
 
-        /* Need a new decoded block */
+        /* Need a new decoded block. */
         FLAC_DEBUG("flac-debug: FlacDecode calling FlacRunDecoder pcmFrames=%lu pcmPos=%lu done=%d eof=%d error=%d\n",
                (unsigned long)(st->outbufFill / (unsigned long)ch),
                (unsigned long)(st->outbufPos / (unsigned long)ch),
@@ -455,6 +555,9 @@ static DecLong FlacDecode(DecHandle handle, short *outBuf, DecULong maxSamplesPe
         st->error = 1;
         return -1;
     }
+    FLAC_DEBUG("flac-debug: FlacDecode return call=%lu frames=%lu copiedFrames=%lu outMin=%ld outMax=%ld\n",
+           st->decodeCalls, (unsigned long)produced, st->lastFramesCopied,
+           (long)st->lastOutMin, (long)st->lastOutMax);
     return (DecLong)produced;
 }
 
