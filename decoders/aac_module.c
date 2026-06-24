@@ -79,6 +79,9 @@ typedef struct AacState {
 
     int  channels;
     int  errCount;
+    unsigned long totalDecodeErrors;
+    unsigned long totalResyncs;
+    unsigned long totalInvalidFrames;
 
     DecoderReadCb  readFn;
     DecoderSeekCb  seekFn;
@@ -261,6 +264,9 @@ static void AacTracePoint(AacState *st, const char *point, long err,
     AacTraceAppendFieldL(line, &pos, sizeof(line), "sampRateOut", sampRateOut);
     AacTraceAppendFieldUL(line, &pos, sizeof(line), "outbufFill", st ? st->outbufFill : 0);
     AacTraceAppendFieldUL(line, &pos, sizeof(line), "outbufPos", st ? st->outbufPos : 0);
+    AacTraceAppendFieldUL(line, &pos, sizeof(line), "decodeErrors", st ? st->totalDecodeErrors : 0);
+    AacTraceAppendFieldUL(line, &pos, sizeof(line), "resyncs", st ? st->totalResyncs : 0);
+    AacTraceAppendFieldUL(line, &pos, sizeof(line), "invalidFrames", st ? st->totalInvalidFrames : 0);
     AacTraceAppendFieldL(line, &pos, sizeof(line), "decodeRet", decodeReturn);
     AacTraceAppendChar(line, &pos, sizeof(line), '\n');
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
@@ -316,6 +322,74 @@ static int AacFindSyncBounded(AacState *st)
             return -1;
         if (!AacRefillBuf(st))
             return -1;
+    }
+}
+
+
+static void AacClearOutput(AacState *st)
+{
+    if (!st)
+        return;
+    st->outbufFill = 0;
+    st->outbufPos = 0;
+    st->lastSamplesProduced = 0;
+}
+
+static int AacResyncNextAdts(AacState *st)
+{
+    unsigned long searches = 0;
+
+    AacClearOutput(st);
+
+    if (!st || !st->iobuf || !st->iobufReadPtr)
+        return 0;
+
+    /* Do not retry the same damaged frame forever.  Move at least one byte
+     * forward, then search/refill for the next plausible ADTS frame. */
+    if (st->iobufLeft > 0) {
+        st->iobufReadPtr++;
+        st->iobufLeft--;
+    }
+
+    for (;;) {
+        int offset;
+
+        if ((unsigned long)st->iobufLeft < AAC_REFILL_THRESH && !st->eof)
+            AacRefillBuf(st);
+
+        if (st->iobufLeft <= 0) {
+            st->done = 1;
+            return 0;
+        }
+
+        offset = AACFindSyncWord(st->iobufReadPtr, st->iobufLeft);
+        if (offset >= 0) {
+            st->iobufReadPtr += offset;
+            st->iobufLeft -= offset;
+            st->lastSyncOffset = (unsigned long)offset;
+
+            if ((unsigned long)st->iobufLeft < AAC_REFILL_THRESH && !st->eof)
+                AacRefillBuf(st);
+
+            if (AacValidateAdtsHeader(st->iobufReadPtr, st->iobufLeft)) {
+                st->totalResyncs++;
+                AacTracePoint(st, "11 resync next ADTS", st->lastDecodeErr, 0, 0);
+                return 1;
+            }
+
+            st->totalInvalidFrames++;
+            if (st->iobufLeft > 0) {
+                st->iobufReadPtr++;
+                st->iobufLeft--;
+            }
+            continue;
+        }
+
+        st->lastSyncOffset = (unsigned long)-1;
+        if (st->eof || ++searches >= AAC_SYNC_SEARCH_GUARD)
+            return 0;
+        if (!AacRefillBuf(st))
+            return 0;
     }
 }
 
@@ -380,14 +454,17 @@ static int AacDecodeFrame(AacState *st)
 
     offset = AacFindSyncBounded(st);
     if (offset < 0) {
-        st->error = 1;
+        AacClearOutput(st);
+        st->totalInvalidFrames++;
         return -1;
     }
     st->iobufReadPtr += offset;
     st->iobufLeft    -= offset;
 
     if (!AacValidateAdtsHeader(st->iobufReadPtr, st->iobufLeft)) {
-        st->error = 1;
+        AacClearOutput(st);
+        st->totalInvalidFrames++;
+        AacResyncNextAdts(st);
         return -1;
     }
 
@@ -403,17 +480,21 @@ static int AacDecodeFrame(AacState *st)
     st->lastDecodeErr = err;
     st->lastBytesAfter = (unsigned long)(st->iobufLeft < 0 ? 0 : st->iobufLeft);
     st->lastInputAfter = (unsigned long)(st->iobufReadPtr - st->iobuf);
-    AacTracePoint(st, "08 after normal AACDecode returns", err, 0, 0);
+    AACGetLastFrameInfo(st->aacHandle, &fi);
+    AacTracePoint(st, "08 after normal AACDecode returns", err, &fi, 0);
     if (err != 0) {
-        st->error = 1;
+        st->totalDecodeErrors++;
+        AacClearOutput(st);
+        AacResyncNextAdts(st);
         return -1;
     }
 
-    AACGetLastFrameInfo(st->aacHandle, &fi);
     AacTracePoint(st, "09 after AACGetLastFrameInfo normal", err, &fi, 0);
     if (fi.outputSamps <= 0 || fi.nChans != st->channels ||
         (unsigned long)fi.outputSamps > AAC_OUT_CAP) {
-        st->error = 1;
+        st->totalInvalidFrames++;
+        AacClearOutput(st);
+        AacResyncNextAdts(st);
         return -1;
     }
 
@@ -423,7 +504,9 @@ static int AacDecodeFrame(AacState *st)
     st->lastSamplesProduced = (unsigned long)fi.outputSamps;
     if (st->iobufReadPtr == oldInputPtr && st->iobufLeft == oldBytesLeft &&
         fi.outputSamps <= 0) {
-        st->error = 1;
+        st->totalInvalidFrames++;
+        AacClearOutput(st);
+        AacResyncNextAdts(st);
         return -1;
     }
 
@@ -508,13 +591,15 @@ static DecHandle AacOpen(DecoderReadCb readFn, DecoderSeekCb seekFn,
         st->lastDecodeErr = err;
         st->lastBytesAfter = (unsigned long)(st->iobufLeft < 0 ? 0 : st->iobufLeft);
         st->lastInputAfter = (unsigned long)(st->iobufReadPtr - st->iobuf);
-        AacTracePoint(st, "04 after first/probe AACDecode returns", err, 0, 0);
+        AACGetLastFrameInfo(st->aacHandle, &fi);
+        AacTracePoint(st, "04 after first/probe AACDecode returns", err, &fi, 0);
         if (err != 0) {
+            AacClearOutput(st);
+            st->totalDecodeErrors++;
             AacFreeState(st); return NULL;
         }
     }
 
-    AACGetLastFrameInfo(st->aacHandle, &fi);
     AacTracePoint(st, "05 after AACGetLastFrameInfo probe", st->lastDecodeErr, &fi, 0);
     if (st->iobufReadPtr == st->iobuf + st->lastInputBefore &&
         st->iobufLeft == (int)st->lastBytesBefore && fi.outputSamps <= 0) {
@@ -582,8 +667,13 @@ static DecLong AacDecode(DecHandle handle, short *outBuf,
                 continue;
             }
             if (rc == 0) break; /* EOF */
-            st->error = 1;
-            return -1;
+            st->errCount++;
+            AacTracePoint(st, "12 recoverable decode skip", st->lastDecodeErr, 0, -1);
+            if (st->errCount > AAC_MAX_ERRORS) {
+                st->error = 1;
+                return -1;
+            }
+            continue;
         }
     }
 
