@@ -23,6 +23,7 @@ extern struct DecoderOps gFlacOps;
  * Initialises SysBase from the well-known Amiga address 4 and returns the
  * static vtable.
  */
+__attribute__((section(".text")))
 struct DecoderOps *DecoderModuleEntry(void)
 {
 #ifdef HAVE_AMIGA_AUDIO_DEVICE

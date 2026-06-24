@@ -52,7 +52,6 @@ flac/src/foxen-flac.o: FLAC_CFLAGS += -include flac_standalone.h \
 	-Dmalloc=FlacModuleMalloc -Dcalloc=FlacModuleCalloc \
 	-Drealloc=FlacModuleRealloc -Dfree=FlacModuleFree \
 	-Dexit=FlacModuleExit -DNDEBUG \
-	-DFX_FLAC_NO_CRC \
 	-DAMIGA_M68K_ASM
 
 %.o: %.c
@@ -66,7 +65,7 @@ flac.decoder: $(FLAC_OBJS) decoder_module.h flac/src/foxen-flac.h
 	    echo "ERROR: FLAC decoder objects reference forbidden libc/startup symbols outside flac_alloc.o" >&2; \
 	    exit 1; \
 	fi
-	$(CC) $(FLAC_CFLAGS) -nostartfiles -Wl,--gc-sections -Wl,-Map,$@.map -o $@ $(FLAC_OBJS)
+	$(CC) $(FLAC_CFLAGS) -nostartfiles -Wl,--gc-sections -Wl,-Map,$@.map -o $@ $(FLAC_OBJS) -lgcc
 	@if grep -iE "printf|fprintf|puts|putchar|fflush|stdio|vfprintf|malloc\.o|lib_a-exit|abort|assert|___assert_func|_exit|__EXIT_LIST__|DOSBase|SysBase|dummy\.o|raise" $@.map; then \
 	    echo "ERROR: FLAC decoder linked forbidden libc/startup symbols" >&2; \
 	    exit 1; \
