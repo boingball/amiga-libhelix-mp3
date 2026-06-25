@@ -499,6 +499,8 @@ typedef struct HelixAmp3Player {
 	struct Process *process;
 } HelixAmp3Player;
 
+static void UpdateTagDisplay(HelixAmp3Gui *gui);
+
 struct IntuitionBase *IntuitionBase;
 extern struct CIA ciaa;
 struct Library *AslBase;
