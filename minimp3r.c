@@ -918,6 +918,17 @@ static void StopPlayback(MrApp *app)
 	gPlayer.stopRequested = 1;
 	gPlaybackInterrupted = 1;
 
+	/* Radio teardown safety (parity with the GadTools front-end): mark the
+	 * shared radio status as stopping and clear the active flag straight away.
+	 * Otherwise the timer poll below keeps calling MrSetRadioMetadata() against
+	 * a stream the playback child is in the middle of closing, refreshing the
+	 * GUI from radio state that is being torn down. */
+	if (MrIsRadioInput(app->inputName)) {
+		gGuiPlaybackStatus.radioStatus = (int)RADIO_STATUS_STOPPING;
+		gGuiPlaybackStatus.radioActive = 0;
+		gGuiPlaybackStatus.radioBufferedBytes = 0;
+	}
+
 	/* Wake the child immediately so it does not sit in WaitIO for the rest of
 	 * a multi-second audio buffer.  Forbid()/FindTask() guards against the
 	 * child already being torn down by DOS. */
@@ -998,7 +1009,9 @@ static void PollPlaybackStatus(MrApp *app)
 	if (!app->playbackActive)
 		return;
 
-	if (MrIsRadioInput(app->inputName) && gGuiPlaybackStatus.radioActive)
+	if (MrIsRadioInput(app->inputName) && gGuiPlaybackStatus.radioActive &&
+		gGuiPlaybackStatus.radioStatus != RADIO_STATUS_STOPPING &&
+		gGuiPlaybackStatus.radioStatus != RADIO_STATUS_CLOSED)
 		MrSetRadioMetadata(app);
 
 	phase   = gGuiPlaybackStatus.phase;
