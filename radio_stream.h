@@ -23,6 +23,10 @@ int Radio_Pump(RadioStream *rs);
 int Radio_ReadAudio(RadioStream *rs, unsigned char *buf, int maxBytes);
 RadioStatus Radio_GetStatus(RadioStream *rs);
 const char *Radio_GetTitle(RadioStream *rs);
+const char *Radio_GetStationName(RadioStream *rs);
+const char *Radio_GetGenre(RadioStream *rs);
+const char *Radio_GetStreamUrl(RadioStream *rs);
+int Radio_GetMetaInt(RadioStream *rs);
 const char *Radio_GetContentType(RadioStream *rs);
 const char *Radio_GetError(RadioStream *rs);
 int Radio_GetBitrate(RadioStream *rs);
@@ -35,6 +39,10 @@ static int Radio_Pump(RadioStream *rs) { (void)rs; return -1; }
 static int Radio_ReadAudio(RadioStream *rs, unsigned char *buf, int maxBytes) { (void)rs; (void)buf; (void)maxBytes; return 0; }
 static RadioStatus Radio_GetStatus(RadioStream *rs) { (void)rs; return RADIO_STATUS_ERROR; }
 static const char *Radio_GetTitle(RadioStream *rs) { (void)rs; return ""; }
+static const char *Radio_GetStationName(RadioStream *rs) { (void)rs; return ""; }
+static const char *Radio_GetGenre(RadioStream *rs) { (void)rs; return ""; }
+static const char *Radio_GetStreamUrl(RadioStream *rs) { (void)rs; return ""; }
+static int Radio_GetMetaInt(RadioStream *rs) { (void)rs; return 0; }
 static const char *Radio_GetContentType(RadioStream *rs) { (void)rs; return ""; }
 static const char *Radio_GetError(RadioStream *rs) { (void)rs; return "radio support not built"; }
 static int Radio_GetBitrate(RadioStream *rs) { (void)rs; return 0; }
