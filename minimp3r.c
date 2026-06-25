@@ -397,6 +397,15 @@ typedef struct MrApp {
 	int   lastPhaseShown;
 	unsigned char artGreyBuf[MR_ART_W * MR_ART_H];
 	int artValid;
+
+	char  shownTitle[128];
+	char  shownArtist[128];
+	char  shownAlbum[128];
+	char  shownTrack[32];
+	char  shownGenre[64];
+	char  shownFileInfo[128];
+	char  shownStatus[128];
+	int   albumHover;
 } MrApp;
 
 static void UpdateTimeDisplay(MrApp *app);
@@ -572,12 +581,50 @@ static void SaveSettings(MrApp *app)
 	SaveEnvString("LastDrawer", app->lastDrawer);
 }
 
+static void SetReadonlyString(Object *gad, struct Window *win, char *cache, size_t cacheSize, const char *text)
+{
+	if (!text)
+		text = "";
+	if (cache && cacheSize > 0 && !strcmp(cache, text))
+		return;
+	if (cache && cacheSize > 0)
+		SafeCopy(cache, cacheSize, text);
+	if (gad && win)
+		SetGadgetAttrs((struct Gadget *)gad, win, NULL,
+			STRINGA_TextVal, (ULONG)text,
+			STRINGA_DispPos, 0,
+			TAG_DONE);
+}
+
 static void SetStatus(MrApp *app, const char *text)
 {
-	if (app->statusGad && app->win)
-		SetGadgetAttrs((struct Gadget *)app->statusGad, app->win, NULL,
-			STRINGA_TextVal, (ULONG)text,
-			TAG_DONE);
+	if (!app)
+		return;
+	SetReadonlyString(app->statusGad, app->win, app->shownStatus,
+		sizeof(app->shownStatus), text);
+}
+
+static int PointInGadget(struct Gadget *gad, int x, int y)
+{
+	return gad && x >= gad->LeftEdge && y >= gad->TopEdge &&
+		x < gad->LeftEdge + gad->Width && y < gad->TopEdge + gad->Height;
+}
+
+static void UpdateAlbumHover(MrApp *app)
+{
+	int over;
+	if (!app || !app->win || !app->albumGad)
+		return;
+	over = PointInGadget((struct Gadget *)app->albumGad, app->win->MouseX, app->win->MouseY);
+	if (over == app->albumHover)
+		return;
+	app->albumHover = over;
+	if (over && app->shownAlbum[0] && strcmp(app->shownAlbum, "-")) {
+		char buf[128];
+		SafeCopy(buf, sizeof(buf), "Album: " );
+		strncat(buf, app->shownAlbum, sizeof(buf) - strlen(buf) - 1);
+		SetStatus(app, buf);
+	}
 }
 
 static int MrIsRadioInput(const char *name)
@@ -620,12 +667,12 @@ static void MrSetRadioMetadata(MrApp *app)
 		sprintf(fileInfo, "Internet Radio MP3, %d kbps, %s", gGuiPlaybackStatus.radioBitrateKbps, contentType[0] ? contentType : "audio/mpeg");
 	else
 		sprintf(fileInfo, "Internet Radio MP3, %s", contentType[0] ? contentType : "audio/mpeg");
-	if (app->titleGad && app->win) SetGadgetAttrs((struct Gadget *)app->titleGad, app->win, NULL, STRINGA_TextVal, (ULONG)(title[0] ? title : "-"), TAG_DONE);
-	if (app->artistGad && app->win) SetGadgetAttrs((struct Gadget *)app->artistGad, app->win, NULL, STRINGA_TextVal, (ULONG)(artist[0] ? artist : "-"), TAG_DONE);
-	if (app->albumGad && app->win) SetGadgetAttrs((struct Gadget *)app->albumGad, app->win, NULL, STRINGA_TextVal, (ULONG)(station[0] ? station : "Internet Radio"), TAG_DONE);
-	if (app->trackGad && app->win) SetGadgetAttrs((struct Gadget *)app->trackGad, app->win, NULL, STRINGA_TextVal, (ULONG)"Live", TAG_DONE);
-	if (app->genreGad && app->win) SetGadgetAttrs((struct Gadget *)app->genreGad, app->win, NULL, STRINGA_TextVal, (ULONG)(genre[0] ? genre : "-"), TAG_DONE);
-	if (app->fileInfoGad && app->win) SetGadgetAttrs((struct Gadget *)app->fileInfoGad, app->win, NULL, STRINGA_TextVal, (ULONG)fileInfo, TAG_DONE);
+	SetReadonlyString(app->titleGad, app->win, app->shownTitle, sizeof(app->shownTitle), title[0] ? title : "-");
+	SetReadonlyString(app->artistGad, app->win, app->shownArtist, sizeof(app->shownArtist), artist[0] ? artist : "-");
+	SetReadonlyString(app->albumGad, app->win, app->shownAlbum, sizeof(app->shownAlbum), station[0] ? station : "Internet Radio");
+	SetReadonlyString(app->trackGad, app->win, app->shownTrack, sizeof(app->shownTrack), "Live");
+	SetReadonlyString(app->genreGad, app->win, app->shownGenre, sizeof(app->shownGenre), genre[0] ? genre : "-");
+	SetReadonlyString(app->fileInfoGad, app->win, app->shownFileInfo, sizeof(app->shownFileInfo), fileInfo);
 	if (gGuiPlaybackStatus.radioStatus == RADIO_STATUS_ERROR)
 		sprintf(status, "Radio error");
 	else
@@ -1508,7 +1555,7 @@ static int MrOpenWindow(MrApp *app)
 		WA_CloseGadget, TRUE,
 		WA_SizeGadget, TRUE,
 		WA_IDCMP, IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW |
-			IDCMP_IDCMPUPDATE | IDCMP_MENUPICK | IDCMP_NEWSIZE,
+			IDCMP_IDCMPUPDATE | IDCMP_MENUPICK | IDCMP_NEWSIZE | IDCMP_MOUSEMOVE,
 		WA_NewLookMenus, TRUE,
 		/* Match the GadTools frontend's larger default footprint now that
 		 * ReAction window sizing is stable, so long metadata and file-info
@@ -2253,17 +2300,17 @@ static void RefreshFileInfoAndTags(MrApp *app)
 {
 	MrMp3Info info; char fileInfo[128]; const char *ch; unsigned long kb;
 	if (!app->inputName[0]) {
-		if (app->fileInfoGad && app->win) SetGadgetAttrs((struct Gadget *)app->fileInfoGad, app->win, NULL, STRINGA_TextVal, (ULONG)"No file info", TAG_DONE);
+		SetReadonlyString(app->fileInfoGad, app->win, app->shownFileInfo, sizeof(app->shownFileInfo), "No file info");
 		return;
 	}
 	if (MrIsRadioInput(app->inputName)) {
 		app->rating = 0; app->totalSecs = 0; app->elapsedSecs = 0; app->lastFrames = 0;
-		if (app->titleGad && app->win) SetGadgetAttrs((struct Gadget *)app->titleGad, app->win, NULL, STRINGA_TextVal, (ULONG)"Internet Radio", TAG_DONE);
-		if (app->artistGad && app->win) SetGadgetAttrs((struct Gadget *)app->artistGad, app->win, NULL, STRINGA_TextVal, (ULONG)"-", TAG_DONE);
-		if (app->albumGad && app->win) SetGadgetAttrs((struct Gadget *)app->albumGad, app->win, NULL, STRINGA_TextVal, (ULONG)"Internet Radio", TAG_DONE);
-		if (app->trackGad && app->win) SetGadgetAttrs((struct Gadget *)app->trackGad, app->win, NULL, STRINGA_TextVal, (ULONG)"Live", TAG_DONE);
-		if (app->genreGad && app->win) SetGadgetAttrs((struct Gadget *)app->genreGad, app->win, NULL, STRINGA_TextVal, (ULONG)"-", TAG_DONE);
-		if (app->fileInfoGad && app->win) SetGadgetAttrs((struct Gadget *)app->fileInfoGad, app->win, NULL, STRINGA_TextVal, (ULONG)"Internet Radio MP3, audio/mpeg", TAG_DONE);
+		SetReadonlyString(app->titleGad, app->win, app->shownTitle, sizeof(app->shownTitle), "Internet Radio");
+		SetReadonlyString(app->artistGad, app->win, app->shownArtist, sizeof(app->shownArtist), "-");
+		SetReadonlyString(app->albumGad, app->win, app->shownAlbum, sizeof(app->shownAlbum), "Internet Radio");
+		SetReadonlyString(app->trackGad, app->win, app->shownTrack, sizeof(app->shownTrack), "Live");
+		SetReadonlyString(app->genreGad, app->win, app->shownGenre, sizeof(app->shownGenre), "-");
+		SetReadonlyString(app->fileInfoGad, app->win, app->shownFileInfo, sizeof(app->shownFileInfo), "Internet Radio MP3, audio/mpeg");
 		UpdateRatingDisplay(app); UpdateTimeDisplay(app); SetGauge(app, 0); SetStatus(app, "Internet Radio ready.");
 		return;
 	}
@@ -2279,12 +2326,12 @@ static void RefreshFileInfoAndTags(MrApp *app)
 			info.bitrateKbps, ch, info.sampleRate, kb);
 	else
 		SafeCopy(fileInfo, sizeof(fileInfo), "-");
-	if (app->titleGad && app->win) SetGadgetAttrs((struct Gadget *)app->titleGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.title[0] ? info.title : "-"), TAG_DONE);
-	if (app->artistGad && app->win) SetGadgetAttrs((struct Gadget *)app->artistGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.artist[0] ? info.artist : "-"), TAG_DONE);
-	if (app->albumGad && app->win) SetGadgetAttrs((struct Gadget *)app->albumGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.album[0] ? info.album : "-"), TAG_DONE);
-	if (app->trackGad && app->win) SetGadgetAttrs((struct Gadget *)app->trackGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.track[0] ? info.track : "-"), TAG_DONE);
-	if (app->genreGad && app->win) SetGadgetAttrs((struct Gadget *)app->genreGad, app->win, NULL, STRINGA_TextVal, (ULONG)(info.genre[0] ? info.genre : "-"), TAG_DONE);
-	if (app->fileInfoGad && app->win) SetGadgetAttrs((struct Gadget *)app->fileInfoGad, app->win, NULL, STRINGA_TextVal, (ULONG)fileInfo, TAG_DONE);
+	SetReadonlyString(app->titleGad, app->win, app->shownTitle, sizeof(app->shownTitle), info.title[0] ? info.title : "-");
+	SetReadonlyString(app->artistGad, app->win, app->shownArtist, sizeof(app->shownArtist), info.artist[0] ? info.artist : "-");
+	SetReadonlyString(app->albumGad, app->win, app->shownAlbum, sizeof(app->shownAlbum), info.album[0] ? info.album : "-");
+	SetReadonlyString(app->trackGad, app->win, app->shownTrack, sizeof(app->shownTrack), info.track[0] ? info.track : "-");
+	SetReadonlyString(app->genreGad, app->win, app->shownGenre, sizeof(app->shownGenre), info.genre[0] ? info.genre : "-");
+	SetReadonlyString(app->fileInfoGad, app->win, app->shownFileInfo, sizeof(app->shownFileInfo), fileInfo);
 	UpdateRatingDisplay(app); UpdateTimeDisplay(app); SetGauge(app, 0); UpdateArtwork(app, &info); SetStatus(app, app->artValid ? "File ready." : "File ready (No art).");
 	FreeMp3Info(&info);
 }
@@ -3137,10 +3184,10 @@ int main(int argc, char **argv)
 				if (done)
 					break;
 			}
-			/* window.class repaints its gadgets on refresh/resize but it does
-			 * not know about our hand-drawn artwork, so re-stamp the thumbnail
-			 * after every batch of window input. */
-			DrawArtPanel(&app);
+			/* Keep hover handling cheap: only the status line changes when the
+			 * pointer enters the Album field, and SetReadonlyString() ignores
+			 * identical text so mouse movement cannot trigger repaint storms. */
+			UpdateAlbumHover(&app);
 		}
 	}
 
