@@ -1083,10 +1083,17 @@ static void PollPlaybackStatus(MrApp *app)
 	if (!app->playbackActive)
 		return;
 
-	if (MrIsRadioInput(app->inputName) &&
-		gGuiPlaybackStatus.radioStatus != RADIO_STATUS_STOPPING &&
-		gGuiPlaybackStatus.radioStatus != RADIO_STATUS_CLOSED)
-		MrSetRadioMetadata(app);
+	if (MrIsRadioInput(app->inputName)) {
+		if (gGuiPlaybackStatus.radioStatus == RADIO_STATUS_ERROR) {
+			gGuiPlaybackStatus.radioActive = 0;
+			gGuiPlaybackStatus.radioBufferedBytes = 0;
+			SetStatus(app, "Radio error");
+		} else if (gGuiPlaybackStatus.radioActive &&
+			gGuiPlaybackStatus.radioStatus != RADIO_STATUS_STOPPING &&
+			gGuiPlaybackStatus.radioStatus != RADIO_STATUS_CLOSED) {
+			MrSetRadioMetadata(app);
+		}
+	}
 
 	phase   = gGuiPlaybackStatus.phase;
 	frames  = gGuiPlaybackStatus.decodedFrames;

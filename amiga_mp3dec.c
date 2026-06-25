@@ -5466,6 +5466,16 @@ static void GuiPublishRadioMetadata(RadioStream *radio)
 	GuiCopyVolatileString(gGuiPlaybackStatus.radioContentType, sizeof(gGuiPlaybackStatus.radioContentType), Radio_GetContentType(radio));
 }
 
+
+static void GuiMarkRadioError(void)
+{
+	gGuiPlaybackStatus.radioActive = 0;
+	gGuiPlaybackStatus.radioStatus = (int)RADIO_STATUS_ERROR;
+	gGuiPlaybackStatus.radioBufferedBytes = 0;
+	gGuiPlaybackStatus.radioBitrateKbps = 0;
+	gGuiPlaybackStatus.radioMetaInt = 0;
+}
+
 static void GuiMarkRadioStopped(void)
 {
 	gGuiPlaybackStatus.radioActive = 0;
@@ -9335,6 +9345,7 @@ int main(int argc, char **argv)
 		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_AFTER);
 		if (!radio || Radio_GetStatus(radio) == RADIO_STATUS_ERROR) {
 			fprintf(stderr, "cannot open radio stream: %s\n", radio ? Radio_GetError(radio) : "out of memory");
+			GuiMarkRadioError();
 			if (radio) Radio_Close(radio);
 			free(resolvedOutName);
 			AmigaFreeNormalizedArgs(&normalized);
@@ -9374,6 +9385,7 @@ int main(int argc, char **argv)
 			GuiPublishStartupStage(GUISTART_INPUT_FOPEN_AFTER);
 			if (!radio || Radio_GetStatus(radio) == RADIO_STATUS_ERROR) {
 				fprintf(stderr, "cannot open radio stream: %s\n", radio ? Radio_GetError(radio) : "out of memory");
+				GuiMarkRadioError();
 				if (radio) Radio_Close(radio);
 				free(resolvedOutName);
 				AmigaFreeNormalizedArgs(&normalized);

@@ -25,6 +25,14 @@
 #endif
 #define RADIO_HEADER_MAX 4096
 #define RADIO_META_MAX 512
+#ifndef RADIO_ZERO_BYTE_PUMP_MAX
+#define RADIO_ZERO_BYTE_PUMP_MAX 64
+#endif
+#ifdef RADIO_DEBUG_OPEN
+#define RADIO_OPEN_DEBUG_PRINTF(x) printf x
+#else
+#define RADIO_OPEN_DEBUG_PRINTF(x) ((void)0)
+#endif
 
 
 #if defined(AMIGA_M68K)
@@ -73,6 +81,8 @@ struct RadioStream {
     unsigned char meta[RADIO_META_MAX];
     int metaLen, metaGot, metaLeft;
     int reconnectAttempts, reconnectDelay;
+    int zeroBytePumps;
+    int everPlayed;
     int stopping;
 };
 
@@ -117,7 +127,7 @@ static void radio_copy_bytes(char *dst, size_t dstSize, const unsigned char *src
     dst[copyLen] = 0;
 }
 
-static void set_error(RadioStream *rs, const char *msg) { if (rs) { radio_copy_string(rs->error,sizeof(rs->error),msg); rs->status = RADIO_STATUS_ERROR; } }
+static void set_error(RadioStream *rs, const char *msg) { if (rs) { radio_copy_string(rs->error,sizeof(rs->error),msg); rs->status = RADIO_STATUS_ERROR; RADIO_OPEN_DEBUG_PRINTF(("radio-open: %s\n", msg ? msg : "error")); } }
 static int ring_write(RadioStream *rs, const unsigned char *p, int n) { int i=0; while (i<n && rs->used<rs->size) { rs->ring[rs->wpos++]=p[i++]; if(rs->wpos>=rs->size)rs->wpos=0; rs->used++; } return i; }
 static int ring_read(RadioStream *rs, unsigned char *p, int n) { int i=0; while (i<n && rs->used) { p[i++]=rs->ring[rs->rpos++]; if(rs->rpos>=rs->size)rs->rpos=0; rs->used--; } return i; }
 static int ci_starts(const char *s,const char *p){ while(*p) { if(tolower((unsigned char)*s++)!=tolower((unsigned char)*p++)) return 0; } return 1; }
@@ -140,18 +150,18 @@ static void reset_parser(RadioStream *rs)
 static int connect_http(RadioStream *rs){
     struct hostent *he; struct sockaddr_in sa; char req[512]; int n;
 #if defined(AMIGA_M68K)
-    if(!SocketBase) SocketBase=OpenLibrary("bsdsocket.library",4); if(!SocketBase){ set_error(rs,"bsdsocket.library unavailable"); return -1; }
+    if(!SocketBase) SocketBase=OpenLibrary("bsdsocket.library",4); if(!SocketBase){ set_error(rs,"bsdsocket.library unavailable"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: bsdsocket open failed\n")); return -1; }
 #endif
     if (radio_is_stopping(rs)) return -1;
-    he=gethostbyname(rs->host); if(!he){ radio_copy_string(rs->error,sizeof(rs->error),"cannot resolve stream host"); return -1; }
+    he=gethostbyname(rs->host); if(!he){ set_error(rs,"cannot resolve stream host"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: DNS failed for %s\n", rs->host)); return -1; }
     if (radio_is_stopping(rs)) return -1;
-    rs->sock=socket(AF_INET,SOCK_STREAM,0); if(rs->sock==RADIO_INVALID_SOCKET){ radio_copy_string(rs->error,sizeof(rs->error),"cannot create socket"); return -1; }
+    rs->sock=socket(AF_INET,SOCK_STREAM,0); if(rs->sock==RADIO_INVALID_SOCKET){ set_error(rs,"cannot create socket"); return -1; }
     memset(&sa,0,sizeof(sa)); sa.sin_family=AF_INET; sa.sin_port=htons((unsigned short)rs->port); memcpy(&sa.sin_addr,he->h_addr,he->h_length);
     if (radio_is_stopping(rs)) { close_current_socket(rs); return -1; }
-    if(connect(rs->sock,(struct sockaddr*)&sa,sizeof(sa))<0){ radio_close_socket(rs->sock); rs->sock=RADIO_INVALID_SOCKET; radio_copy_string(rs->error,sizeof(rs->error),"cannot connect to stream"); return -1; }
+    if(connect(rs->sock,(struct sockaddr*)&sa,sizeof(sa))<0){ radio_close_socket(rs->sock); rs->sock=RADIO_INVALID_SOCKET; set_error(rs,"cannot connect to stream"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: connect failed to %s:%d\n", rs->host, rs->port)); return -1; }
     if (radio_is_stopping(rs)) { close_current_socket(rs); return -1; }
     n=snprintf(req,sizeof(req),"GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: MiniAMP3/experimental\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n",rs->path,rs->host);
-    if(send(rs->sock,req,n,0)!=n){ radio_close_socket(rs->sock); rs->sock=RADIO_INVALID_SOCKET; radio_copy_string(rs->error,sizeof(rs->error),"cannot send HTTP request"); return -1; }
+    if(send(rs->sock,req,n,0)!=n){ radio_close_socket(rs->sock); rs->sock=RADIO_INVALID_SOCKET; set_error(rs,"cannot send HTTP request"); return -1; }
     reset_parser(rs);
     return 0;
 }
@@ -172,7 +182,7 @@ static int reconnect_http(RadioStream *rs)
     return 0;
 }
 
-static void parse_headers(RadioStream *rs,char *h){ char *line=strtok(h,"\r\n"); int code=0; if(line && ci_starts(line,"ICY")) code=200; else if(line) sscanf(line,"HTTP/%*s %d",&code); if(code<200||code>299){ set_error(rs,"HTTP stream returned non-success status"); return; } while((line=strtok(NULL,"\r\n"))){ char *v=strchr(line,':'); if(!v) continue; *v++=0; line=trim(line); v=trim(v); if(ci_equals(line,"Content-Type")) radio_copy_string(rs->contentType,sizeof(rs->contentType),v); else if(ci_equals(line,"icy-metaint")){ rs->metaint=atoi(v); rs->audioUntilMeta=rs->metaint; } else if(ci_equals(line,"icy-br")) rs->bitrate=atoi(v); else if(ci_equals(line,"icy-name")) radio_copy_string(rs->stationName,sizeof(rs->stationName),v); else if(ci_equals(line,"icy-genre")) radio_copy_string(rs->genre,sizeof(rs->genre),v); else if(ci_equals(line,"icy-url")) radio_copy_string(rs->streamUrl,sizeof(rs->streamUrl),v); } if(rs->contentType[0] && !ci_starts(rs->contentType,"audio/mpeg")) set_error(rs,"unsupported stream Content-Type (expected audio/mpeg)"); }
+static void parse_headers(RadioStream *rs,char *h){ char *line=strtok(h,"\r\n"); int code=0; if(line && ci_starts(line,"ICY")) code=200; else if(line && ci_starts(line,"HTTP/")) sscanf(line,"HTTP/%*s %d",&code); else { set_error(rs,"invalid HTTP stream response"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: HTTP header failed\n")); return; } if(code<200||code>299){ set_error(rs,"HTTP stream returned non-success status"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: HTTP header failed status %d\n", code)); return; } while((line=strtok(NULL,"\r\n"))){ char *v=strchr(line,':'); if(!v) continue; *v++=0; line=trim(line); v=trim(v); if(ci_equals(line,"Content-Type")) radio_copy_string(rs->contentType,sizeof(rs->contentType),v); else if(ci_equals(line,"icy-metaint")){ rs->metaint=atoi(v); rs->audioUntilMeta=rs->metaint; } else if(ci_equals(line,"icy-br")) rs->bitrate=atoi(v); else if(ci_equals(line,"icy-name")) radio_copy_string(rs->stationName,sizeof(rs->stationName),v); else if(ci_equals(line,"icy-genre")) radio_copy_string(rs->genre,sizeof(rs->genre),v); else if(ci_equals(line,"icy-url")) radio_copy_string(rs->streamUrl,sizeof(rs->streamUrl),v); } if(rs->contentType[0] && !ci_starts(rs->contentType,"audio/mpeg")) { set_error(rs,"unsupported stream Content-Type (expected audio/mpeg)"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: content type unsupported: %s\n", rs->contentType)); } }
 
 static void parse_meta(RadioStream *rs,const unsigned char *m,int n)
 {
@@ -226,11 +236,11 @@ static int process_bytes(RadioStream *rs, const unsigned char *b, int n)
     return 0;
 }
 
-RadioStream *Radio_Open(const char *url){ RadioStream *rs=(RadioStream*)calloc(1,sizeof(*rs)); if(!rs) return NULL; rs->sock=RADIO_INVALID_SOCKET; rs->size=RADIO_RING_BYTES; rs->ring=(unsigned char*)malloc(rs->size); rs->status=RADIO_STATUS_CONNECTING; if(!rs->ring){ set_error(rs,"not enough memory for radio buffer"); return rs; } if(parse_url(rs,url)){ set_error(rs,"only direct http:// stream URLs are supported"); return rs; } if(connect_http(rs)==0) rs->status=RADIO_STATUS_BUFFERING; else if(!radio_is_stopping(rs)) rs->status=RADIO_STATUS_RECONNECTING; return rs; }
+RadioStream *Radio_Open(const char *url){ RadioStream *rs=(RadioStream*)calloc(1,sizeof(*rs)); if(!rs) return NULL; rs->sock=RADIO_INVALID_SOCKET; rs->status=RADIO_STATUS_CONNECTING; rs->size=RADIO_RING_BYTES; rs->ring=(unsigned char*)malloc(rs->size); if(!rs->ring){ rs->size=0; set_error(rs,"not enough memory for radio buffer"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: Radio_Open returning error\n")); return rs; } if(parse_url(rs,url)){ set_error(rs,"only direct http:// stream URLs are supported"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: Radio_Open returning error\n")); return rs; } if(connect_http(rs)==0) rs->status=RADIO_STATUS_BUFFERING; else { close_current_socket(rs); if(rs->status!=RADIO_STATUS_ERROR) set_error(rs, rs->error[0] ? rs->error : "cannot open radio stream"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: Radio_Open returning error\n")); } return rs; }
 void Radio_RequestStop(RadioStream *rs){ if(!rs)return; RADIO_STOP_DEBUG_PRINTF(("radio-stop: stop requested\n")); rs->stopping=1; rs->reconnectAttempts=RADIO_RECONNECT_MAX; rs->reconnectDelay=0; rs->status=RADIO_STATUS_STOPPING; close_current_socket(rs); RADIO_STOP_DEBUG_PRINTF(("radio-stop: marked stopping\n")); }
 void Radio_Close(RadioStream *rs){ if(!rs)return; RADIO_STOP_DEBUG_PRINTF(("radio-stop: Radio_Close entered\n")); Radio_RequestStop(rs); rs->status=RADIO_STATUS_CLOSED; free(rs->ring); rs->ring=NULL; rs->size=rs->used=rs->rpos=rs->wpos=0; RADIO_STOP_DEBUG_PRINTF(("radio-stop: Radio_Close exited\n")); free(rs); }
-int Radio_Pump(RadioStream *rs){ unsigned char b[1024]; int n; if(!rs||rs->status==RADIO_STATUS_ERROR) return -1; if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(rs->sock==RADIO_INVALID_SOCKET) return reconnect_http(rs); n=(int)recv(rs->sock,(char*)b,sizeof(b),0); if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(n<=0){ rs->reconnectDelay = RADIO_RECONNECT_BACKOFF_PUMPS; set_status(rs, RADIO_STATUS_RECONNECTING); close_current_socket(rs); return 0; } if(process_bytes(rs,b,n)<0) return -1; if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(rs->headerDone && rs->used >= RADIO_START_THRESHOLD) { rs->reconnectAttempts = 0; rs->reconnectDelay = 0; rs->status=RADIO_STATUS_PLAYING; } else if(rs->headerDone && rs->status!=RADIO_STATUS_PLAYING) set_status(rs,RADIO_STATUS_BUFFERING); return n; }
-int Radio_ReadAudio(RadioStream *rs,unsigned char *buf,int maxBytes){ int got; if(!rs||!buf||maxBytes<=0)return 0; if(radio_is_stopping(rs)) return 0; while(!radio_is_stopping(rs) && rs->status!=RADIO_STATUS_PLAYING && rs->used<RADIO_START_THRESHOLD && rs->status!=RADIO_STATUS_ERROR) Radio_Pump(rs); while(!radio_is_stopping(rs) && rs->used==0 && rs->status!=RADIO_STATUS_ERROR) Radio_Pump(rs); if(radio_is_stopping(rs)) return 0; got=ring_read(rs,buf,maxBytes); if(rs->status==RADIO_STATUS_PLAYING && rs->used<RADIO_LOW_WATER_BYTES) rs->status=RADIO_STATUS_BUFFERING; if(rs->status==RADIO_STATUS_BUFFERING && rs->used>=RADIO_START_THRESHOLD) rs->status=RADIO_STATUS_PLAYING; return got; }
+int Radio_Pump(RadioStream *rs){ unsigned char b[1024]; int n; if(!rs||rs->status==RADIO_STATUS_ERROR) return -1; if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(rs->sock==RADIO_INVALID_SOCKET) { if(!rs->everPlayed){ set_error(rs,"radio stream closed before playback started"); return -1; } return reconnect_http(rs); } n=(int)recv(rs->sock,(char*)b,sizeof(b),0); if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(n<=0){ close_current_socket(rs); if(!rs->headerDone){ set_error(rs,"HTTP header read failed"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: HTTP header failed\n")); return -1; } if(!rs->everPlayed){ set_error(rs,"radio stream ended before audio buffered"); return -1; } rs->reconnectDelay = RADIO_RECONNECT_BACKOFF_PUMPS; set_status(rs, RADIO_STATUS_RECONNECTING); return 0; } rs->zeroBytePumps=0; if(process_bytes(rs,b,n)<0) return -1; if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(rs->headerDone && rs->used >= RADIO_START_THRESHOLD) { rs->reconnectAttempts = 0; rs->reconnectDelay = 0; rs->everPlayed = 1; rs->status=RADIO_STATUS_PLAYING; } else if(rs->headerDone && rs->status!=RADIO_STATUS_PLAYING) set_status(rs,RADIO_STATUS_BUFFERING); return n; }
+int Radio_ReadAudio(RadioStream *rs,unsigned char *buf,int maxBytes){ int got; if(!rs||!buf||maxBytes<=0)return 0; if(radio_is_stopping(rs)) return 0; while(!radio_is_stopping(rs) && rs->status!=RADIO_STATUS_PLAYING && rs->used<RADIO_START_THRESHOLD && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && ++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX) { set_error(rs,"radio stream did not buffer audio"); break; } } while(!radio_is_stopping(rs) && rs->used==0 && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && ++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX) { set_error(rs,"radio stream did not deliver audio"); break; } } if(radio_is_stopping(rs)) return 0; got=ring_read(rs,buf,maxBytes); if(rs->status==RADIO_STATUS_PLAYING && rs->used<RADIO_LOW_WATER_BYTES) rs->status=RADIO_STATUS_BUFFERING; if(rs->status==RADIO_STATUS_BUFFERING && rs->used>=RADIO_START_THRESHOLD) rs->status=RADIO_STATUS_PLAYING; return got; }
 RadioStatus Radio_GetStatus(RadioStream *rs){ return rs?rs->status:RADIO_STATUS_CLOSED; }
 const char *Radio_GetTitle(RadioStream *rs){ return rs?rs->title:""; }
 const char *Radio_GetStationName(RadioStream *rs){ return rs?rs->stationName:""; }
@@ -238,7 +248,7 @@ const char *Radio_GetGenre(RadioStream *rs){ return rs?rs->genre:""; }
 const char *Radio_GetStreamUrl(RadioStream *rs){ return rs?rs->streamUrl:""; }
 int Radio_GetMetaInt(RadioStream *rs){ return rs?rs->metaint:0; }
 const char *Radio_GetContentType(RadioStream *rs){ return rs?rs->contentType:""; }
-const char *Radio_GetError(RadioStream *rs){ return rs?rs->error:""; }
+const char *Radio_GetError(RadioStream *rs){ return rs?(rs->error[0]?rs->error:""):"radio not open"; }
 int Radio_GetBitrate(RadioStream *rs){ return rs?rs->bitrate:0; }
 int Radio_GetBufferedBytes(RadioStream *rs){ return rs?(int)rs->used:0; }
 const char *Radio_StatusText(RadioStatus s){ switch(s){case RADIO_STATUS_CONNECTING:return "Connecting";case RADIO_STATUS_BUFFERING:return "Buffering";case RADIO_STATUS_PLAYING:return "Playing";case RADIO_STATUS_RECONNECTING:return "Reconnecting";case RADIO_STATUS_STOPPING:return "Stopping";case RADIO_STATUS_CLOSED:return "Closed";case RADIO_STATUS_ERROR:return "Error";default:return "Idle";} }
