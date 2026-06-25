@@ -62,7 +62,7 @@ struct RadioStream {
     RadioStatus status;
     char url[256], host[128], path[192];
     int port, bitrate, metaint, audioUntilMeta, headerDone;
-    char contentType[64], title[128], error[128];
+    char contentType[64], title[128], stationName[128], genre[64], streamUrl[128], error[128];
     unsigned char *ring;
     unsigned long rpos, wpos, used, size;
     char header[RADIO_HEADER_MAX];
@@ -89,6 +89,7 @@ static void reset_parser(RadioStream *rs)
     rs->metaint = 0; rs->audioUntilMeta = 0;
     rs->metaLen = rs->metaGot = rs->metaLeft = 0;
     rs->contentType[0] = 0; rs->bitrate = 0;
+    rs->stationName[0] = 0; rs->genre[0] = 0; rs->streamUrl[0] = 0;
 }
 
 static int connect_http(RadioStream *rs){
@@ -121,7 +122,7 @@ static int reconnect_http(RadioStream *rs)
     return 0;
 }
 
-static void parse_headers(RadioStream *rs,char *h){ char *line=strtok(h,"\r\n"); int code=0; if(line && ci_starts(line,"ICY")) code=200; else if(line) sscanf(line,"HTTP/%*s %d",&code); if(code<200||code>299){ set_error(rs,"HTTP stream returned non-success status"); return; } while((line=strtok(NULL,"\r\n"))){ char *v=strchr(line,':'); if(!v) continue; *v++=0; v=trim(v); if(ci_starts(line,"Content-Type")) snprintf(rs->contentType,sizeof(rs->contentType),"%s",v); else if(ci_starts(line,"icy-metaint")){ rs->metaint=atoi(v); rs->audioUntilMeta=rs->metaint; } else if(ci_starts(line,"icy-br")) rs->bitrate=atoi(v); else if(ci_starts(line,"icy-name") && !rs->title[0]) snprintf(rs->title,sizeof(rs->title),"%s",v); } if(rs->contentType[0] && !ci_starts(rs->contentType,"audio/mpeg")) set_error(rs,"unsupported stream Content-Type (expected audio/mpeg)"); }
+static void parse_headers(RadioStream *rs,char *h){ char *line=strtok(h,"\r\n"); int code=0; if(line && ci_starts(line,"ICY")) code=200; else if(line) sscanf(line,"HTTP/%*s %d",&code); if(code<200||code>299){ set_error(rs,"HTTP stream returned non-success status"); return; } while((line=strtok(NULL,"\r\n"))){ char *v=strchr(line,':'); if(!v) continue; *v++=0; v=trim(v); if(ci_starts(line,"Content-Type")) snprintf(rs->contentType,sizeof(rs->contentType),"%s",v); else if(ci_starts(line,"icy-metaint")){ rs->metaint=atoi(v); rs->audioUntilMeta=rs->metaint; } else if(ci_starts(line,"icy-br")) rs->bitrate=atoi(v); else if(ci_starts(line,"icy-name")) snprintf(rs->stationName,sizeof(rs->stationName),"%s",v); else if(ci_starts(line,"icy-genre")) snprintf(rs->genre,sizeof(rs->genre),"%s",v); else if(ci_starts(line,"icy-url")) snprintf(rs->streamUrl,sizeof(rs->streamUrl),"%s",v); } if(rs->contentType[0] && !ci_starts(rs->contentType,"audio/mpeg")) set_error(rs,"unsupported stream Content-Type (expected audio/mpeg)"); }
 
 static void parse_meta(RadioStream *rs,const unsigned char *m,int n){ const char *key="StreamTitle='"; const unsigned char *p; int i; for(i=0;i+13<n;i++){ if(!memcmp(m+i,key,13)){ p=m+i+13; for(i=0; p+i<m+n && p[i] != '\'' && i<(int)sizeof(rs->title)-1; i++) rs->title[i]=(char)p[i]; rs->title[i]=0; break; } } }
 
@@ -164,6 +165,10 @@ int Radio_Pump(RadioStream *rs){ unsigned char b[1024]; int n; if(!rs||rs->statu
 int Radio_ReadAudio(RadioStream *rs,unsigned char *buf,int maxBytes){ int got; if(!rs||!buf||maxBytes<=0)return 0; while(rs->status!=RADIO_STATUS_PLAYING && rs->used<RADIO_START_THRESHOLD && rs->status!=RADIO_STATUS_ERROR) Radio_Pump(rs); while(rs->used==0 && rs->status!=RADIO_STATUS_ERROR) Radio_Pump(rs); got=ring_read(rs,buf,maxBytes); if(rs->status==RADIO_STATUS_PLAYING && rs->used<RADIO_LOW_WATER_BYTES) rs->status=RADIO_STATUS_BUFFERING; if(rs->status==RADIO_STATUS_BUFFERING && rs->used>=RADIO_START_THRESHOLD) rs->status=RADIO_STATUS_PLAYING; return got; }
 RadioStatus Radio_GetStatus(RadioStream *rs){ return rs?rs->status:RADIO_STATUS_IDLE; }
 const char *Radio_GetTitle(RadioStream *rs){ return rs?rs->title:""; }
+const char *Radio_GetStationName(RadioStream *rs){ return rs?rs->stationName:""; }
+const char *Radio_GetGenre(RadioStream *rs){ return rs?rs->genre:""; }
+const char *Radio_GetStreamUrl(RadioStream *rs){ return rs?rs->streamUrl:""; }
+int Radio_GetMetaInt(RadioStream *rs){ return rs?rs->metaint:0; }
 const char *Radio_GetContentType(RadioStream *rs){ return rs?rs->contentType:""; }
 const char *Radio_GetError(RadioStream *rs){ return rs?rs->error:""; }
 int Radio_GetBitrate(RadioStream *rs){ return rs?rs->bitrate:0; }

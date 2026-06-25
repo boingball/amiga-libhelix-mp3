@@ -390,6 +390,7 @@ static void InputSourceInit(InputSource *input, FILE *file);
 static void InputSourceInitAmigaDos(InputSource *input, BPTR amigaFile);
 #endif
 static int InputSourcePrepareMp3(InputSource *input);
+static void GuiPublishRadioMetadata(RadioStream *radio);
 
 typedef struct DecodeStats {
 	unsigned long decodedFrames;
@@ -1586,8 +1587,11 @@ static void CloseInputFile(FILE **file, int debugCleanup)
 
 static size_t InputSourceRead(InputSource *input, void *dest, size_t bytes)
 {
-	if (input->radio)
-		return (size_t)Radio_ReadAudio(input->radio, (unsigned char *)dest, (int)bytes);
+	if (input->radio) {
+		size_t got = (size_t)Radio_ReadAudio(input->radio, (unsigned char *)dest, (int)bytes);
+		GuiPublishRadioMetadata(input->radio);
+		return got;
+	}
 	if (input->memory) {
 		unsigned long available;
 
@@ -5395,9 +5399,47 @@ typedef struct GuiPlaybackStatus {
 	volatile unsigned long tryBytes;
 	volatile int           lastError;
 	volatile int           openDeviceResult;
+	volatile int           radioActive;
+	volatile int           radioStatus;
+	volatile int           radioBitrateKbps;
+	volatile int           radioBufferedBytes;
+	volatile int           radioMetaInt;
+	volatile char          radioTitle[128];
+	volatile char          radioStationName[128];
+	volatile char          radioGenre[64];
+	volatile char          radioStreamUrl[128];
+	volatile char          radioContentType[64];
 } GuiPlaybackStatus;
 
 GuiPlaybackStatus gGuiPlaybackStatus;
+
+static void GuiCopyVolatileString(volatile char *dst, unsigned long dstSize, const char *src)
+{
+	unsigned long i;
+	if (!dst || dstSize == 0)
+		return;
+	if (!src)
+		src = "";
+	for (i = 0; i + 1 < dstSize && src[i]; i++)
+		dst[i] = src[i];
+	dst[i] = 0;
+}
+
+static void GuiPublishRadioMetadata(RadioStream *radio)
+{
+	if (!radio)
+		return;
+	gGuiPlaybackStatus.radioActive = 1;
+	gGuiPlaybackStatus.radioStatus = (int)Radio_GetStatus(radio);
+	gGuiPlaybackStatus.radioBitrateKbps = Radio_GetBitrate(radio);
+	gGuiPlaybackStatus.radioBufferedBytes = Radio_GetBufferedBytes(radio);
+	gGuiPlaybackStatus.radioMetaInt = Radio_GetMetaInt(radio);
+	GuiCopyVolatileString(gGuiPlaybackStatus.radioTitle, sizeof(gGuiPlaybackStatus.radioTitle), Radio_GetTitle(radio));
+	GuiCopyVolatileString(gGuiPlaybackStatus.radioStationName, sizeof(gGuiPlaybackStatus.radioStationName), Radio_GetStationName(radio));
+	GuiCopyVolatileString(gGuiPlaybackStatus.radioGenre, sizeof(gGuiPlaybackStatus.radioGenre), Radio_GetGenre(radio));
+	GuiCopyVolatileString(gGuiPlaybackStatus.radioStreamUrl, sizeof(gGuiPlaybackStatus.radioStreamUrl), Radio_GetStreamUrl(radio));
+	GuiCopyVolatileString(gGuiPlaybackStatus.radioContentType, sizeof(gGuiPlaybackStatus.radioContentType), Radio_GetContentType(radio));
+}
 
 #define GUIPLAY_PHASE_IDLE      0   /* not playing */
 #define GUIPLAY_PHASE_BUFFERING 1   /* filling initial buffers */
@@ -9256,6 +9298,7 @@ int main(int argc, char **argv)
 			return 1;
 		}
 		InputSourceInitRadio(&input, radio);
+		GuiPublishRadioMetadata(radio);
 	} else if (opt.play) {
 		/* If the file extension is not .mp3, try a generic decoder module. */
 		{

@@ -580,6 +580,55 @@ static void SetStatus(MrApp *app, const char *text)
 			TAG_DONE);
 }
 
+static int MrIsRadioInput(const char *name)
+{
+	return name && !strncmp(name, "http://", 7);
+}
+
+static void MrCopyVolatileString(char *dst, unsigned long dstSize, volatile const char *src)
+{
+	unsigned long i;
+	if (!dst || dstSize == 0) return;
+	if (!src) { dst[0] = 0; return; }
+	for (i = 0; i + 1 < dstSize && src[i]; i++) dst[i] = (char)src[i];
+	dst[i] = 0;
+}
+
+static void MrSplitStreamTitle(const char *streamTitle, char *artist, unsigned long artistSize, char *title, unsigned long titleSize)
+{
+	const char *sep; char tmp[128];
+	if (artist && artistSize) artist[0] = 0;
+	if (title && titleSize) title[0] = 0;
+	if (!streamTitle || !streamTitle[0]) return;
+	sep = strstr(streamTitle, " - ");
+	if (!sep) { SafeCopy(title, titleSize, streamTitle); return; }
+	SafeCopy(tmp, sizeof(tmp), streamTitle);
+	sep = strstr(tmp, " - ");
+	if (sep) { ((char *)sep)[0] = 0; SafeCopy(artist, artistSize, tmp); SafeCopy(title, titleSize, sep + 3); }
+}
+
+static void MrSetRadioMetadata(MrApp *app)
+{
+	char streamTitle[128], station[128], genre[64], contentType[64], artist[64], title[64], fileInfo[128], status[128];
+	MrCopyVolatileString(streamTitle, sizeof(streamTitle), gGuiPlaybackStatus.radioTitle);
+	MrCopyVolatileString(station, sizeof(station), gGuiPlaybackStatus.radioStationName);
+	MrCopyVolatileString(genre, sizeof(genre), gGuiPlaybackStatus.radioGenre);
+	MrCopyVolatileString(contentType, sizeof(contentType), gGuiPlaybackStatus.radioContentType);
+	if (app->fileGad && app->win) SetGadgetAttrs((struct Gadget *)app->fileGad, app->win, NULL, GETFILE_FullFile, (ULONG)"Internet Radio", TAG_DONE);
+	MrSplitStreamTitle(streamTitle, artist, sizeof(artist), title, sizeof(title));
+	if (gGuiPlaybackStatus.radioBitrateKbps > 0)
+		sprintf(fileInfo, "%d kbps, MP3 / %s", gGuiPlaybackStatus.radioBitrateKbps, contentType[0] ? contentType : "audio/mpeg");
+	else
+		sprintf(fileInfo, "MP3 / %s", contentType[0] ? contentType : "audio/mpeg");
+	if (app->titleGad && app->win) SetGadgetAttrs((struct Gadget *)app->titleGad, app->win, NULL, STRINGA_TextVal, (ULONG)(streamTitle[0] ? streamTitle : "Internet Radio"), TAG_DONE);
+	if (app->artistGad && app->win) SetGadgetAttrs((struct Gadget *)app->artistGad, app->win, NULL, STRINGA_TextVal, (ULONG)(artist[0] ? artist : "-"), TAG_DONE);
+	if (app->albumGad && app->win) SetGadgetAttrs((struct Gadget *)app->albumGad, app->win, NULL, STRINGA_TextVal, (ULONG)(station[0] ? station : "Internet Radio"), TAG_DONE);
+	if (app->genreGad && app->win) SetGadgetAttrs((struct Gadget *)app->genreGad, app->win, NULL, STRINGA_TextVal, (ULONG)(genre[0] ? genre : "-"), TAG_DONE);
+	if (app->fileInfoGad && app->win) SetGadgetAttrs((struct Gadget *)app->fileInfoGad, app->win, NULL, STRINGA_TextVal, (ULONG)fileInfo, TAG_DONE);
+	sprintf(status, "%s - %ld bytes buffered", Radio_StatusText((RadioStatus)gGuiPlaybackStatus.radioStatus), (long)gGuiPlaybackStatus.radioBufferedBytes);
+	SetStatus(app, status);
+}
+
 static void SetGauge(MrApp *app, int level)
 {
 	if (level < 0)
@@ -944,6 +993,9 @@ static void PollPlaybackStatus(MrApp *app)
 	}
 	if (!app->playbackActive)
 		return;
+
+	if (MrIsRadioInput(app->inputName) && gGuiPlaybackStatus.radioActive)
+		MrSetRadioMetadata(app);
 
 	phase   = gGuiPlaybackStatus.phase;
 	frames  = gGuiPlaybackStatus.decodedFrames;
@@ -2148,8 +2200,16 @@ static void DrawArtPanel(MrApp *app)
 static void UpdateTimeDisplay(MrApp *app)
 {
 	char e[8], t[8], buf[24];
-	FormatTime(app->elapsedSecs, e); FormatTime(app->totalSecs > 0 ? app->totalSecs : -1, t);
-	sprintf(buf, "%s / %s", e, t);
+	if (MrIsRadioInput(app->inputName)) {
+		if (app->elapsedSecs > 0) {
+			FormatTime(app->elapsedSecs, e);
+			sprintf(buf, "%s / Live", e);
+		} else
+			sprintf(buf, "Live / Live");
+	} else {
+		FormatTime(app->elapsedSecs, e); FormatTime(app->totalSecs > 0 ? app->totalSecs : -1, t);
+		sprintf(buf, "%s / %s", e, t);
+	}
 	if (app->timeGad && app->win) SetGadgetAttrs((struct Gadget *)app->timeGad, app->win, NULL, STRINGA_TextVal, (ULONG)buf, TAG_DONE);
 }
 
@@ -2174,6 +2234,17 @@ static void RefreshFileInfoAndTags(MrApp *app)
 	MrMp3Info info; char fileInfo[128]; const char *ch; unsigned long kb;
 	if (!app->inputName[0]) {
 		if (app->fileInfoGad && app->win) SetGadgetAttrs((struct Gadget *)app->fileInfoGad, app->win, NULL, STRINGA_TextVal, (ULONG)"No file info", TAG_DONE);
+		return;
+	}
+	if (MrIsRadioInput(app->inputName)) {
+		app->rating = 0; app->totalSecs = 0; app->elapsedSecs = 0; app->lastFrames = 0;
+		if (app->titleGad && app->win) SetGadgetAttrs((struct Gadget *)app->titleGad, app->win, NULL, STRINGA_TextVal, (ULONG)"Internet Radio", TAG_DONE);
+		if (app->artistGad && app->win) SetGadgetAttrs((struct Gadget *)app->artistGad, app->win, NULL, STRINGA_TextVal, (ULONG)"-", TAG_DONE);
+		if (app->albumGad && app->win) SetGadgetAttrs((struct Gadget *)app->albumGad, app->win, NULL, STRINGA_TextVal, (ULONG)"Internet Radio", TAG_DONE);
+		if (app->trackGad && app->win) SetGadgetAttrs((struct Gadget *)app->trackGad, app->win, NULL, STRINGA_TextVal, (ULONG)"-", TAG_DONE);
+		if (app->genreGad && app->win) SetGadgetAttrs((struct Gadget *)app->genreGad, app->win, NULL, STRINGA_TextVal, (ULONG)"-", TAG_DONE);
+		if (app->fileInfoGad && app->win) SetGadgetAttrs((struct Gadget *)app->fileInfoGad, app->win, NULL, STRINGA_TextVal, (ULONG)"MP3 / audio/mpeg", TAG_DONE);
+		UpdateRatingDisplay(app); UpdateTimeDisplay(app); SetGauge(app, 0); SetStatus(app, "Internet Radio ready.");
 		return;
 	}
 	ReadMp3Info(app->inputName, &info);

@@ -42,6 +42,16 @@ typedef struct GuiPlaybackStatus {
 	volatile unsigned long tryBytes;
 	volatile int           lastError;
 	volatile int           openDeviceResult;
+	volatile int           radioActive;
+	volatile int           radioStatus;
+	volatile int           radioBitrateKbps;
+	volatile int           radioBufferedBytes;
+	volatile int           radioMetaInt;
+	volatile char          radioTitle[128];
+	volatile char          radioStationName[128];
+	volatile char          radioGenre[64];
+	volatile char          radioStreamUrl[128];
+	volatile char          radioContentType[64];
 } GuiPlaybackStatus;
 #define GUIPLAY_PHASE_IDLE      0
 #define GUIPLAY_PHASE_BUFFERING 1
@@ -1575,6 +1585,76 @@ static void SetFileDisplay(HelixAmp3Gui *gui, const char *text)
 	}
 }
 
+static int IsRadioInputName(const char *name)
+{
+	return name && !strncmp(name, "http://", 7);
+}
+
+static void CopyVolatileGuiString(char *dst, unsigned long dstSize, volatile const char *src)
+{
+	unsigned long i;
+	if (!dst || dstSize == 0)
+		return;
+	if (!src) {
+		dst[0] = 0;
+		return;
+	}
+	for (i = 0; i + 1 < dstSize && src[i]; i++)
+		dst[i] = (char)src[i];
+	dst[i] = 0;
+}
+
+static void SplitRadioStreamTitle(const char *streamTitle, char *artist, unsigned long artistSize, char *title, unsigned long titleSize)
+{
+	const char *sep;
+	char tmp[128];
+	if (artist && artistSize) artist[0] = 0;
+	if (title && titleSize) title[0] = 0;
+	if (!streamTitle || !streamTitle[0])
+		return;
+	sep = strstr(streamTitle, " - ");
+	if (!sep) {
+		SafeCopy(title, titleSize, streamTitle);
+		return;
+	}
+	SafeCopy(tmp, sizeof(tmp), streamTitle);
+	sep = strstr(tmp, " - ");
+	if (sep) {
+		((char *)sep)[0] = 0;
+		SafeCopy(artist, artistSize, tmp);
+		SafeCopy(title, titleSize, sep + 3);
+	}
+}
+
+static void UpdateRadioTagDisplay(HelixAmp3Gui *gui)
+{
+	char streamTitle[128], station[128], genre[64], contentType[64], artist[64], title[64], info[128], status[128];
+	CopyVolatileGuiString(streamTitle, sizeof(streamTitle), gGuiPlaybackStatus.radioTitle);
+	CopyVolatileGuiString(station, sizeof(station), gGuiPlaybackStatus.radioStationName);
+	CopyVolatileGuiString(genre, sizeof(genre), gGuiPlaybackStatus.radioGenre);
+	CopyVolatileGuiString(contentType, sizeof(contentType), gGuiPlaybackStatus.radioContentType);
+	SetFileDisplay(gui, "Internet Radio");
+	SplitRadioStreamTitle(streamTitle, artist, sizeof(artist), title, sizeof(title));
+	SafeCopy(gui->tags.title, sizeof(gui->tags.title), streamTitle[0] ? streamTitle : "Internet Radio");
+	SafeCopy(gui->tags.artist, sizeof(gui->tags.artist), artist);
+	SafeCopy(gui->tags.album, sizeof(gui->tags.album), station[0] ? station : "Internet Radio");
+	SafeCopy(gui->tags.genre, sizeof(gui->tags.genre), genre);
+	gui->tags.bitrateKbps = gGuiPlaybackStatus.radioBitrateKbps;
+	gui->tags.durationSecs = 0;
+	gui->totalSecs = 0;
+	if (gGuiPlaybackStatus.radioBitrateKbps > 0)
+		sprintf(info, "%d kbps, MP3 / %s", gGuiPlaybackStatus.radioBitrateKbps, contentType[0] ? contentType : "audio/mpeg");
+	else
+		sprintf(info, "MP3 / %s", contentType[0] ? contentType : "audio/mpeg");
+	UpdateTagDisplay(gui);
+	SafeCopy(gui->fileInfoText, sizeof(gui->fileInfoText), info);
+	if (gui->gadFileInfo)
+		GT_SetGadgetAttrs(gui->gadFileInfo, gui->win, NULL,
+			GTTX_Text, (ULONG)gui->fileInfoText, TAG_DONE);
+	sprintf(status, "%s - %ld bytes buffered", Radio_StatusText((RadioStatus)gGuiPlaybackStatus.radioStatus), (long)gGuiPlaybackStatus.radioBufferedBytes);
+	SetStatus(gui, status);
+}
+
 
 static void FormatRatingText(HelixAmp3Gui *gui)
 {
@@ -2817,7 +2897,12 @@ static void DrawProgress(HelixAmp3Gui *gui)
 			PROG_X + PROG_W - 1, PROG_TOP_Y + PROG_H - 1);
 	}
 
-	if (total > 0) {
+	if (IsRadioInputName(gui->inputName)) {
+		if (elapsed > 0)
+			sprintf(timeBuf, "%02d:%02d / Live", elapsed / 60, elapsed % 60);
+		else
+			sprintf(timeBuf, "Live / Live");
+	} else if (total > 0) {
 		remaining = total - elapsed;
 		if (remaining < 0)
 			remaining = 0;
@@ -3063,6 +3148,9 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 		long spareMs = gGuiPlaybackStatus.spareMs;
 		unsigned long halfBufferMs = gGuiPlaybackStatus.halfBufferMs;
 		int phaseChanged = (phase != gui->lastDisplayedPhase);
+
+		if (IsRadioInputName(gui->inputName) && gGuiPlaybackStatus.radioActive)
+			UpdateRadioTagDisplay(gui);
 
 		if (phaseChanged)
 			gui->lastDisplayedPhase = phase;
