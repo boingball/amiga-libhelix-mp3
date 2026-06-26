@@ -7623,6 +7623,19 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 	signed char max8 = -128;
 	unsigned long nonzero8 = 0;
 	int haveDiag = 0;
+	int startupGuard = GENERIC_STARTUP_DECODE_CALL_GUARD;
+
+	/* When downsampling (source rate >> output rate), each decode call produces
+	 * fewer output frames, so more calls are needed to fill the startup buffer.
+	 * Scale the guard to cover the worst-case legitimate fill count. */
+	if (opt->outputRate > 0 && gs->sampleRate > opt->outputRate) {
+		long framesPerCall = ((long)GENERIC_DECODE_CHUNK * opt->outputRate) / gs->sampleRate;
+		if (framesPerCall > 0) {
+			int needed = (maxFrames + (int)framesPerCall - 1) / (int)framesPerCall;
+			if (needed + GENERIC_STARTUP_DECODE_CALL_GUARD > startupGuard)
+				startupGuard = needed + GENERIC_STARTUP_DECODE_CALL_GUARD;
+		}
+	}
 
 	if (!gs->fakeStereo.configured)
 		FakeStereoInit(&gs->fakeStereo, opt->fakeStereo,
@@ -7640,7 +7653,7 @@ static int GenericDecodeStreamFillPlanarS8(GenericDecodeStream *gs,
 
 		if (AmigaPlaybackStopRequested(opt, "inside generic stereo decode loop"))
 			break;
-		if (firstFill && decodeCalls >= GENERIC_STARTUP_DECODE_CALL_GUARD) {
+		if (firstFill && decodeCalls >= startupGuard) {
 			fprintf(stderr, "generic decoder: startup fill exceeded decode-call guard\n");
 			gs->decodeError = 1;
 			break;
