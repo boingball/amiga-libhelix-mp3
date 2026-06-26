@@ -43,6 +43,8 @@ struct Library *SocketBase __attribute__((weak));
 #define RB_PROBE_MAX_REQUEST 1024
 #define RB_PROBE_HEADER_BUF 4096
 #define RB_PROBE_READ_CHUNK 512
+#define RB_PROBE_MAX_REDIRECTS 3
+#define RB_PROBE_MAX_URL 768
 
 typedef struct RbProbeUrl {
     char host[RB_PROBE_MAX_HOST];
@@ -96,6 +98,28 @@ static void rb_probe_info_init(RbStreamInfo *info)
     if (!info) return;
     memset(info, 0, sizeof(*info));
     info->codec = RB_STREAM_CODEC_UNKNOWN;
+}
+
+static int rb_probe_copy_string(char *dst, int dst_size, const char *src)
+{
+    int len;
+
+    if (!dst || dst_size <= 0 || !src) return RB_STREAM_PROBE_ERR_BAD_ARG;
+    len = (int)strlen(src);
+    if (len >= dst_size) return RB_STREAM_PROBE_ERR_BAD_URL;
+    memcpy(dst, src, (size_t)len + 1);
+    return RB_STREAM_PROBE_OK;
+}
+
+static void rb_probe_set_final_url(RbStreamInfo *info, const char *url)
+{
+    int len;
+
+    if (!info || !url) return;
+    len = (int)strlen(url);
+    if (len >= (int)sizeof(info->final_url)) len = (int)sizeof(info->final_url) - 1;
+    if (len > 0) memcpy(info->final_url, url, (size_t)len);
+    info->final_url[len] = '\0';
 }
 
 static int rb_probe_parse_url(const char *url, RbProbeUrl *parsed)
@@ -197,6 +221,56 @@ static int rb_probe_build_request(char *out, int out_size, const RbProbeUrl *url
         "Connection: close\r\n\r\n");
 }
 
+static int rb_probe_resolve_location(const RbProbeUrl *base, const char *location,
+                                     char *out, int out_size)
+{
+    int pos;
+    int rc;
+    const char *last_slash;
+    int dir_len;
+    char port_buf[16];
+
+    if (!base || !location || !out || out_size <= 0) return RB_STREAM_PROBE_ERR_BAD_ARG;
+    if (rb_probe_ascii_starts_nocase(location, "https://"))
+        return RB_STREAM_PROBE_ERR_UNSUPPORTED_TLS;
+    if (rb_probe_ascii_starts_nocase(location, "http://"))
+        return rb_probe_copy_string(out, out_size, location);
+    if (location[0] == '/') {
+        out[0] = '\0';
+        pos = 0;
+        rc = rb_probe_append(out, out_size, &pos, "http://");
+        if (rc < 0) return rc;
+        rc = rb_probe_append(out, out_size, &pos, base->host);
+        if (rc < 0) return rc;
+        if (base->port != RB_PROBE_DEFAULT_PORT) {
+            sprintf(port_buf, ":%d", base->port);
+            rc = rb_probe_append(out, out_size, &pos, port_buf);
+            if (rc < 0) return rc;
+        }
+        return rb_probe_append(out, out_size, &pos, location);
+    }
+    if (location[0] == '\0') return RB_STREAM_PROBE_ERR_BAD_URL;
+
+    out[0] = '\0';
+    pos = 0;
+    rc = rb_probe_append(out, out_size, &pos, "http://");
+    if (rc < 0) return rc;
+    rc = rb_probe_append(out, out_size, &pos, base->host);
+    if (rc < 0) return rc;
+    if (base->port != RB_PROBE_DEFAULT_PORT) {
+        sprintf(port_buf, ":%d", base->port);
+        rc = rb_probe_append(out, out_size, &pos, port_buf);
+        if (rc < 0) return rc;
+    }
+    last_slash = strrchr(base->path, '/');
+    dir_len = last_slash ? (int)(last_slash - base->path) + 1 : 1;
+    if (pos + dir_len >= out_size) return RB_STREAM_PROBE_ERR_BAD_URL;
+    memcpy(out + pos, base->path, (size_t)dir_len);
+    pos += dir_len;
+    out[pos] = '\0';
+    return rb_probe_append(out, out_size, &pos, location);
+}
+
 static int rb_probe_transport_open(RbProbeTransport *transport, const char *host, int port)
 {
     struct hostent *he;
@@ -275,7 +349,8 @@ static int rb_probe_parse_int(const char *s)
     return value;
 }
 
-static void rb_probe_parse_headers(char *headers, int header_len, RbStreamInfo *info)
+static void rb_probe_parse_headers(char *headers, int header_len, RbStreamInfo *info,
+                                   char *location, int location_size)
 {
     char *line;
     char *next;
@@ -312,10 +387,18 @@ static void rb_probe_parse_headers(char *headers, int header_len, RbStreamInfo *
                 info->icy_metaint = rb_probe_parse_int(value);
             else if (name_len == 7 && rb_probe_ascii_starts_nocase(line, "icy-url"))
                 rb_probe_copy_trim(info->icy_url, (int)sizeof(info->icy_url), value, (int)strlen(value));
+            else if (name_len == 8 && rb_probe_ascii_starts_nocase(line, "Location") &&
+                     location && location_size > 0)
+                rb_probe_copy_trim(location, location_size, value, (int)strlen(value));
         }
         if (!next) break;
         line = next + 2;
     }
+}
+
+static int rb_probe_is_redirect_status(int status)
+{
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
 static int rb_probe_contains_nocase(const char *s, const char *needle)
@@ -361,69 +444,94 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
     char request[RB_PROBE_MAX_REQUEST];
     unsigned char header_buf[RB_PROBE_HEADER_BUF + 1];
     char parse_buf[RB_PROBE_HEADER_BUF + 1];
+    char current_url[RB_PROBE_MAX_URL];
+    char next_url[RB_PROBE_MAX_URL];
+    char location[RB_PROBE_MAX_URL];
     int rc;
     int request_len;
     int total;
     int header_end;
     int done;
+    int redirects;
 
     if (!url || !info || !peek_len || peek_buf_size < 0 || (peek_buf_size > 0 && !peek_buf))
         return RB_STREAM_PROBE_ERR_BAD_ARG;
     rb_probe_info_init(info);
     *peek_len = 0;
-    rc = rb_probe_parse_url(url, &parsed);
+    rc = rb_probe_copy_string(current_url, (int)sizeof(current_url), url);
     if (rc < 0) return rc;
-    rc = rb_probe_build_request(request, (int)sizeof(request), &parsed);
-    if (rc < 0) return rc;
-    request_len = (int)strlen(request);
-    rc = rb_probe_transport_open(&transport, parsed.host, parsed.port);
-    if (rc < 0) return rc;
-    rc = rb_probe_send_all(&transport, request, request_len);
-    if (rc < 0) {
-        rb_probe_transport_close(&transport);
-        return rc;
-    }
-    total = 0;
-    header_end = -1;
-    done = 0;
-    while (!done) {
-        int want;
-        int n;
-        int body_avail;
-        int copy;
+    redirects = 0;
+    for (;;) {
+        *peek_len = 0;
+        rb_probe_info_init(info);
+        info->redirect_count = redirects;
+        rb_probe_set_final_url(info, current_url);
+        location[0] = '\0';
 
-        want = RB_PROBE_HEADER_BUF - total;
-        if (want > RB_PROBE_READ_CHUNK) want = RB_PROBE_READ_CHUNK;
-        if (want <= 0) {
+        rc = rb_probe_parse_url(current_url, &parsed);
+        if (rc < 0) return rc;
+        rc = rb_probe_build_request(request, (int)sizeof(request), &parsed);
+        if (rc < 0) return rc;
+        request_len = (int)strlen(request);
+        rc = rb_probe_transport_open(&transport, parsed.host, parsed.port);
+        if (rc < 0) return rc;
+        rc = rb_probe_send_all(&transport, request, request_len);
+        if (rc < 0) {
+            rb_probe_transport_close(&transport);
+            return rc;
+        }
+        total = 0;
+        header_end = -1;
+        done = 0;
+        while (!done) {
+            int want;
+            int n;
+            int body_avail;
+            int copy;
+
+            want = RB_PROBE_HEADER_BUF - total;
+            if (want > RB_PROBE_READ_CHUNK) want = RB_PROBE_READ_CHUNK;
+            if (want <= 0) {
+                rb_probe_transport_close(&transport);
+                return RB_STREAM_PROBE_ERR_HEADERS_TOO_BIG;
+            }
+            n = (int)recv(transport.sock, (char *)header_buf + total, want, 0);
+            if (n < 0) {
+                rb_probe_transport_close(&transport);
+                return RB_STREAM_PROBE_ERR_RECV;
+            }
+            if (n == 0) break;
+            total += n;
+            if (header_end < 0) header_end = rb_probe_find_header_end(header_buf, total);
+            if (header_end >= 0) {
+                body_avail = total - header_end;
+                copy = body_avail;
+                if (copy > peek_buf_size - *peek_len) copy = peek_buf_size - *peek_len;
+                if (copy > 0) {
+                    memcpy(peek_buf + *peek_len, header_buf + header_end, (size_t)copy);
+                    *peek_len += copy;
+                }
+                done = (*peek_len >= peek_buf_size);
+                break;
+            }
+        }
+        if (header_end < 0) {
             rb_probe_transport_close(&transport);
             return RB_STREAM_PROBE_ERR_HEADERS_TOO_BIG;
         }
-        n = (int)recv(transport.sock, (char *)header_buf + total, want, 0);
-        if (n < 0) {
-            rb_probe_transport_close(&transport);
-            return RB_STREAM_PROBE_ERR_RECV;
-        }
-        if (n == 0) break;
-        total += n;
-        if (header_end < 0) header_end = rb_probe_find_header_end(header_buf, total);
-        if (header_end >= 0) {
-            body_avail = total - header_end;
-            copy = body_avail;
-            if (copy > peek_buf_size - *peek_len) copy = peek_buf_size - *peek_len;
-            if (copy > 0) {
-                memcpy(peek_buf + *peek_len, header_buf + header_end, (size_t)copy);
-                *peek_len += copy;
-            }
-            done = (*peek_len >= peek_buf_size);
-            break;
-        }
-    }
-    if (header_end < 0) {
+        memcpy(parse_buf, header_buf, (size_t)header_end);
+        rb_probe_parse_headers(parse_buf, header_end, info, location, (int)sizeof(location));
+        if (!rb_probe_is_redirect_status(info->http_status)) break;
         rb_probe_transport_close(&transport);
-        return RB_STREAM_PROBE_ERR_HEADERS_TOO_BIG;
+        *peek_len = 0;
+        if (!location[0]) return RB_STREAM_PROBE_ERR_BAD_URL;
+        if (redirects >= RB_PROBE_MAX_REDIRECTS) return RB_STREAM_PROBE_ERR_TOO_MANY_REDIRECTS;
+        rc = rb_probe_resolve_location(&parsed, location, next_url, (int)sizeof(next_url));
+        if (rc < 0) return rc;
+        redirects++;
+        rc = rb_probe_copy_string(current_url, (int)sizeof(current_url), next_url);
+        if (rc < 0) return rc;
     }
-    memcpy(parse_buf, header_buf, (size_t)header_end);
-    rb_probe_parse_headers(parse_buf, header_end, info);
     while (*peek_len < peek_buf_size) {
         int want2;
         int n2;
@@ -439,6 +547,8 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
         *peek_len += n2;
     }
     rb_probe_transport_close(&transport);
+    info->redirect_count = redirects;
+    rb_probe_set_final_url(info, current_url);
     info->codec = rb_probe_detect_codec(&parsed, info, peek_buf, *peek_len);
     return RB_STREAM_PROBE_OK;
 }
@@ -470,6 +580,8 @@ int main(int argc, char **argv)
         return 1;
     }
     printf("status: %d\n", info.http_status);
+    printf("redirects followed: %d\n", info.redirect_count);
+    printf("final url: %s\n", info.final_url);
     printf("content type: %s\n", info.content_type);
     printf("icy name: %s\n", info.icy_name);
     printf("icy bitrate: %d\n", info.icy_br);
