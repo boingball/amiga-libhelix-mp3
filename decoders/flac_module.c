@@ -40,8 +40,11 @@ static void ModuleFree(void *ptr, unsigned long bytes)
 #define FLAC_BLK   FLAC_SUBSET_MAX_BLOCK_SIZE_48KHZ   /* 4608 */
 #define FLAC_CH    2U
 
-/* Compressed I/O buffer: read this many bytes from file per refill */
-#define FLAC_IO_CAP  (16UL * 1024UL)
+/* Compressed I/O buffer: read this many bytes from file per refill.
+ * 64 KB amortises hard-drive seek + rotational latency across many FLAC
+ * frames; the host-side prefetch buffer (see get_io_hints) adds a further
+ * layer so disk reads happen while the previous block is being played. */
+#define FLAC_IO_CAP  (64UL * 1024UL)
 
 /* Output sample buffer capacity: full block * channels (interleaved int32_t) */
 #define FLAC_OUT_CAP ((unsigned long)(FLAC_BLK) * (unsigned long)(FLAC_CH))
@@ -465,6 +468,15 @@ static DecLong FlacSeek(DecHandle handle, DecULong sampleOffset)
     return -1;
 }
 
+static DecLong FlacGetIoHints(DecHandle handle, struct DecoderIoHints *out)
+{
+    (void)handle;
+    if (!out) return -1;
+    out->preferred_read_bytes = FLAC_IO_CAP;       /* 64 KB per disk read  */
+    out->prefetch_bytes       = FLAC_IO_CAP * 2UL; /* 128 KB ahead in host */
+    return 0;
+}
+
 static void FlacClose(DecHandle handle)
 {
     FlacState *st = (FlacState *)handle;
@@ -487,5 +499,6 @@ struct DecoderOps gFlacOps = {
     FlacDecode,
     FlacSeek,
     FlacClose,
-    NULL
+    NULL,           /* get_tag */
+    FlacGetIoHints
 };

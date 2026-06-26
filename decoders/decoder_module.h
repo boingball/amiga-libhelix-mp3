@@ -17,7 +17,7 @@
 /* --- Magic and version --------------------------------------------------- */
 
 #define DECODER_MODULE_MAGIC   0x44454300UL  /* "DEC\0" */
-#define DECODER_MODULE_VERSION 1
+#define DECODER_MODULE_VERSION 2
 
 /* --- Flags ---------------------------------------------------------------- */
 
@@ -28,6 +28,18 @@
 typedef void  *DecHandle;
 typedef long   DecLong;
 typedef unsigned long DecULong;
+
+/* --- I/O hints ----------------------------------------------------------- */
+
+/*
+ * Returned by the optional get_io_hints() vtable slot.
+ * The host uses these to size a read-ahead buffer so disk latency is hidden.
+ * All fields are in bytes; zero means "no preference / use host default".
+ */
+struct DecoderIoHints {
+    DecULong preferred_read_bytes; /* ideal single-read chunk size             */
+    DecULong prefetch_bytes;       /* total bytes to keep buffered ahead       */
+};
 
 /* --- Info structs -------------------------------------------------------- */
 
@@ -95,6 +107,16 @@ struct DecoderOps {
      */
     DecLong (*get_tag)(DecHandle handle, DecULong tagId,
                        void *valueOut, DecULong maxBytes);
+
+    /*
+     * get_io_hints() — optional I/O tuning advice; NULL if not implemented.
+     * Called by the host after open() to learn the decoder's preferred I/O
+     * chunk size and total read-ahead buffer size.  The host may use these
+     * to wrap its readFn with a buffered read-ahead layer, hiding disk
+     * latency between decoder decode() calls.
+     * Returns 0 on success; negative if hints are not available.
+     */
+    DecLong (*get_io_hints)(DecHandle handle, struct DecoderIoHints *hintsOut);
 };
 
 /*

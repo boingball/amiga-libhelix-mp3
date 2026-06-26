@@ -8083,6 +8083,131 @@ static DecLong DecModSeekCb(void *userData, DecLong offset, int whence)
 	return 0;
 }
 
+/*
+ * Host-side read-ahead buffer.  The decoder's readFn is pointed at
+ * DecModPrefetchReadCb; requests are served from a RAM buffer that is
+ * refilled in large chunks to amortise hard-drive seek latency.
+ * On seek the buffer is invalidated so stale data is never returned.
+ */
+typedef struct DecModPrefetchState {
+	InputSource   *src;
+	unsigned char *buf;
+	unsigned long  capacity;    /* total buffer allocation              */
+	unsigned long  readChunk;   /* bytes per underlying disk read       */
+	unsigned long  fill;        /* valid bytes starting at buf[0]       */
+	unsigned long  pos;         /* read cursor within buf               */
+} DecModPrefetchState;
+
+static DecLong DecModPrefetchReadCb(void *userData, unsigned char *out, DecULong maxBytes)
+{
+	DecModPrefetchState *ps = (DecModPrefetchState *)userData;
+	DecULong             produced = 0;
+
+	while (produced < maxBytes) {
+		unsigned long avail = ps->fill - ps->pos;
+		unsigned long want  = (unsigned long)(maxBytes - produced);
+
+		if (avail == 0) {
+			/* Compact: shift remaining bytes (if any) to front — normally
+			 * avail==0 here so this is a no-op, but guard anyway. */
+			ps->fill = 0;
+			ps->pos  = 0;
+
+			/* Read one large chunk from the underlying source. */
+			{
+				unsigned long chunkCap = ps->capacity;
+				unsigned long toRead   = ps->readChunk > chunkCap ? chunkCap : ps->readChunk;
+				size_t        got      = InputSourceRead(ps->src, ps->buf, (size_t)toRead);
+				if (got == 0)
+					break;
+				ps->fill = (unsigned long)got;
+				ps->pos  = 0;
+				avail    = ps->fill;
+			}
+		}
+
+		{
+			unsigned long take = avail < want ? avail : want;
+			memcpy(out + produced, ps->buf + ps->pos, (size_t)take);
+			ps->pos  += take;
+			produced += (DecULong)take;
+		}
+	}
+
+	return (DecLong)produced;
+}
+
+static DecLong DecModPrefetchSeekCb(void *userData, DecLong offset, int whence)
+{
+	DecModPrefetchState *ps  = (DecModPrefetchState *)userData;
+	InputSource         *src = ps->src;
+	unsigned long        pos;
+
+	if (whence == 0) {
+		if (offset < 0) return -1;
+		pos = (unsigned long)offset;
+	} else if (whence == 1) {
+		/* Current file position is (underlying_pos - unread_buffered_bytes).
+		 * Reconstruct it from InputSourceTell which reflects the real cursor. */
+		unsigned long cur  = InputSourceTell(src);
+		unsigned long unread = ps->fill - ps->pos;
+		unsigned long apparent = cur > unread ? cur - unread : 0;
+		if (offset < 0 && (unsigned long)(-(long)offset) > apparent) return -1;
+		pos = (unsigned long)((long)apparent + offset);
+	} else {
+		return -1;
+	}
+
+	InputSourceSeek(src, pos);
+	ps->fill = 0;
+	ps->pos  = 0;
+	return 0;
+}
+
+/*
+ * Allocate a prefetch buffer based on hints from the decoder module.
+ * Returns 1 on success (ps->buf is set), 0 if unavailable (caller falls
+ * back to direct DecModReadCb).
+ */
+static int DecModPrefetchInit(DecModPrefetchState *ps, InputSource *src,
+	const struct DecoderIoHints *hints)
+{
+	unsigned long cap;
+
+	memset(ps, 0, sizeof(*ps));
+	ps->src = src;
+
+	if (!hints || hints->prefetch_bytes == 0)
+		return 0;
+
+	cap = hints->prefetch_bytes;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	ps->buf = (unsigned char *)AllocMem((LONG)cap, MEMF_FAST | MEMF_CLEAR);
+	if (!ps->buf)
+		ps->buf = (unsigned char *)AllocMem((LONG)cap, MEMF_ANY | MEMF_CLEAR);
+#else
+	ps->buf = (unsigned char *)malloc((size_t)cap);
+#endif
+	if (!ps->buf)
+		return 0;
+
+	ps->capacity  = cap;
+	ps->readChunk = (hints->preferred_read_bytes > 0 && hints->preferred_read_bytes <= cap)
+	                ? hints->preferred_read_bytes : cap;
+	return 1;
+}
+
+static void DecModPrefetchFree(DecModPrefetchState *ps)
+{
+	if (!ps->buf) return;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	FreeMem(ps->buf, (LONG)ps->capacity);
+#else
+	free(ps->buf);
+#endif
+	ps->buf = NULL;
+}
+
 
 static int FindAdtsSyncLocal(const unsigned char *buf, size_t n)
 {
@@ -8460,10 +8585,13 @@ static int AmigaGenericFormatPlay(const char *filename, const char *ext,
 	LoadedDecoderModule   mod;
 	struct DecoderStreamInfo sinfo;
 	DecHandle             handle = NULL;
+	DecModPrefetchState   prefetch;
+	int                   hasPrefetch = 0;
 	int                   ret = 1;
 
-	memset(&mod,   0, sizeof(mod));
-	memset(&sinfo, 0, sizeof(sinfo));
+	memset(&mod,     0, sizeof(mod));
+	memset(&sinfo,   0, sizeof(sinfo));
+	memset(&prefetch, 0, sizeof(prefetch));
 
 	GuiPublishStartupStage(GUISTART_INPUT_OPEN);
 	if (AmigaPlaybackStopRequested(opt, "before generic input open"))
@@ -8507,13 +8635,33 @@ static int AmigaGenericFormatPlay(const char *filename, const char *ext,
 			(mod.ops && mod.ops->info && mod.ops->info->name) ? mod.ops->info->name : "(null)",
 			(void *)mod.ops);
 
+	/* Query I/O hints before open so we can wrap readFn with a prefetch
+	 * buffer.  Hints are retrieved via a temporary probe open on a dummy
+	 * handle — or, simpler, from a NULL handle if the module supports it.
+	 * Most modules return hints statically so NULL handle is fine. */
+	if (mod.ops->get_io_hints) {
+		struct DecoderIoHints hints;
+		memset(&hints, 0, sizeof(hints));
+		if (mod.ops->get_io_hints(NULL, &hints) == 0) {
+			hasPrefetch = DecModPrefetchInit(&prefetch, &input, &hints);
+			if (opt->debugDecoder)
+				fprintf(stderr, "generic-debug: prefetch %s preferred=%lu prefetch=%lu\n",
+					hasPrefetch ? "active" : "unavailable (alloc failed)",
+					(unsigned long)hints.preferred_read_bytes,
+					(unsigned long)hints.prefetch_bytes);
+		}
+	}
+
 	/* Open the stream — module probes headers and reports format */
 	GuiPublishStartupStage(GUISTART_INPUT_PREPARE);
 	if (opt->debugDecoder)
 		fprintf(stderr, "generic-debug: AAC/open init entering inputPos=%lu\n", InputSourceTell(&input));
 	if (opt->debugDecoder && ext && StrCaseCmp(ext, "aac") == 0)
 		fprintf(stderr, "AAC: before open\n");
-	handle = mod.ops->open(DecModReadCb, DecModSeekCb, &input, &sinfo);
+	if (hasPrefetch)
+		handle = mod.ops->open(DecModPrefetchReadCb, DecModPrefetchSeekCb, &prefetch, &sinfo);
+	else
+		handle = mod.ops->open(DecModReadCb, DecModSeekCb, &input, &sinfo);
 	if (opt->debugDecoder && ext && StrCaseCmp(ext, "aac") == 0)
 		fprintf(stderr, "AAC: after open handle=%p\n", (void *)handle);
 	if (opt->debugDecoder)
@@ -8544,6 +8692,8 @@ done_handle:
 	mod.ops->close(handle);
 done_module:
 	UnloadDecoderModule(&mod);
+	if (hasPrefetch)
+		DecModPrefetchFree(&prefetch);
 done_input:
 	InputSourceClose(&input);
 	return ret ? 1 : 0;
