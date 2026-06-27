@@ -714,6 +714,11 @@ static void SafeCopy(char *dst, size_t dstSize, const char *src)
 }
 
 
+static int is_url_path(const char *path)
+{
+	return path && (!strncmp(path, "http://", 7) || !strncmp(path, "https://", 8));
+}
+
 static void CopyDrawerFromPath(char *drawer, size_t drawerSize, const char *path)
 {
 	char *q;
@@ -721,7 +726,7 @@ static void CopyDrawerFromPath(char *drawer, size_t drawerSize, const char *path
 	if (!drawer || drawerSize == 0)
 		return;
 	drawer[0] = '\0';
-	if (!path || !path[0])
+	if (!path || !path[0] || is_url_path(path))
 		return;
 	SafeCopy(drawer, drawerSize, path);
 	q = drawer + strlen(drawer);
@@ -1314,7 +1319,7 @@ static int WriteRatingToId3Tag(const char *path, int rating)
 	int version;
 	int wrote;
 
-	if (!path || !path[0])
+	if (!path || !path[0] || is_url_path(path))
 		return 0;
 	f = fopen(path, "r+b");
 	if (!f)
@@ -1523,7 +1528,7 @@ static void TryFolderArt(const char *inputName, Mp3Tags *tags)
 	char artPath[HELIXAMP3_MAX_PATH];
 	int i;
 
-	if (!inputName || !tags || tags->artData)
+	if (!inputName || !tags || tags->artData || is_url_path(inputName))
 		return;
 	SafeCopy(dirPath, sizeof(dirPath), inputName);
 	{
@@ -1578,6 +1583,8 @@ static void ReadMp3Tags(const char *path, Mp3Tags *tags, int loadArt)
 		return;
 	FreeTags(tags);
 	memset(tags, 0, sizeof(*tags));
+	if (is_url_path(path))
+		return;
 	f = fopen(path, "rb");
 	if (!f)
 		return;
@@ -1651,7 +1658,24 @@ static void SetFileDisplay(HelixAmp3Gui *gui, const char *text)
 
 static int IsRadioInputName(const char *name)
 {
-	return name && !strncmp(name, "http://", 7);
+	return is_url_path(name);
+}
+
+static void SetInternetStreamMetadata(HelixAmp3Gui *gui)
+{
+	if (!gui)
+		return;
+	FreeTags(&gui->tags);
+	memset(&gui->tags, 0, sizeof(gui->tags));
+	SafeCopy(gui->tags.title, sizeof(gui->tags.title), "Internet Radio");
+	SafeCopy(gui->tags.artist, sizeof(gui->tags.artist), "-");
+	SafeCopy(gui->tags.album, sizeof(gui->tags.album), "Internet Radio");
+	SafeCopy(gui->tags.track, sizeof(gui->tags.track), "Live");
+	SafeCopy(gui->fileInfoText, sizeof(gui->fileInfoText), "Internet Radio MP3/AAC/AAC+");
+	if (gui->gadFileInfo)
+		GT_SetGadgetAttrs(gui->gadFileInfo, gui->win, NULL,
+			GTTX_Text, (ULONG)gui->fileInfoText, TAG_DONE);
+	gui->totalSecs = 0;
 }
 
 static void CopyVolatileGuiString(char *dst, unsigned long dstSize, volatile const char *src)
@@ -2484,7 +2508,8 @@ static int LoadArtworkCache(HelixAmp3Gui *gui)
 	FILE *f;
 	unsigned char hdr[8];
 
-	if (!gui->artCacheEnabled || gui->artCacheBypass || !gui->inputName[0])
+	if (!gui->artCacheEnabled || gui->artCacheBypass || !gui->inputName[0] ||
+		is_url_path(gui->inputName))
 		return 0;
 	ArtworkCacheName(gui, path, sizeof(path));
 	f = fopen(path, "rb");
@@ -2523,7 +2548,8 @@ static void SaveArtworkCache(HelixAmp3Gui *gui)
 	FILE *f;
 	static const unsigned char hdr[8] = { 'M','3','A','G','6','4','\0', 2 };
 
-	if (!gui->artCacheEnabled || !gui->inputName[0] || !gui->artValid)
+	if (!gui->artCacheEnabled || !gui->inputName[0] || !gui->artValid ||
+		is_url_path(gui->inputName))
 		return;
 	EnvName(dir, sizeof(dir), "ArtCache");
 	CreateDir((STRPTR)dir);
@@ -3126,7 +3152,10 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 		SafeCopy(gui->inputName, sizeof(gui->inputName), queued);
 		SetFileDisplay(gui, gui->inputName);
 		ReadMp3Tags(gui->inputName, &gui->tags, gui->artEnabled);
-		gui->totalSecs = gui->tags.durationSecs;
+		if (is_url_path(gui->inputName))
+			SetInternetStreamMetadata(gui);
+		else
+			gui->totalSecs = gui->tags.durationSecs;
 		gui->elapsedSecs = 0;
 		gui->launchBufferSecs = 0;
 		UpdateTagDisplay(gui);
@@ -3150,7 +3179,10 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 			gui->playlist.paths[gui->playlist.current]);
 		SetFileDisplay(gui, gui->inputName);
 		ReadMp3Tags(gui->inputName, &gui->tags, gui->artEnabled);
-		gui->totalSecs = gui->tags.durationSecs;
+		if (is_url_path(gui->inputName))
+			SetInternetStreamMetadata(gui);
+		else
+			gui->totalSecs = gui->tags.durationSecs;
 		gui->elapsedSecs = 0;
 		gui->launchBufferSecs = 0;
 		UpdateTagDisplay(gui);
@@ -3453,8 +3485,12 @@ static void SetArtworkEnabled(HelixAmp3Gui *gui, int enabled)
 		gui->artEnabled);
 	CancelArtDecode(gui);
 	if (gui->artEnabled && gui->inputName[0] && !gui->tags.artData) {
-		ReadMp3Tags(gui->inputName, &gui->tags, 1);
-		gui->totalSecs = gui->tags.durationSecs;
+		if (is_url_path(gui->inputName))
+			SetInternetStreamMetadata(gui);
+		else {
+			ReadMp3Tags(gui->inputName, &gui->tags, 1);
+			gui->totalSecs = gui->tags.durationSecs;
+		}
 		UpdateTagDisplay(gui);
 	}
 	UpdateArtDisplay(gui);
@@ -4342,6 +4378,13 @@ static int GuiFastMemoryCanHoldFile(const char *path, unsigned long *fileSizeOut
 	unsigned long fileSize;
 	unsigned long fastAvail;
 
+	if (is_url_path(path)) {
+		if (fileSizeOut)
+			*fileSizeOut = 0;
+		if (fastAvailOut)
+			*fastAvailOut = 0;
+		return 1;
+	}
 	fileSize = GuiInputFileSize(path);
 #if defined(AMIGA_M68K)
 	fastAvail = (unsigned long)AvailMem(MEMF_FAST);
@@ -5059,7 +5102,10 @@ static void PlaylistLoadAndShow(HelixAmp3Gui *gui, int index)
 		gui->playlist.paths[index]);
 	SetFileDisplay(gui, gui->inputName);
 	ReadMp3Tags(gui->inputName, &gui->tags, gui->artEnabled);
-	gui->totalSecs = gui->tags.durationSecs;
+	if (is_url_path(gui->inputName))
+		SetInternetStreamMetadata(gui);
+	else
+		gui->totalSecs = gui->tags.durationSecs;
 	gui->elapsedSecs = 0;
 	gui->launchBufferSecs = 0;
 	UpdateTagDisplay(gui);
@@ -5430,7 +5476,10 @@ static void ChooseMp3(HelixAmp3Gui *gui)
 			SafeCopy(gui->inputName, sizeof(gui->inputName), path);
 			SetFileDisplay(gui, gui->inputName);
 			ReadMp3Tags(gui->inputName, &gui->tags, gui->artEnabled);
-			gui->totalSecs = gui->tags.durationSecs;
+			if (is_url_path(gui->inputName))
+				SetInternetStreamMetadata(gui);
+			else
+				gui->totalSecs = gui->tags.durationSecs;
 			gui->elapsedSecs = 0;
 			UpdateTagDisplay(gui);
 			UpdateArtDisplay(gui);
@@ -5452,7 +5501,7 @@ static void SelectInternetStream(HelixAmp3Gui *gui, const char *url)
 	if (!url || !url[0])
 		return;
 	if (!IsRadioInputName(url)) {
-		SetStatus(gui, "Internet streams must start with http://");
+		SetStatus(gui, "Internet streams must start with http:// or https://");
 		return;
 	}
 	if (gui->playbackActive || gui->playbackDonePending) {
@@ -5463,9 +5512,7 @@ static void SelectInternetStream(HelixAmp3Gui *gui, const char *url)
 	CancelArtDecode(gui);
 	SafeCopy(gui->inputName, sizeof(gui->inputName), url);
 	SetFileDisplay(gui, gui->inputName);
-	FreeTags(&gui->tags);
-	memset(&gui->tags, 0, sizeof(gui->tags));
-	gui->totalSecs = 0;
+	SetInternetStreamMetadata(gui);
 	gui->elapsedSecs = 0;
 	gui->launchBufferSecs = 0;
 	UpdateTagDisplay(gui);
@@ -5633,7 +5680,7 @@ static void BuildPlaybackArgs(HelixAmp3Gui *gui, HelixAmp3Args *args)
 	memset(args, 0, sizeof(*args));
 	AddArg(args, "amiga_mp3dec");
 	AddArg(args, "--play");
-	if (!strncmp(gui->inputName, "http://", 7))
+	if (is_url_path(gui->inputName))
 		AddArg(args, "--radio-stream");
 	if (gui->fastMem)
 		AddArg(args, "--fast-mem");
@@ -6503,8 +6550,11 @@ static void GuiPoll(HelixAmp3Gui *gui)
 						if (gui->inputName[0]) {
 							CancelArtDecode(gui);
 							gui->artValid = 0;
-							ReadMp3Tags(gui->inputName, &gui->tags,
-								gui->artEnabled);
+							if (is_url_path(gui->inputName))
+								SetInternetStreamMetadata(gui);
+							else
+								ReadMp3Tags(gui->inputName, &gui->tags,
+									gui->artEnabled);
 							gui->artCacheBypass = 1;
 							UpdateArtDisplay(gui);
 							gui->artCacheBypass = 0;
