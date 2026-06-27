@@ -28,15 +28,19 @@ int rb_search_stations(
 {
     char path[RB_SEARCH_PATH_SIZE];
     int rc;
+    int count;
 
     rc = rb_build_station_search_path(path, (int)sizeof(path), name, tag, codec,
                                       countrycode, max_bitrate, limit, offset);
     if (rc < 0) return rc;
 
     rc = rb_http_get_json(host, path, json_buffer, json_buffer_size);
+    if (rc == RB_HTTP_ERR_BODY_TOO_BIG) return -100;
     if (rc < 0) return rc;
 
-    return rb_parse_stations_json(json_buffer, stations, max_stations);
+    count = rb_parse_stations_json(json_buffer, stations, max_stations);
+    if (count < 0) return -101;
+    return count;
 }
 
 #ifdef RB_SEARCH_API_TEST

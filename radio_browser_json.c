@@ -186,11 +186,11 @@ int rb_parse_stations_json(const char *json, RadioBrowserStation *stations, int 
     int count;
     int limit;
 
-    if (!json || !stations || max_stations <= 0) return 0;
+    if (!json || !stations || max_stations <= 0) return -1;
     limit = max_stations;
     if (limit > RB_MAX_STATIONS) limit = RB_MAX_STATIONS;
     p = rb_skip_ws(json);
-    if (*p != '[') return 0;
+    if (*p != '[') return -1;
     p++;
     count = 0;
     while (*p && count < limit) {
@@ -205,6 +205,8 @@ int rb_parse_stations_json(const char *json, RadioBrowserStation *stations, int 
         p = rb_skip_ws(p);
         if (*p == ',') p++;
     }
+    p = rb_skip_ws(p);
+    if (*p != ']' && count < limit) return -1;
     return count;
 }
 

@@ -6,6 +6,7 @@
  */
 
 #include "radio_browser_controller.h"
+#include "radio_browser_url.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -56,12 +57,11 @@ int rb_controller_search(RadioBrowserController *controller)
 {
     int limit;
     int count;
-    int i;
-    int kept;
 
     if (!controller) return RB_CONTROLLER_ERR_BAD_ARG;
 
     controller->station_count = 0;
+    controller->raw_station_count = 0;
     controller->selected_index = -1;
     rb_controller_set_error(controller, (const char *)0);
 
@@ -69,12 +69,22 @@ int rb_controller_search(RadioBrowserController *controller)
     if (limit <= 0 || limit > RB_CONTROLLER_MAX_STATIONS)
         limit = RB_CONTROLLER_MAX_STATIONS;
 
+    rb_build_station_search_path(controller->last_path, RB_CONTROLLER_LAST_PATH_SIZE,
+                                 rb_controller_optional_string(controller->name),
+                                 rb_controller_optional_string(controller->tag),
+                                 rb_controller_optional_string(controller->codec),
+                                 rb_controller_optional_string(controller->countrycode),
+                                 -1, limit, controller->offset);
+    printf("Radio Browser search: name=\"%s\" codec=%s bitrateMax=%d limit=%d path=%s\n",
+           controller->name, controller->codec[0] ? controller->codec : "Any",
+           controller->max_bitrate, limit, controller->last_path);
+
     count = rb_search_stations(RB_CONTROLLER_DEFAULT_HOST,
                                rb_controller_optional_string(controller->name),
                                rb_controller_optional_string(controller->tag),
                                rb_controller_optional_string(controller->codec),
                                rb_controller_optional_string(controller->countrycode),
-                               controller->max_bitrate,
+                               -1,
                                limit,
                                controller->offset,
                                controller->stations,
@@ -82,22 +92,20 @@ int rb_controller_search(RadioBrowserController *controller)
                                controller->json_buffer,
                                RB_CONTROLLER_JSON_BUFFER_SIZE);
     if (count < 0) {
-        rb_controller_set_error(controller, "Radio Browser search failed");
-        return count;
+        if (count == -100) {
+            rb_controller_set_error(controller, "Response too large; reduce result limit");
+            return RB_CONTROLLER_ERR_RESPONSE_TOO_LARGE;
+        }
+        if (count == -101) {
+            rb_controller_set_error(controller, "Parse failed");
+            return RB_CONTROLLER_ERR_PARSE_FAILED;
+        }
+        rb_controller_set_error(controller, "Search failed");
+        return RB_CONTROLLER_ERR_SEARCH_FAILED;
     }
 
-    if (controller->max_bitrate > 0) {
-        kept = 0;
-        for (i = 0; i < count; i++) {
-            if (controller->stations[i].bitrate > 0 &&
-                controller->stations[i].bitrate <= controller->max_bitrate) {
-                if (kept != i)
-                    controller->stations[kept] = controller->stations[i];
-                kept++;
-            }
-        }
-        count = kept;
-    }
+    controller->raw_station_count = count;
+
 
     controller->station_count = count;
     if (count > 0) controller->selected_index = 0;
@@ -257,9 +265,9 @@ int main(void)
     int fails = 0;
 
     fails += rb_controller_expect_count("bbc + Any bitrate", "bbc", -1, 4);
-    fails += rb_controller_expect_count("bbc + <=56", "bbc", 56, 1);
+    fails += rb_controller_expect_count("bbc + <=56 raw", "bbc", 56, 4);
     fails += rb_controller_expect_count("groove + Any bitrate", "groove", -1, 4);
-    fails += rb_controller_expect_count("groove + <=64", "groove", 64, 2);
+    fails += rb_controller_expect_count("groove + <=64 raw", "groove", 64, 4);
     return fails ? 1 : 0;
 }
 #endif
