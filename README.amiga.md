@@ -158,6 +158,19 @@ make -f Makefile.amiga miniamp3
 make -f Makefile.amiga minimp3r
 ```
 
+## AmiSSL HTTPS smoke test
+
+Build `amissl_https_get` to test the AmiSSL HTTPS GET path without involving
+the player, audio decoders, GUI, or Radio Browser integration:
+
+```sh
+make -f Makefile.amiga amissl-get-test
+```
+
+Run it on AmigaOS to fetch only the response headers from
+`https://ice1.somafm.com/groovesalad-128-mp3`.  A successful transport smoke
+test prints the HTTP/ICY status line and the `Content-Type` header, which should
+be `audio/mpeg` for the Groove Salad MP3 stream.
 
 `miniamp3` opens the MiniAMP3 window with an ASL file requester whose pattern is
 expanded from built-in MP3 plus discovered decoder-module extensions such as

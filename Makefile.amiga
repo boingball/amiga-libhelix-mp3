@@ -71,7 +71,7 @@ HALFASM_TEST_CPPFLAGS := -DAMIGA_M68K_ASM_FDCT32
 FAST030_ASM_SOURCES := real/amiga_m68k_polyphase.S
 AMIGA_HUNK_FAST_PREFERRED := python3 tools/amiga_fast_preferred_hunks.py
 
-.PHONY: all fast030 radio030 sslradio030 prof030 gui guir sslgui sslguir fast030-halfasm-test gui-halfasm-test decoder-modules clean print-command print-fast030-command print-gui-command print-guir-command
+.PHONY: all fast030 radio030 sslradio030 amissl-get-test prof030 gui guir sslgui sslguir fast030-halfasm-test gui-halfasm-test decoder-modules clean print-command print-fast030-command print-gui-command print-guir-command
 
 all: $(TARGET) decoder-modules
 
@@ -86,6 +86,12 @@ radio030:
 
 sslradio030:
 	$(MAKE) -f Makefile.amiga fast030 RADIO=1 SSL=1
+
+amissl-get-test: amissl_https_get
+
+amissl_https_get: amissl_https_get.c
+	$(CC) $(CFLAGS_COMMON) $(CPPFLAGS_COMMON) -DHAVE_AMISSL $(SSL_CPPFLAGS) $(EXTRA_CFLAGS) -o $@ amissl_https_get.c
+	$(AMIGA_HUNK_FAST_PREFERRED) $@
 
 sslgui:
 	$(MAKE) -f Makefile.amiga gui RADIO=1 SSL=1
