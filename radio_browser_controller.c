@@ -75,10 +75,6 @@ int rb_controller_search(RadioBrowserController *controller)
                                  rb_controller_optional_string(controller->codec),
                                  rb_controller_optional_string(controller->countrycode),
                                  -1, limit, controller->offset);
-    printf("Radio Browser search: name=\"%s\" codec=%s bitrateMax=%d limit=%d path=%s\n",
-           controller->name, controller->codec[0] ? controller->codec : "Any",
-           controller->max_bitrate, limit, controller->last_path);
-
     count = rb_search_stations(RB_CONTROLLER_DEFAULT_HOST,
                                rb_controller_optional_string(controller->name),
                                rb_controller_optional_string(controller->tag),

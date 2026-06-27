@@ -473,6 +473,7 @@ typedef struct HelixAmp3Gui {
 	int   playbackDonePending;
 	int   playbackStoppedByUser;
 	int   playlistNextPending;
+	int   queuedPlayPending;
 	unsigned long playbackRunId;
 	unsigned long playbackDoneRunId;
 	int lastCleanupStage;
@@ -3026,11 +3027,13 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 {
 	int stoppedByUser = gui->playbackStoppedByUser;
 	int nextPending = gui->playlistNextPending;
+	int queuedPlayPending = gui->queuedPlayPending;
 
 	gui->playbackDonePending = 0;
 	gui->playbackStoppedByUser = 0;
 	gui->playbackActive = 0;
 	gui->playlistNextPending = 0;
+	gui->queuedPlayPending = 0;
 	gGuiPlayer.process = NULL;
 	gDonePort = NULL;
 	if (gui->totalSecs > 0 && !stoppedByUser)
@@ -3076,7 +3079,9 @@ static void FinalizePlayback(HelixAmp3Gui *gui)
 		DrawProgress(gui);
 		if (gui->artDecode.active)
 			SendTimerRequest(gui, ART_TIMER_MICROS);
-		else
+		if (queuedPlayPending)
+			StartPlayback(gui);
+		else if (!gui->artDecode.active)
 			SetStatus(gui, "Next file ready.");
 	} else if ((!stoppedByUser || nextPending) &&
 		gui->playlist.current >= 0 &&
@@ -4950,7 +4955,8 @@ static void EnterInternetStream(HelixAmp3Gui *gui)
 	nw.Height = 72;
 	nw.DetailPen = gui->win->DetailPen;
 	nw.BlockPen = gui->win->BlockPen;
-	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW;
+	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW |
+		IDCMP_VANILLAKEY;
 	nw.Flags = WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
 		WFLG_ACTIVATE | WFLG_RMBTRAP;
 	nw.Title = (UBYTE *)"MiniAMP3 Internet Stream";
@@ -5031,6 +5037,10 @@ static void EnterInternetStream(HelixAmp3Gui *gui)
 			struct Gadget *which = (struct Gadget *)msg->IAddress;
 			GT_ReplyIMsg(msg);
 			if (classValue == IDCMP_CLOSEWINDOW) {
+				done = 1;
+			} else if (classValue == IDCMP_VANILLAKEY &&
+				(msg->Code == '\r' || msg->Code == '\n')) {
+				accepted = 1;
 				done = 1;
 			} else if (classValue == IDCMP_REFRESHWINDOW) {
 				GT_BeginRefresh(win);
@@ -5815,7 +5825,13 @@ static void HandleGuiAction(HelixAmp3Gui *gui, struct Gadget *gad, UWORD code,
 		break;
 	case GID_PLAY:
 		if (gui->playbackActive || gui->playbackDonePending) {
-			SetStatus(gui, "Playback is already starting or active.");
+			if (gui->queuedInputName[0]) {
+				gui->queuedPlayPending = 1;
+				StopPlayback(gui);
+				SetStatus(gui, "Stopping current stream before playing selection...");
+			} else {
+				SetStatus(gui, "Playback is already starting or active.");
+			}
 			break;
 		}
 		/* If artwork is still decoding, pause it before the playback child is
