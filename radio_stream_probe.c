@@ -23,9 +23,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
-#ifndef RB_STREAM_PROBE_EXTERNAL_SOCKETBASE
-struct Library *SocketBase __attribute__((weak));
-#endif
+extern struct Library *SocketBase;
 #define RB_PROBE_SOCKET long
 #define RB_PROBE_INVALID_SOCKET (-1)
 #define rb_probe_close_socket(s) CloseSocket(s)
@@ -308,7 +306,7 @@ static int rb_probe_resolve_location(const RbProbeUrl *base, const char *locatio
 
 static int rb_probe_transport_open(RbProbeTransport *transport, const char *host, int port, int tls)
 {
-    struct hostent *he;
+    const struct hostent *he;
     struct sockaddr_in sa;
 
     if (!transport || !host) return RB_STREAM_PROBE_ERR_BAD_ARG;
@@ -318,7 +316,7 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
     transport->ctx = NULL;
     transport->ssl = NULL;
 #endif
-#if defined(AMIGA_M68K) && !defined(RB_STREAM_PROBE_EXTERNAL_SOCKETBASE)
+#if defined(AMIGA_M68K) && !defined(ENABLE_AMISSL)
     if (!SocketBase) {
         SocketBase = OpenLibrary("bsdsocket.library", 4);
         if (!SocketBase) return RB_STREAM_PROBE_ERR_CONNECT;

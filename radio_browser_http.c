@@ -19,11 +19,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
-#ifndef RB_HTTP_EXTERNAL_SOCKETBASE
-/* Weak so this module can link either standalone or beside radio_stream.c,
- * which also provides SocketBase for bsdsocket.library builds. */
-struct Library *SocketBase __attribute__((weak));
-#endif
+extern struct Library *SocketBase;
 #define RB_HTTP_SOCKET long
 #define RB_HTTP_INVALID_SOCKET (-1)
 #define rb_http_close_socket(s) CloseSocket(s)
@@ -85,13 +81,13 @@ static int rb_http_build_request(char *out, int out_size,
 
 static int rb_http_transport_open(RbHttpTransport *transport, const char *host, int port)
 {
-    struct hostent *he;
+    const struct hostent *he;
     struct sockaddr_in sa;
 
     if (!transport || !host) return RB_HTTP_ERR_BAD_ARG;
     transport->sock = RB_HTTP_INVALID_SOCKET;
 
-#if defined(AMIGA_M68K) && !defined(RB_HTTP_EXTERNAL_SOCKETBASE)
+#if defined(AMIGA_M68K) && !defined(ENABLE_AMISSL)
     if (!SocketBase) {
         SocketBase = OpenLibrary("bsdsocket.library", 4);
         if (!SocketBase) return RB_HTTP_ERR_CONNECT;
