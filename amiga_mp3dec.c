@@ -8518,6 +8518,8 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 			goto cleanup;
 	}
 	GuiPublishStartupStage(GUISTART_PLAYING);
+	printf("radio-play: First decoder feed result: decoded initial playback buffers\n");
+	printf("radio-play: State changed to PLAYING\n");
 	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
 	err = 0;
 
@@ -9027,6 +9029,8 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		}
 	}
 	GuiPublishStartupStage(GUISTART_PLAYING);
+	printf("radio-play: First decoder feed result: decoded initial playback buffers\n");
+	printf("radio-play: State changed to PLAYING\n");
 	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
 	if (opt->debugPlay) {
 		printf("debug-play: CMD_WRITE queued initial ring depth %d\n",
@@ -9531,6 +9535,11 @@ int main(int argc, char **argv)
 	GuiPublishStartupStage(GUISTART_ARGS_READY);
 	if (opt.inName && (!strncmp(opt.inName, "http://", 7) || !strncmp(opt.inName, "https://", 8)))
 		opt.radioStream = 1;
+	if (opt.radioStream && opt.inName && !strncmp(opt.inName, "https://", 8)) {
+		fprintf(stderr, "HTTPS/TLS playback is not supported yet.\n");
+		AmigaFreeNormalizedArgs(&normalized);
+		return 1;
+	}
 	if (opt.radioStream && opt.decodeThenPlay) {
 		fprintf(stderr, "warning: --decode-then-play is ignored for internet radio streams\n");
 		opt.decodeThenPlay = 0;
@@ -9563,8 +9572,12 @@ int main(int argc, char **argv)
 	if (opt.play && opt.radioStream) {
 		RadioStream *radio;
 		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_BEFORE);
+		printf("radio-play: Play requested URL: %s\n", opt.inName ? opt.inName : "");
+		printf("radio-play: Is URL local or http stream? http stream\n");
+		printf("radio-play: Opening stream\n");
 		radio = Radio_Open(opt.inName);
 		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_AFTER);
+		printf("radio-play: Stream open result: %s%s%s\n", radio ? Radio_StatusText(Radio_GetStatus(radio)) : "NULL", (radio && Radio_GetError(radio)[0]) ? " - " : "", radio ? Radio_GetError(radio) : "out of memory");
 		if (!radio || Radio_GetStatus(radio) == RADIO_STATUS_ERROR) {
 			fprintf(stderr, "cannot open radio stream: %s\n", radio ? Radio_GetError(radio) : "out of memory");
 			GuiMarkRadioError();
@@ -9583,6 +9596,7 @@ int main(int argc, char **argv)
 		GuiPublishRadioMetadata(radio);
 		{
 			const char *radioExt = RadioDecoderExtFromUrlOrType(opt.inName, Radio_GetContentType(radio));
+			printf("radio-play: Selected decoder %s (content-type=%s, icy-metaint=%d)\n", radioExt ? radioExt : "mp3", Radio_GetContentType(radio), Radio_GetMetaInt(radio));
 			if (radioExt && StrCaseCmp(radioExt, "mp3") != 0) {
 				int gret = AmigaGenericInputPlay(opt.inName, &input, radioExt, &opt, &stats, 1);
 				free(resolvedOutName);
@@ -9618,8 +9632,12 @@ int main(int argc, char **argv)
 		if (opt.radioStream) {
 			RadioStream *radio;
 			GuiPublishStartupStage(GUISTART_INPUT_FOPEN_BEFORE);
+			printf("radio-play: Play requested URL: %s\n", opt.inName ? opt.inName : "");
+			printf("radio-play: Is URL local or http stream? http stream\n");
+			printf("radio-play: Opening stream\n");
 			radio = Radio_Open(opt.inName);
 			GuiPublishStartupStage(GUISTART_INPUT_FOPEN_AFTER);
+			printf("radio-play: Stream open result: %s%s%s\n", radio ? Radio_StatusText(Radio_GetStatus(radio)) : "NULL", (radio && Radio_GetError(radio)[0]) ? " - " : "", radio ? Radio_GetError(radio) : "out of memory");
 			if (!radio || Radio_GetStatus(radio) == RADIO_STATUS_ERROR) {
 				fprintf(stderr, "cannot open radio stream: %s\n", radio ? Radio_GetError(radio) : "out of memory");
 				GuiMarkRadioError();
@@ -9630,6 +9648,8 @@ int main(int argc, char **argv)
 			}
 			InputSourceInitRadio(&input, radio);
 			GuiPublishRadioMetadata(radio);
+			printf("radio-play: First network read result: buffered=%d status=%s content-type=%s icy-metaint=%d\n", Radio_GetBufferedBytes(radio), Radio_StatusText(Radio_GetStatus(radio)), Radio_GetContentType(radio), Radio_GetMetaInt(radio));
+			printf("radio-play: Selected decoder %s\n", RadioDecoderExtFromUrlOrType(opt.inName, Radio_GetContentType(radio)) ? RadioDecoderExtFromUrlOrType(opt.inName, Radio_GetContentType(radio)) : "mp3");
 		} else {
 		GuiPublishStartupStage(GUISTART_INPUT_FOPEN_BEFORE);
 		infile = fopen(opt.inName, "rb");

@@ -2848,6 +2848,30 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 	RadioSetStatus(app, msg);
 }
 
+
+static void StartInternetRadioPlayback(MrApp *app, const char *url,
+	const char *codecHint, const char *contentType, int icyMetaint)
+{
+	if (!url || !url[0]) {
+		RadioSetStatus(app, "Stream probe did not return a playable URL.");
+		return;
+	}
+	printf("radio-play: Play requested URL: %s\n", url);
+	if (!strncmp(url, "https://", 8)) {
+		RadioSetStatus(app, "HTTPS/TLS playback is not supported yet.");
+		printf("radio-play: HTTPS/TLS playback is not supported yet.\n");
+		return;
+	}
+	printf("radio-play: Is URL local or http stream? %s\n",
+		!strncmp(url, "http://", 7) ? "http stream" : "local/unsupported");
+	printf("radio-play: Selected decoder %s (content-type=%s, icy-metaint=%d)\n",
+		codecHint ? codecHint : "unknown", contentType ? contentType : "", icyMetaint);
+	SafeCopy(app->inputName, sizeof(app->inputName), url);
+	UpdateFileGadget(app);
+	RefreshFileInfoAndTags(app);
+	StartPlayback(app);
+}
+
 static void RadioDoProbeAndPlay(MrApp *app)
 {
 	static unsigned char peek[512];
@@ -2889,13 +2913,11 @@ static void RadioDoProbeAndPlay(MrApp *app)
 		RadioSetStatus(app, "Stream probe did not return a playable URL.");
 		return;
 	}
-	SafeCopy(app->inputName, sizeof(app->inputName), info.final_url);
-	UpdateFileGadget(app);
-	RefreshFileInfoAndTags(app);
+	StartInternetRadioPlayback(app, info.final_url, ProbeCodecName(info.codec),
+		info.content_type, info.icy_metaint);
 	sprintf(msg, "Playing: %.120s | type: %.48s | icy-name: %.64s | icy-br: %d | redirects: %d",
 		info.final_url, info.content_type, info.icy_name, info.icy_br, info.redirect_count);
 	RadioSetStatus(app, msg);
-	StartPlayback(app);
 }
 
 static void CloseRadioWindow(MrApp *app)

@@ -107,7 +107,7 @@ struct RadioStream {
     int port, bitrate, metaint, audioUntilMeta, headerDone;
     int chunked, chunkRemaining, chunkLineLen, chunkSkipCrLf;
     char chunkLine[24];
-    char contentType[64], title[128], stationName[128], genre[64], streamUrl[128], error[128];
+    char contentType[64], title[128], stationName[128], genre[64], streamUrl[128], error[128], redirectUrl[256];
     unsigned char *ring;
     unsigned long rpos, wpos, used, size;
     char header[RADIO_HEADER_MAX];
@@ -115,7 +115,7 @@ struct RadioStream {
     RadioParseState parseState;
     unsigned char meta[RADIO_META_MAX];
     int metaLen, metaGot, metaLeft;
-    int reconnectAttempts, reconnectDelay;
+    int reconnectAttempts, reconnectDelay, redirectPending, redirectCount;
     int zeroBytePumps;
     int everPlayed;
     int stopping;
@@ -299,7 +299,7 @@ static void reset_parser(RadioStream *rs)
     rs->metaLen = rs->metaGot = rs->metaLeft = 0;
     rs->contentType[0] = 0; rs->bitrate = 0;
     rs->chunked = 0; rs->chunkRemaining = 0; rs->chunkLineLen = 0; rs->chunkSkipCrLf = 0; rs->chunkLine[0] = 0;
-    rs->stationName[0] = 0; rs->genre[0] = 0; rs->streamUrl[0] = 0;
+    rs->stationName[0] = 0; rs->genre[0] = 0; rs->streamUrl[0] = 0; rs->redirectPending = 0; rs->redirectUrl[0] = 0;
 }
 
 static int connect_http(RadioStream *rs){
@@ -382,7 +382,7 @@ static int reconnect_http(RadioStream *rs)
     return 0;
 }
 
-static void parse_headers(RadioStream *rs,char *h){ char *line=strtok(h,"\r\n"); int code=0; if(line && ci_starts(line,"ICY")) code=200; else if(line && ci_starts(line,"HTTP/")) sscanf(line,"HTTP/%*s %d",&code); else { set_error(rs,"invalid HTTP stream response"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: HTTP header failed\n")); return; } if(code<200||code>299){ set_error(rs,"HTTP stream returned non-success status"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: HTTP header failed status %d\n", code)); return; } while((line=strtok(NULL,"\r\n"))){ char *v=strchr(line,':'); if(!v) continue; *v++=0; line=trim(line); v=trim(v); if(ci_equals(line,"Content-Type")) radio_copy_string(rs->contentType,sizeof(rs->contentType),v); else if(ci_equals(line,"icy-metaint")){ rs->metaint=atoi(v); rs->audioUntilMeta=rs->metaint; } else if(ci_equals(line,"icy-br")) rs->bitrate=atoi(v); else if(ci_equals(line,"icy-name")) radio_copy_string(rs->stationName,sizeof(rs->stationName),v); else if(ci_equals(line,"icy-genre")) radio_copy_string(rs->genre,sizeof(rs->genre),v); else if(ci_equals(line,"icy-url")) radio_copy_string(rs->streamUrl,sizeof(rs->streamUrl),v); else if(ci_equals(line,"Transfer-Encoding") && ci_starts(v,"chunked")) rs->chunked=1; } if(rs->contentType[0] &&
+static void parse_headers(RadioStream *rs,char *h){ char *line=strtok(h,"\r\n"); int code=0; if(line && ci_starts(line,"ICY")) code=200; else if(line && ci_starts(line,"HTTP/")) sscanf(line,"HTTP/%*s %d",&code); else { set_error(rs,"invalid HTTP stream response"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: HTTP header failed\n")); return; } while((line=strtok(NULL,"\r\n"))){ char *v=strchr(line,':'); if(!v) continue; *v++=0; line=trim(line); v=trim(v); if(ci_equals(line,"Location")) radio_copy_string(rs->redirectUrl,sizeof(rs->redirectUrl),v); else if(ci_equals(line,"Content-Type")) radio_copy_string(rs->contentType,sizeof(rs->contentType),v); else if(ci_equals(line,"icy-metaint")){ rs->metaint=atoi(v); rs->audioUntilMeta=rs->metaint; } else if(ci_equals(line,"icy-br")) rs->bitrate=atoi(v); else if(ci_equals(line,"icy-name")) radio_copy_string(rs->stationName,sizeof(rs->stationName),v); else if(ci_equals(line,"icy-genre")) radio_copy_string(rs->genre,sizeof(rs->genre),v); else if(ci_equals(line,"icy-url")) radio_copy_string(rs->streamUrl,sizeof(rs->streamUrl),v); else if(ci_equals(line,"Transfer-Encoding") && ci_starts(v,"chunked")) rs->chunked=1; } if(code>=300&&code<=399){ if(rs->redirectUrl[0] && rs->redirectCount < 5) { rs->redirectPending=1; return; } set_error(rs,"HTTP stream redirect failed"); return; } if(code<200||code>299){ set_error(rs,"HTTP stream returned non-success status"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: HTTP header failed status %d\n", code)); return; } if(rs->contentType[0] &&
     !ci_starts(rs->contentType,"audio/mpeg") &&
     !ci_starts(rs->contentType,"audio/aac") &&
     !ci_starts(rs->contentType,"audio/aacp") &&
@@ -501,7 +501,7 @@ static int process_bytes(RadioStream *rs, const unsigned char *b, int n)
             if (rs->headerLen >= RADIO_HEADER_MAX - 1) { set_error(rs,"HTTP header too large"); return -1; }
             rs->header[rs->headerLen++] = (char)b[i]; rs->header[rs->headerLen] = 0;
             if (rs->headerLen >= 4 && !memcmp(rs->header + rs->headerLen - 4, "\r\n\r\n", 4)) {
-                rs->headerDone = 1; parse_headers(rs, rs->header); if (rs->status == RADIO_STATUS_ERROR) return -1; rs->parseState = RADIO_PARSE_AUDIO;
+                rs->headerDone = 1; parse_headers(rs, rs->header); if (rs->status == RADIO_STATUS_ERROR) return -1; if (rs->redirectPending) return 1; rs->parseState = RADIO_PARSE_AUDIO;
             }
             continue;
         }
@@ -555,7 +555,7 @@ int Radio_Pump(RadioStream *rs)
         return 0;
     }
     rs->zeroBytePumps=0;
-    if(process_bytes(rs,b,n)<0) return -1;
+    n=process_bytes(rs,b,n); if(n<0) return -1; if(n>0 && rs->redirectPending) { char u[256]; radio_copy_string(u,sizeof(u),rs->redirectUrl); close_current_socket(rs); rs->redirectCount++; if(parse_url(rs,u)){ set_error(rs,"unsupported stream redirect URL"); return -1; } rs->status=RADIO_STATUS_CONNECTING; return connect_http(rs); }
     if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; }
     if(rs->headerDone && rs->used >= RADIO_START_THRESHOLD) {
         rs->reconnectAttempts = 0;
@@ -579,3 +579,49 @@ int Radio_GetBufferedBytes(RadioStream *rs){ return rs?(int)rs->used:0; }
 const char *Radio_StatusText(RadioStatus s){ switch(s){case RADIO_STATUS_CONNECTING:return "Connecting";case RADIO_STATUS_BUFFERING:return "Buffering";case RADIO_STATUS_PLAYING:return "Playing";case RADIO_STATUS_RECONNECTING:return "Reconnecting";case RADIO_STATUS_STOPPING:return "Stopping";case RADIO_STATUS_CLOSED:return "Closed";case RADIO_STATUS_ERROR:return "Error";default:return "Idle";} }
 
 #endif /* ENABLE_RADIO */
+
+#if ENABLE_RADIO && defined(RADIO_STREAM_PLAY_TEST)
+int main(int argc, char **argv)
+{
+    RadioStream *rs;
+    unsigned char buf[2048];
+    unsigned long total = 0;
+    int i;
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s URL\n", argv[0]);
+        return 2;
+    }
+    printf("radio-play-test: Play requested URL: %s\n", argv[1]);
+    if (!strncmp(argv[1], "https://", 8)) {
+        printf("HTTPS/TLS playback is not supported yet.\n");
+        return 1;
+    }
+    printf("radio-play-test: Is URL local or http stream? %s\n", !strncmp(argv[1], "http://", 7) ? "http stream" : "local/unsupported");
+    printf("radio-play-test: Opening stream\n");
+    rs = Radio_Open(argv[1]);
+    printf("radio-play-test: Stream open result: %s%s%s\n", rs ? Radio_StatusText(Radio_GetStatus(rs)) : "NULL", (rs && Radio_GetError(rs)[0]) ? " - " : "", rs ? Radio_GetError(rs) : "out of memory");
+    if (!rs || Radio_GetStatus(rs) == RADIO_STATUS_ERROR) {
+        if (rs) Radio_Close(rs);
+        return 1;
+    }
+    for (i = 0; i < 250; i++) {
+        int n = Radio_ReadAudio(rs, buf, (int)sizeof(buf));
+        if (n > 0) total += (unsigned long)n;
+        printf("radio-play-test: read[%d]=%d total=%lu status=%s buffered=%d content-type=%s icy-metaint=%d title=%s\n",
+            i, n, total, Radio_StatusText(Radio_GetStatus(rs)), Radio_GetBufferedBytes(rs),
+            Radio_GetContentType(rs), Radio_GetMetaInt(rs), Radio_GetTitle(rs));
+        if (Radio_GetStatus(rs) == RADIO_STATUS_ERROR) {
+            printf("radio-play-test: error: %s\n", Radio_GetError(rs));
+            break;
+        }
+        if (total >= 65536UL)
+            break;
+    }
+    printf("radio-play-test: bytes received: %lu\n", total);
+    printf("radio-play-test: detected codec/ICY metadata: content-type=%s icy-name=%s icy-br=%d icy-metaint=%d title=%s\n",
+        Radio_GetContentType(rs), Radio_GetStationName(rs), Radio_GetBitrate(rs),
+        Radio_GetMetaInt(rs), Radio_GetTitle(rs));
+    Radio_Close(rs);
+    return total > 0 ? 0 : 1;
+}
+#endif
