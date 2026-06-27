@@ -2851,10 +2851,12 @@ static void RadioDoProbeAndPlay(MrApp *app)
 		RadioSetStatus(app, "Select a station first.");
 		return;
 	}
+#if !defined(ENABLE_AMISSL)
 	if (rb_station_play_url(st) && strncmp(rb_station_play_url(st), "https://", 8) == 0) {
-		RadioSetStatus(app, "HTTPS/TLS streams are not supported yet");
+		RadioSetStatus(app, "HTTPS/TLS streams require building guir with SSL=1");
 		return;
 	}
+#endif
 	memset(&info, 0, sizeof(info));
 	RadioSetStatus(app, "Probing selected stream...");
 	rc = rb_controller_probe_selected(&app->rbController, &info, peek, (int)sizeof(peek), &peekLen);
@@ -2862,7 +2864,7 @@ static void RadioDoProbeAndPlay(MrApp *app)
 		RadioSetStatus(app, app->rbController.last_error);
 		return;
 	}
-	if (info.codec != RB_STREAM_CODEC_MP3) {
+	if (info.codec != RB_STREAM_CODEC_MP3 && info.codec != RB_STREAM_CODEC_AAC) {
 		sprintf(msg, "Unsupported stream codec: %s (%.48s)", ProbeCodecName(info.codec), info.content_type);
 		RadioSetStatus(app, msg);
 		return;
