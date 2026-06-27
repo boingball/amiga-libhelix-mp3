@@ -167,7 +167,7 @@ int rb_controller_probe_selected(
 #endif
 
     rc = rb_probe_stream_url(url, info, peek_buf, peek_buf_size, peek_len);
-    if (rc < 0) rb_controller_set_error(controller, "Stream probe failed");
+    if (rc < 0) rb_controller_set_error(controller, rb_probe_error_text(rc));
     return rc;
 }
 
@@ -204,6 +204,12 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info, unsigned char *peek
     (void)url; (void)info; (void)peek_buf; (void)peek_buf_size;
     if (peek_len) *peek_len = 0;
     return RB_STREAM_PROBE_OK;
+}
+
+const char *rb_probe_error_text(int rc)
+{
+    (void)rc;
+    return "Stream probe failed";
 }
 
 int rb_search_stations(const char *host, const char *name, const char *tag,

@@ -465,6 +465,7 @@ static void OpenPlaylistWindow(MrApp *app);
 static void CloseRadioWindow(MrApp *app);
 static void OpenRadioWindow(MrApp *app);
 static void HandleRadioWindow(MrApp *app);
+static void HandleDoneSignal(MrApp *app);
 
 static void SyncMenuChecks(MrApp *app);
 
@@ -821,6 +822,10 @@ static int MrSetRadioMetadata(MrApp *app, int updateStatus)
 			sprintf(status, "Stream dropped - reconnecting");
 		else if (radioStatus == RADIO_STATUS_CONNECTING)
 			sprintf(status, "Connecting stream...");
+		else if (radioStatus == RADIO_STATUS_PLAYING) {
+			printf("radio-ui: UI state set to PLAYING\n");
+			sprintf(status, "Streaming");
+		}
 		else
 			sprintf(status, "Streaming");
 		updates += SetReadonlyString(app->statusGad, app->win, app->shownStatus,
@@ -1177,6 +1182,26 @@ static void StopPlayback(MrApp *app)
 
 	SetStatus(app, "Stopping...");
 	UpdateNextButtonState(app);
+}
+
+static int StopPlaybackAndWait(MrApp *app, int ticks, const char *timeoutStatus)
+{
+	int waited;
+
+	if (!app)
+		return 1;
+	if (!app->playbackActive && !app->playbackDonePending && !PlaybackProcessStillExists())
+		return 1;
+	StopPlayback(app);
+	for (waited = 0; waited < ticks; waited++) {
+		HandleDoneSignal(app);
+		if (!app->playbackActive && !app->playbackDonePending && !PlaybackProcessStillExists())
+			return 1;
+		Delay(1);
+	}
+	if (timeoutStatus && timeoutStatus[0])
+		SetStatus(app, timeoutStatus);
+	return 0;
 }
 
 static void FinalizePlayback(MrApp *app)
@@ -3052,6 +3077,18 @@ static void RadioDoProbeAndPlay(MrApp *app)
 	int rc;
 	const RadioBrowserStation *st;
 	char msg[512];
+	printf("radio-ui: play requested currentActive=%d donePending=%d stopRequested=%d input=\"%s\"\n",
+		app->playbackActive, app->playbackDonePending, gPlayer.stopRequested, app->inputName);
+	if ((app->playbackActive || app->playbackDonePending || PlaybackProcessStillExists()) &&
+		MrIsRadioInput(app->inputName)) {
+		RadioSetStatus(app, "Stopping previous stream...");
+		printf("radio-ui: stop old stream requested\n");
+		if (!StopPlaybackAndWait(app, 250, "Still stopping previous stream")) {
+			printf("radio-ui: old stream stop timed out\n");
+			return;
+		}
+		printf("radio-ui: old stream stopped\n");
+	}
 	if (app->rbShowingFavourites) {
 		if (app->rbSelectedFavourite < 0 || app->rbSelectedFavourite >= app->rbFavouriteCount) {
 			RadioSetStatus(app, "Select a favourite first.");
@@ -3060,7 +3097,7 @@ static void RadioDoProbeAndPlay(MrApp *app)
 		SafeCopy(app->inputName, sizeof(app->inputName), app->rbFavouriteUrls[app->rbSelectedFavourite]);
 		UpdateFileGadget(app);
 		RefreshFileInfoAndTags(app);
-		sprintf(msg, "Playing favourite: %.120s", app->rbFavouriteNames[app->rbSelectedFavourite]);
+		sprintf(msg, "Starting favourite: %.120s", app->rbFavouriteNames[app->rbSelectedFavourite]);
 		RadioSetStatus(app, msg);
 		StartPlayback(app);
 		return;
@@ -3082,7 +3119,10 @@ static void RadioDoProbeAndPlay(MrApp *app)
 #endif
 	memset(&info, 0, sizeof(info));
 	RadioSetStatus(app, "Probing selected stream...");
+	printf("radio-ui: new stream probe start url=\"%s\"\n", rb_station_play_url(st));
 	rc = rb_controller_probe_selected(&app->rbController, &info, peek, (int)sizeof(peek), &peekLen);
+	printf("radio-ui: new stream probe result rc=%d final=\"%s\" content=\"%s\" codec=%d redirects=%d\n",
+		rc, info.final_url, info.content_type, (int)info.codec, info.redirect_count);
 	if (rc < 0) {
 		RadioSetStatus(app, app->rbController.last_error);
 		return;
@@ -3099,9 +3139,10 @@ static void RadioDoProbeAndPlay(MrApp *app)
 	SafeCopy(app->inputName, sizeof(app->inputName), info.final_url);
 	UpdateFileGadget(app);
 	RefreshFileInfoAndTags(app);
-	sprintf(msg, "Playing: %.120s | type: %.48s | icy-name: %.64s | icy-br: %d | redirects: %d",
+	sprintf(msg, "Starting: %.120s | type: %.48s | icy-name: %.64s | icy-br: %d | redirects: %d",
 		info.final_url, info.content_type, info.icy_name, info.icy_br, info.redirect_count);
 	RadioSetStatus(app, msg);
+	printf("radio-ui: new stream start url=\"%s\"\n", info.final_url);
 	StartPlayback(app);
 }
 
@@ -3946,11 +3987,16 @@ int main(int argc, char **argv)
 
 	/* Make sure any running child is stopped and reaped before we tear the
 	 * window (and its shared status block) down. */
-	if (app.playbackActive) {
-		StopPlayback(&app);
-		while (PlaybackProcessStillExists())
-			Delay(5);
-		HandleDoneSignal(&app);
+	if (app.playbackActive || app.playbackDonePending || PlaybackProcessStillExists()) {
+		printf("radio-ui: app close cleanup start active=%d donePending=%d\n",
+			app.playbackActive, app.playbackDonePending);
+		if (!StopPlaybackAndWait(&app, 500, "Failed to stop previous stream")) {
+			while (PlaybackProcessStillExists())
+				Delay(5);
+			HandleDoneSignal(&app);
+		}
+		printf("radio-ui: app close cleanup end active=%d donePending=%d\n",
+			app.playbackActive, app.playbackDonePending);
 	}
 
 	SyncFromGadgets(&app);

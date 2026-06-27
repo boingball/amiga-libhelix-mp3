@@ -72,6 +72,7 @@ typedef struct RbProbeTransport {
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
     SSL *ssl;
     SSL_CTX *ctx;
+    int sslHandshakeDone;
 #endif
 } RbProbeTransport;
 
@@ -397,6 +398,7 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
     transport->ssl = NULL;
     transport->ctx = NULL;
+    transport->sslHandshakeDone = 0;
 #endif
 
 #if defined(AMIGA_M68K) && !defined(RB_STREAM_PROBE_EXTERNAL_SOCKETBASE)
@@ -446,8 +448,9 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
             SSL_CTX_free(transport->ctx); transport->ctx = NULL;
             rb_probe_close_socket(transport->sock);
             transport->sock = RB_PROBE_INVALID_SOCKET;
-            return RB_STREAM_PROBE_ERR_CONNECT;
+            return RB_STREAM_PROBE_ERR_TLS_HANDSHAKE;
         }
+        transport->sslHandshakeDone = 1;
         transport->isSSL = 1;
     }
 #else
@@ -460,10 +463,13 @@ static void rb_probe_transport_close(RbProbeTransport *transport)
 {
     if (transport && transport->sock != RB_PROBE_INVALID_SOCKET) {
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
-        if (transport->ssl) {
+        if (transport->ssl && transport->sslHandshakeDone) {
             SSL_shutdown(transport->ssl);
+        }
+        if (transport->ssl) {
             SSL_free(transport->ssl);
             transport->ssl = NULL;
+            transport->sslHandshakeDone = 0;
         }
         if (transport->ctx) {
             SSL_CTX_free(transport->ctx);
@@ -608,6 +614,39 @@ static RbStreamCodec rb_probe_detect_codec(const RbProbeUrl *url, const RbStream
     return RB_STREAM_CODEC_UNKNOWN;
 }
 
+static int rb_probe_is_hls(const RbProbeUrl *url, const RbStreamInfo *info)
+{
+    if (info && info->content_type[0] &&
+        (rb_probe_contains_nocase(info->content_type, "application/vnd.apple.mpegurl") ||
+         rb_probe_contains_nocase(info->content_type, "application/x-mpegurl")))
+        return 1;
+    if (url && rb_probe_contains_nocase(url->path, ".m3u8"))
+        return 1;
+    return 0;
+}
+
+const char *rb_probe_error_text(int rc)
+{
+    switch (rc) {
+    case RB_STREAM_PROBE_ERR_BAD_ARG: return "Stream probe failed: bad argument";
+    case RB_STREAM_PROBE_ERR_UNSUPPORTED_TLS: return "HTTPS not supported in this build";
+    case RB_STREAM_PROBE_ERR_BAD_URL: return "Stream probe failed: bad or redirected URL";
+    case RB_STREAM_PROBE_ERR_DNS: return "Stream probe failed: cannot resolve host";
+    case RB_STREAM_PROBE_ERR_CONNECT: return "Stream probe failed: timeout while connecting";
+    case RB_STREAM_PROBE_ERR_SEND: return "Stream probe failed: server closed connection while sending request";
+    case RB_STREAM_PROBE_ERR_RECV: return "Stream probe failed: timeout while reading headers";
+    case RB_STREAM_PROBE_ERR_HEADERS_TOO_BIG: return "Stream probe failed: response headers too large";
+    case RB_STREAM_PROBE_ERR_REQUEST_TOO_BIG: return "Stream probe failed: request too large";
+    case RB_STREAM_PROBE_ERR_TOO_MANY_REDIRECTS: return "Stream probe failed: too many redirects";
+    case RB_STREAM_PROBE_ERR_URL_TOO_LONG: return "Stream probe failed: URL too long";
+    case RB_STREAM_PROBE_ERR_HLS_UNSUPPORTED: return "HLS stream not supported";
+    case RB_STREAM_PROBE_ERR_UNSUPPORTED_CONTENT_TYPE: return "Unsupported stream content type";
+    case RB_STREAM_PROBE_ERR_SERVER_CLOSED: return "Stream probe failed: server closed connection during probe";
+    case RB_STREAM_PROBE_ERR_TLS_HANDSHAKE: return "Stream probe failed: TLS handshake failure";
+    default: return "Stream probe failed";
+    }
+}
+
 int rb_probe_stream_url(const char *url, RbStreamInfo *info,
                         unsigned char *peek_buf, int peek_buf_size, int *peek_len)
 {
@@ -678,7 +717,10 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
                 rb_probe_transport_close(&transport);
                 return RB_STREAM_PROBE_ERR_RECV;
             }
-            if (n == 0) break;
+            if (n == 0) {
+                rb_probe_transport_close(&transport);
+                return RB_STREAM_PROBE_ERR_SERVER_CLOSED;
+            }
             total += n;
             if (header_end < 0) header_end = rb_probe_find_header_end(header_buf, total);
             if (header_end >= 0) {
@@ -699,6 +741,10 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
         }
         memcpy(parse_buf, header_buf, (size_t)header_end);
         rb_probe_parse_headers(parse_buf, header_end, info, location, (int)sizeof(location));
+        if (rb_probe_is_hls(&parsed, info)) {
+            rb_probe_transport_close(&transport);
+            return RB_STREAM_PROBE_ERR_HLS_UNSUPPORTED;
+        }
         if (!rb_probe_is_redirect_status(info->http_status)) break;
         rb_probe_transport_close(&transport);
         *peek_len = 0;
@@ -739,6 +785,18 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
         return rc;
     }
     info->codec = rb_probe_detect_codec(&parsed, info, peek_buf, *peek_len);
+    if (rb_probe_is_hls(&parsed, info)) {
+#if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+        rb_probe_cleanup_amissl();
+#endif
+        return RB_STREAM_PROBE_ERR_HLS_UNSUPPORTED;
+    }
+    if (info->content_type[0] && info->codec == RB_STREAM_CODEC_UNKNOWN) {
+#if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+        rb_probe_cleanup_amissl();
+#endif
+        return RB_STREAM_PROBE_ERR_UNSUPPORTED_CONTENT_TYPE;
+    }
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
     rb_probe_cleanup_amissl();
 #endif
