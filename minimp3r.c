@@ -312,6 +312,8 @@ static volatile unsigned long gRunCounter;
 static volatile unsigned long gEntryRunId;
 static volatile unsigned long gDoneRunId;
 
+static RadioBrowserController g_radio_controller;
+
 /* ------------------------------------------------------------------------- */
 /* Application state                                                         */
 /* ------------------------------------------------------------------------- */
@@ -369,7 +371,8 @@ typedef struct MrApp {
 	struct Node     rbNodes[RB_CONTROLLER_MAX_STATIONS];
 	char            rbNames[RB_CONTROLLER_MAX_STATIONS][96];
 	APTR            rbVisualInfo;
-	RadioBrowserController rbController;
+	RadioBrowserController *rbController;
+	int rbControllerInitialized;
 
 	struct MsgPort   *timerPort;
 	struct timerequest *timerReq;
@@ -2735,8 +2738,8 @@ static void RadioRefreshResults(MrApp *app)
 			GTLV_Selected, (ULONG)~0,
 			TAG_DONE);
 	NewList(&app->rbList);
-	for (i = 0; i < app->rbController.station_count; i++) {
-		st = rb_controller_get_station(&app->rbController, i);
+	for (i = 0; i < app->rbController->station_count; i++) {
+		st = rb_controller_get_station(app->rbController, i);
 		if (!st) continue;
 		rb_station_display_name(st, display, (int)sizeof(display));
 		sprintf(app->rbNames[i], "%.48s | %s | %d | %s",
@@ -2749,7 +2752,7 @@ static void RadioRefreshResults(MrApp *app)
 		app->rbNodes[i].ln_Pri = (BYTE)i;
 		AddTail(&app->rbList, &app->rbNodes[i]);
 	}
-	app->rbController.selected_index = -1;
+	app->rbController->selected_index = -1;
 	if (app->rbWin && app->rbGadList)
 		GT_SetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
 			GTLV_Labels, (ULONG)&app->rbList,
@@ -2779,18 +2782,26 @@ static void RadioDoSearch(MrApp *app)
 	RadioSetStatus(app, "Searching Radio Browser...");
 	text = NULL;
 	GT_GetGadgetAttrs(nameGad, app->rbWin, NULL, GTST_String, (ULONG)(void *)&text, TAG_DONE);
-	SafeCopy(app->rbController.name, sizeof(app->rbController.name), text ? (const char *)text : "");
+	SafeCopy(app->rbController->name, sizeof(app->rbController->name), text ? (const char *)text : "");
 	v = 0;
 	GT_GetGadgetAttrs(codecGad, app->rbWin, NULL, GTCY_Active, (ULONG)&v, TAG_DONE);
-	SafeCopy(app->rbController.codec, sizeof(app->rbController.codec), RadioCodecFromIndex((int)v));
+	SafeCopy(app->rbController->codec, sizeof(app->rbController->codec), RadioCodecFromIndex((int)v));
 	text = NULL;
 	GT_GetGadgetAttrs(countryGad, app->rbWin, NULL, GTST_String, (ULONG)(void *)&text, TAG_DONE);
-	SafeCopy(app->rbController.countrycode, sizeof(app->rbController.countrycode), text ? (const char *)text : "");
-	app->rbController.limit = 10;
-	rc = rb_controller_search(&app->rbController);
+	SafeCopy(app->rbController->countrycode, sizeof(app->rbController->countrycode), text ? (const char *)text : "");
+	app->rbController->limit = 10;
+	printf("radio search: before rb_controller_search\n");
+	RadioSetStatus(app, "Calling Radio Browser search...");
+	rc = rb_controller_search(app->rbController);
+	printf("radio search: rb_controller_search returned %d\n", rc);
+	{
+		char debugMsg[64];
+		sprintf(debugMsg, "Radio Browser search returned %d.", rc);
+		RadioSetStatus(app, debugMsg);
+	}
 	RadioRefreshResults(app);
 	if (rc < 0)
-		RadioSetStatus(app, app->rbController.last_error);
+		RadioSetStatus(app, app->rbController->last_error);
 	else {
 		char msg[64];
 		sprintf(msg, "Found %d station%s.", rc, rc == 1 ? "" : "s");
@@ -2810,25 +2821,25 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 		GT_GetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
 			GTLV_Selected, (ULONG)&selected, TAG_DONE);
 	printf("radio results selection event row/index: %ld\n", (long)selected);
-	if (selected == (ULONG)~0 || selected >= (ULONG)app->rbController.station_count) {
-		rb_controller_set_selected(&app->rbController, -1);
-		printf("radio results controller selected_index: %d\n", app->rbController.selected_index);
+	if (selected == (ULONG)~0 || selected >= (ULONG)app->rbController->station_count) {
+		rb_controller_set_selected(app->rbController, -1);
+		printf("radio results controller selected_index: %d\n", app->rbController->selected_index);
 		RadioSetStatus(app, "Select a station first.");
 		return;
 	}
-	if (rb_controller_set_selected(&app->rbController, (int)selected) < 0) {
-		RadioSetStatus(app, app->rbController.last_error);
+	if (rb_controller_set_selected(app->rbController, (int)selected) < 0) {
+		RadioSetStatus(app, app->rbController->last_error);
 		return;
 	}
 	GT_SetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
 		GTLV_Selected, (ULONG)selected, TAG_DONE);
-	st = rb_controller_get_station(&app->rbController, app->rbController.selected_index);
+	st = rb_controller_get_station(app->rbController, app->rbController->selected_index);
 	if (!st) {
 		RadioSetStatus(app, "Select a station first.");
 		return;
 	}
 	rb_station_display_name(st, display, (int)sizeof(display));
-	printf("radio results controller selected_index: %d\n", app->rbController.selected_index);
+	printf("radio results controller selected_index: %d\n", app->rbController->selected_index);
 	printf("radio results station display name: %s\n", display);
 	sprintf(msg, "Selected: %.120s", display);
 	RadioSetStatus(app, msg);
@@ -2842,11 +2853,11 @@ static void RadioDoProbeAndPlay(MrApp *app)
 	int rc;
 	const RadioBrowserStation *st;
 	char msg[512];
-	if (app->rbController.selected_index < 0) {
+	if (app->rbController->selected_index < 0) {
 		RadioSetStatus(app, "Select a station first.");
 		return;
 	}
-	st = rb_controller_get_station(&app->rbController, app->rbController.selected_index);
+	st = rb_controller_get_station(app->rbController, app->rbController->selected_index);
 	if (!st) {
 		RadioSetStatus(app, "Select a station first.");
 		return;
@@ -2859,9 +2870,9 @@ static void RadioDoProbeAndPlay(MrApp *app)
 #endif
 	memset(&info, 0, sizeof(info));
 	RadioSetStatus(app, "Probing selected stream...");
-	rc = rb_controller_probe_selected(&app->rbController, &info, peek, (int)sizeof(peek), &peekLen);
+	rc = rb_controller_probe_selected(app->rbController, &info, peek, (int)sizeof(peek), &peekLen);
 	if (rc < 0) {
-		RadioSetStatus(app, app->rbController.last_error);
+		RadioSetStatus(app, app->rbController->last_error);
 		return;
 	}
 	if (info.codec != RB_STREAM_CODEC_MP3 && info.codec != RB_STREAM_CODEC_AAC) {
@@ -2912,7 +2923,11 @@ static void OpenRadioWindow(MrApp *app)
 	struct Gadget *gad;
 	static STRPTR codecs[] = { (STRPTR)"All", (STRPTR)"MP3", (STRPTR)"AAC", (STRPTR)"AAC+", NULL };
 	if (app->rbWin || !app->win || !GadToolsBase) return;
-	rb_controller_init(&app->rbController);
+	app->rbController = &g_radio_controller;
+	if (!app->rbControllerInitialized) {
+		rb_controller_init(app->rbController);
+		app->rbControllerInitialized = 1;
+	}
 	app->rbVisualInfo = GetVisualInfoA(app->win->WScreen, NULL);
 	if (!app->rbVisualInfo) return;
 	app->rbGadContext = CreateContext(&app->rbGadgets);

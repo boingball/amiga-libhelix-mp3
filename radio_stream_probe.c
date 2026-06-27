@@ -637,7 +637,7 @@ static const char *rb_probe_codec_name(RbStreamCodec codec)
 int main(int argc, char **argv)
 {
     RbStreamInfo info;
-    unsigned char peek[512];
+    static unsigned char peek[512];
     int peek_len;
     int rc;
 
