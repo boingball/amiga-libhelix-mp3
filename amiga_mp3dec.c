@@ -9529,8 +9529,12 @@ int main(int argc, char **argv)
 	}
 
 	GuiPublishStartupStage(GUISTART_ARGS_READY);
-	if (opt.inName && !strncmp(opt.inName, "http://", 7))
+	if (opt.inName && (!strncmp(opt.inName, "http://", 7) || !strncmp(opt.inName, "https://", 8)))
 		opt.radioStream = 1;
+	if (opt.radioStream && opt.decodeThenPlay) {
+		fprintf(stderr, "warning: --decode-then-play is ignored for internet radio streams\n");
+		opt.decodeThenPlay = 0;
+	}
 	if (opt.outName && OutputNameIsDirectory(opt.outName)) {
 		resolvedOutName = BuildDirectoryOutputName(opt.outName, opt.inName, &opt);
 		if (!resolvedOutName) {
