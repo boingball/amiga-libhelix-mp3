@@ -155,6 +155,18 @@ static void radio_set_nonblocking(RADIO_SOCKET s)
 #endif
 }
 
+static void radio_set_blocking(RADIO_SOCKET s)
+{
+#if defined(AMIGA_M68K)
+    long nb = 0;
+    IoctlSocket(s, FIONBIO, (char *)&nb);
+#else
+    int fl = fcntl(s, F_GETFL, 0);
+    if (fl >= 0)
+        fcntl(s, F_SETFL, fl & ~O_NONBLOCK);
+#endif
+}
+
 /* True when the last socket call failed only because no data is ready yet. */
 static int radio_would_block(void)
 {
@@ -216,6 +228,10 @@ static int radio_send_all(RadioStream *rs, const char *buf, int len)
         r = (int)send(rs->sock, (char *)buf + sent, len - sent, 0);
 #endif
         if (r > 0) { sent += r; continue; }
+#if defined(AMIGA_M68K) && defined(ENABLE_AMISSL)
+        if (r < 0 && rs->tls) { int e=SSL_get_error(rs->ssl,r); if(e==SSL_ERROR_WANT_READ||e==SSL_ERROR_WANT_WRITE){ radio_backoff_sleep(); tries++; continue; } }
+        else
+#endif
         if (r < 0 && radio_would_block()) { radio_backoff_sleep(); tries++; continue; }
         return -1;
     }
@@ -306,7 +322,12 @@ static int connect_http(RadioStream *rs){
         rs->ssl = SSL_new(rs->sslCtx);
         if (!rs->ssl) { close_current_socket(rs); set_error(rs,"cannot create AmiSSL connection"); return -1; }
         SSL_set_fd(rs->ssl, (int)rs->sock);
+        /* SSL_connect requires a blocking socket: on a non-blocking socket it
+         * returns SSL_ERROR_WANT_READ immediately before the handshake completes.
+         * Restore non-blocking mode afterwards for normal streaming. */
+        radio_set_blocking(rs->sock);
         if (SSL_connect(rs->ssl) <= 0) { close_current_socket(rs); set_error(rs,"AmiSSL handshake failed"); return -1; }
+        radio_set_nonblocking(rs->sock);
     }
 #endif
     n=snprintf(req,sizeof(req),"GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: MiniAMP3/experimental\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n",rs->path,rs->host);
@@ -416,6 +437,10 @@ int Radio_Pump(RadioStream *rs)
     n=(int)recv(rs->sock,(char*)b,sizeof(b),0);
 #endif
     if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; }
+#if defined(AMIGA_M68K) && defined(ENABLE_AMISSL)
+    if(n<0 && rs->tls) { int e=SSL_get_error(rs->ssl,n); if(e==SSL_ERROR_WANT_READ||e==SSL_ERROR_WANT_WRITE){ radio_backoff_sleep(); return 0; } }
+    else
+#endif
     if(n<0 && radio_would_block()){ radio_backoff_sleep(); return 0; }
     if(n<=0){
         close_current_socket(rs);

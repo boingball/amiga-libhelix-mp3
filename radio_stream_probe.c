@@ -64,6 +64,8 @@ typedef struct RbProbeTransport {
     int tls;
 } RbProbeTransport;
 
+static void rb_probe_transport_close(RbProbeTransport *transport);
+
 static int rb_probe_ascii_starts_nocase(const char *s, const char *prefix)
 {
     unsigned char cs;
@@ -339,11 +341,11 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
     if (tls) {
         InitAmiSSL(AmiSSL_SocketBase, (ULONG)SocketBase, TAG_DONE);
         transport->ctx = SSL_CTX_new(SSLv23_client_method());
-        if (!transport->ctx) return RB_STREAM_PROBE_ERR_CONNECT;
+        if (!transport->ctx) { rb_probe_transport_close(transport); return RB_STREAM_PROBE_ERR_CONNECT; }
         transport->ssl = SSL_new(transport->ctx);
-        if (!transport->ssl) return RB_STREAM_PROBE_ERR_CONNECT;
+        if (!transport->ssl) { rb_probe_transport_close(transport); return RB_STREAM_PROBE_ERR_CONNECT; }
         SSL_set_fd(transport->ssl, (int)transport->sock);
-        if (SSL_connect(transport->ssl) <= 0) return RB_STREAM_PROBE_ERR_CONNECT;
+        if (SSL_connect(transport->ssl) <= 0) { rb_probe_transport_close(transport); return RB_STREAM_PROBE_ERR_CONNECT; }
     }
 #else
     if (tls) return RB_STREAM_PROBE_ERR_UNSUPPORTED_TLS;
@@ -536,7 +538,7 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
         if (rc < 0) return rc;
         request_len = (int)strlen(request);
         rc = rb_probe_transport_open(&transport, parsed.host, parsed.port, parsed.tls);
-        if (rc < 0) return rc;
+        if (rc < 0) { rb_probe_transport_close(&transport); return rc; }
         rc = rb_probe_send_all(&transport, request, request_len);
         if (rc < 0) {
             rb_probe_transport_close(&transport);
