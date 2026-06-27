@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
 
 #ifndef RADIO_RING_BYTES
 #define RADIO_RING_BYTES 65536UL
@@ -135,6 +136,7 @@ struct RadioStream {
     int haveHostAddr;
     int isSSL;
     unsigned long session_id;
+    clock_t lastMemReportClock;
     unsigned int cleanup_count, stop_request_count, task_exit_count;
     unsigned int ssl_free_count, ssl_ctx_free_count, socket_close_count, decoder_free_count;
     unsigned int stream_buffer_free_count, audio_buffer_free_count, amissl_cleanup_count;
@@ -155,6 +157,9 @@ static long radio_active_decoder_count = 0;
 static long radio_active_audio_buffer_count = 0;
 static long radio_active_stream_buffer_count = 0;
 static long radio_amissl_init_count = 0;
+static long radio_active_icy_metadata_count = 0;
+static long radio_gui_listbrowser_node_count = 0;
+static long radio_gui_string_count = 0;
 static int radio_atexit_registered = 0;
 
 static void radio_debug_mem_report(unsigned long session_id, const char *where)
@@ -171,17 +176,18 @@ static void radio_debug_mem_report(unsigned long session_id, const char *where)
 
 static void radio_resource_summary(const RadioStream *rs, const char *where)
 {
-    printf("radio-summary: session=%lu %s active_stream_sessions=%ld active_stream_tasks=%ld open_socket_count=%ld active_ssl_count=%ld active_ssl_ctx_count=%ld active_decoder_count=%ld active_audio_buffer_count=%ld active_stream_buffer_count=%ld amissl_init_count=%ld cleanup_count=%u\n",
+    printf("radio-summary: session=%lu %s active_stream_sessions=%ld active_stream_tasks=%ld open_socket_count=%ld active_ssl_count=%ld active_ssl_ctx_count=%ld active_decoder_count=%ld active_audio_buffer_count=%ld active_stream_buffer_count=%ld active_icy_metadata_count=%ld active_gui_nodes=%ld active_gui_strings=%ld amissl_init_count=%ld cleanup_count=%u\n",
         rs ? rs->session_id : 0, where ? where : "", radio_active_stream_sessions,
         radio_active_stream_tasks, radio_open_socket_count, radio_active_ssl_count,
         radio_active_ssl_ctx_count, radio_active_decoder_count,
         radio_active_audio_buffer_count, radio_active_stream_buffer_count,
-        radio_amissl_init_count, rs ? rs->cleanup_count : 0);
+        radio_active_icy_metadata_count, radio_gui_listbrowser_node_count,
+        radio_gui_string_count, radio_amissl_init_count, rs ? rs->cleanup_count : 0);
 }
 static void radio_app_exit_report(void)
 {
-    radio_debug_mem_report(0, "before app exit");
-    radio_resource_summary(NULL, "before app exit");
+    radio_debug_mem_report(0, "before app close");
+    radio_resource_summary(NULL, "before app close");
 }
 
 static int radio_is_stopping(const RadioStream *rs) { return !rs || rs->stopping || rs->status == RADIO_STATUS_STOPPING || rs->status == RADIO_STATUS_CLOSED; }
@@ -209,6 +215,7 @@ static void radio_reset_session_state(RadioStream *rs)
     if (!rs) return;
     rs->sock = RADIO_INVALID_SOCKET;
     rs->isSSL = 0;
+    rs->lastMemReportClock = 0;
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
     rs->ssl = NULL;
     rs->ctx = NULL;
@@ -644,6 +651,7 @@ static void parse_meta(RadioStream *rs,const unsigned char *m,int n)
 {
     static const char key[] = "StreamTitle='";
     const unsigned char *p, *end;
+    char oldTitle[128];
     int i, keyLen = (int)sizeof(key) - 1;
     if (!rs || !m || n <= 0)
         return;
@@ -653,7 +661,10 @@ static void parse_meta(RadioStream *rs,const unsigned char *m,int n)
             p = m + i + keyLen;
             for (i = 0; p + i < end && p[i] != '\''; i++)
                 ;
+            radio_copy_string(oldTitle, sizeof(oldTitle), rs->title);
             radio_copy_bytes(rs->title, sizeof(rs->title), p, i);
+            if (strcmp(oldTitle, rs->title) != 0)
+                printf("radio-resource: session=%lu ICY metadata updated (fixed buffer, active_icy_metadata_count=%ld)\n", rs->session_id, radio_active_icy_metadata_count);
             break;
         }
     }
@@ -715,7 +726,7 @@ RadioStream *Radio_Open(const char *url)
     radio_active_stream_tasks++;
     radio_active_decoder_count++;
     printf("radio-resource: session=%lu stream session/task/decoder allocated active_stream_sessions=%ld active_stream_tasks=%ld active_decoder_count=%ld\n", rs->session_id, radio_active_stream_sessions, radio_active_stream_tasks, radio_active_decoder_count);
-    radio_debug_mem_report(rs->session_id, "before starting stream");
+    radio_debug_mem_report(rs->session_id, "before stream start");
     rs->status = RADIO_STATUS_CONNECTING;
     rs->size = RADIO_RING_BYTES;
     rs->ring = (unsigned char *)malloc(rs->size);
@@ -728,6 +739,8 @@ RadioStream *Radio_Open(const char *url)
     }
     if (radio_url_looks_hls(url)) {
         set_error(rs, "HLS stream not supported");
+        radio_debug_mem_report(rs->session_id, "after failed probe cleanup");
+        radio_resource_summary(rs, "after failed probe cleanup");
         RADIO_OPEN_DEBUG_PRINTF(("radio-open: HLS URL rejected before direct playback\n"));
         return rs;
     }
@@ -739,6 +752,8 @@ RadioStream *Radio_Open(const char *url)
             "only direct http:// stream URLs are supported"
 #endif
         );
+        radio_debug_mem_report(rs->session_id, "after failed probe cleanup");
+        radio_resource_summary(rs, "after failed probe cleanup");
         RADIO_OPEN_DEBUG_PRINTF(("radio-open: Radio_Open returning error\n"));
         return rs;
     }
@@ -750,11 +765,13 @@ RadioStream *Radio_Open(const char *url)
         close_current_socket(rs);
         if (rs->status != RADIO_STATUS_ERROR)
             set_error(rs, rs->error[0] ? rs->error : "cannot open radio stream");
+        radio_debug_mem_report(rs->session_id, "after failed probe cleanup");
+        radio_resource_summary(rs, "after failed probe cleanup");
         RADIO_OPEN_DEBUG_PRINTF(("radio-open: Radio_Open returning error\n"));
     }
     return rs;
 }
-void Radio_RequestStop(RadioStream *rs){ if(!rs)return; rs->stop_request_count++; RADIO_STOP_DEBUG_PRINTF(("radio-stop: session=%lu stop requested count=%u status=%d fd=%ld\n", rs->session_id, rs->stop_request_count, (int)rs->status, (long)rs->sock)); if(rs->status==RADIO_STATUS_CLOSED)return; rs->stopping=1; rs->reconnectAttempts=RADIO_RECONNECT_MAX; rs->reconnectDelay=0; rs->status=RADIO_STATUS_STOPPING; close_current_socket(rs); RADIO_STOP_DEBUG_PRINTF(("radio-stop: marked stopping\n")); }
+void Radio_RequestStop(RadioStream *rs){ if(!rs)return; radio_debug_mem_report(rs->session_id, "before stop"); rs->stop_request_count++; RADIO_STOP_DEBUG_PRINTF(("radio-stop: session=%lu stop requested count=%u status=%d fd=%ld\n", rs->session_id, rs->stop_request_count, (int)rs->status, (long)rs->sock)); if(rs->status==RADIO_STATUS_CLOSED)return; rs->stopping=1; rs->reconnectAttempts=RADIO_RECONNECT_MAX; rs->reconnectDelay=0; rs->status=RADIO_STATUS_STOPPING; close_current_socket(rs); RADIO_STOP_DEBUG_PRINTF(("radio-stop: marked stopping\n")); }
 void Radio_Close(RadioStream *rs)
 {
     if (!rs) return;
@@ -840,15 +857,23 @@ int Radio_Pump(RadioStream *rs)
     }
     if (!rs->everPlayed) rs->startPumps = 0;
     if (process_bytes(rs, b, n) < 0) return -1;
+    if (rs->status == RADIO_STATUS_PLAYING || rs->everPlayed) {
+        clock_t now = clock();
+        if (!rs->lastMemReportClock) rs->lastMemReportClock = now;
+        if ((unsigned long)((now - rs->lastMemReportClock) * 1000UL / CLOCKS_PER_SEC) >= 10000UL) {
+            radio_debug_mem_report(rs->session_id, "playing 10s sample");
+            rs->lastMemReportClock = now;
+        }
+    }
     if (radio_is_stopping(rs)) { close_current_socket(rs); rs->status = RADIO_STATUS_CLOSED; return 0; }
     if (rs->headerDone && rs->used >= RADIO_START_THRESHOLD) {
         if (!rs->everPlayed) printf("radio-stream: first decoder frame / playback buffer ready fd=%ld\n", (long)rs->sock);
-        rs->reconnectAttempts = 0; rs->reconnectDelay = 0; rs->everPlayed = 1; rs->status = RADIO_STATUS_PLAYING;
+        rs->reconnectAttempts = 0; rs->reconnectDelay = 0; rs->everPlayed = 1; set_status(rs, RADIO_STATUS_PLAYING);
     } else if (rs->headerDone && rs->status != RADIO_STATUS_PLAYING)
         set_status(rs, RADIO_STATUS_BUFFERING);
     return n;
 }
-int Radio_ReadAudio(RadioStream *rs,unsigned char *buf,int maxBytes){ int got; if(!rs||!buf||maxBytes<=0)return 0; if(radio_is_stopping(rs)) return 0; while(!radio_is_stopping(rs) && rs->status!=RADIO_STATUS_PLAYING && rs->used<RADIO_START_THRESHOLD && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && (++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX || radio_note_start_wait(rs,"radio stream did not buffer audio")<0)) { if(rs->status!=RADIO_STATUS_ERROR) set_error(rs,"radio stream did not buffer audio"); break; } } while(!radio_is_stopping(rs) && rs->used==0 && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && (++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX || radio_note_start_wait(rs,"radio stream did not deliver audio")<0)) { if(rs->status!=RADIO_STATUS_ERROR) set_error(rs,"radio stream did not deliver audio"); break; } } if(radio_is_stopping(rs)) return 0; got=ring_read(rs,buf,maxBytes); if(rs->status==RADIO_STATUS_PLAYING && rs->used<RADIO_LOW_WATER_BYTES) rs->status=RADIO_STATUS_BUFFERING; if(rs->status==RADIO_STATUS_BUFFERING && rs->used>=RADIO_START_THRESHOLD) rs->status=RADIO_STATUS_PLAYING; return got; }
+int Radio_ReadAudio(RadioStream *rs,unsigned char *buf,int maxBytes){ int got; if(!rs||!buf||maxBytes<=0)return 0; if(radio_is_stopping(rs)) return 0; while(!radio_is_stopping(rs) && rs->status!=RADIO_STATUS_PLAYING && rs->used<RADIO_START_THRESHOLD && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && (++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX || radio_note_start_wait(rs,"radio stream did not buffer audio")<0)) { if(rs->status!=RADIO_STATUS_ERROR) set_error(rs,"radio stream did not buffer audio"); break; } } while(!radio_is_stopping(rs) && rs->used==0 && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && (++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX || radio_note_start_wait(rs,"radio stream did not deliver audio")<0)) { if(rs->status!=RADIO_STATUS_ERROR) set_error(rs,"radio stream did not deliver audio"); break; } } if(radio_is_stopping(rs)) return 0; got=ring_read(rs,buf,maxBytes); if(rs->status==RADIO_STATUS_PLAYING && rs->used<RADIO_LOW_WATER_BYTES) set_status(rs,RADIO_STATUS_BUFFERING); if(rs->status==RADIO_STATUS_BUFFERING && rs->used>=RADIO_START_THRESHOLD) set_status(rs,RADIO_STATUS_PLAYING); return got; }
 RadioStatus Radio_GetStatus(RadioStream *rs){ return rs?rs->status:RADIO_STATUS_CLOSED; }
 const char *Radio_GetTitle(RadioStream *rs){ return rs?rs->title:""; }
 const char *Radio_GetStationName(RadioStream *rs){ return rs?rs->stationName:""; }

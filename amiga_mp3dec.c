@@ -5704,10 +5704,19 @@ static void GuiWriteDetailedStartupLog(int stage)
 
 static void GuiPublishStartupStage(int stage)
 {
+	if (gGuiPlaybackStatus.startupStage == stage)
+		return;
 	gGuiPlaybackStatus.startupStage = stage;
 #ifdef MINIAMP3_DEBUG
 	GuiWriteDetailedStartupLog(stage);
 #endif
+}
+
+static void GuiSetPlaybackPhase(int phase)
+{
+	if (gGuiPlaybackStatus.phase == phase)
+		return;
+	gGuiPlaybackStatus.phase = phase;
 }
 
 static int AmigaPlaybackStopRequested(const DecodeOptions *opt, const char *where)
@@ -8390,7 +8399,7 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 
 	memset(&player, 0, sizeof(player));
 	PlaybackCleanupStatusInit(&cleanupStatus);
-	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_BUFFERING;
+	GuiSetPlaybackPhase(GUIPLAY_PHASE_BUFFERING);
 	buf[0] = NULL; buf[1] = NULL; buf[2] = NULL;
 	len[0] = 0;    len[1] = 0;    len[2] = 0;
 	err = -1;
@@ -8400,7 +8409,7 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 		sinfo->bitsPerSample == 0 || sinfo->bitsPerSample > 32) {
 		fprintf(stderr, "generic decoder: invalid stream format %lu Hz %u ch %u-bit\n",
 			sinfo->sampleRate, sinfo->channels, sinfo->bitsPerSample);
-		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+		GuiSetPlaybackPhase(GUIPLAY_PHASE_ERROR);
 		gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
 		return -1;
 	}
@@ -8471,7 +8480,7 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 		goto cleanup;
 	}
 
-	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_BUFFERING;
+	GuiSetPlaybackPhase(GUIPLAY_PHASE_BUFFERING);
 	playbackChannels   = opt->stereo ? 2UL : 1UL;
 	liveSlots          = AmigaAudioLiveSlots(opt->stereo);
 	decodeAhead        = opt->stereo ? 2 : -1;
@@ -8496,7 +8505,7 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 			GENERIC_STARTUP_TIMEOUT_MS)) {
 			fprintf(stderr, "generic decoder: startup timed out before PCM output\n");
 			stream.decodeError = 1;
-			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+			GuiSetPlaybackPhase(GUIPLAY_PHASE_ERROR);
 			gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
 			gPlaybackInterrupted = 1;
 		}
@@ -8507,13 +8516,13 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 			GUISTART_FILL_BUFFER_B_DONE);
 
 		if (stream.decodeError) {
-			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+			GuiSetPlaybackPhase(GUIPLAY_PHASE_ERROR);
 			gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
 			goto cleanup;
 		}
 		if (active == 0 && (len[0] == 0 || len[0] / playbackChannels == 0)) {
 			fprintf(stderr, "generic decoder: first buffer fill produced zero bytes\n");
-			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+			GuiSetPlaybackPhase(GUIPLAY_PHASE_ERROR);
 			gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
 			goto cleanup;
 		}
@@ -8542,7 +8551,7 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 			goto cleanup;
 	}
 	GuiPublishStartupStage(GUISTART_PLAYING);
-	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
+	GuiSetPlaybackPhase(GUIPLAY_PHASE_PLAYING);
 	err = 0;
 
 	active = 0;
@@ -8645,9 +8654,9 @@ static int AmigaPlayStreamingGeneric(InputSource *input,
 		gGuiPlaybackStatus.underruns     = stats->underruns;
 		gGuiPlaybackStatus.decodedFrames = stats->decodedFrames;
 		if (underrun)
-			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_UNDERRUN;
+			GuiSetPlaybackPhase(GUIPLAY_PHASE_UNDERRUN);
 		else if (gGuiPlaybackStatus.phase == GUIPLAY_PHASE_UNDERRUN)
-			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
+			GuiSetPlaybackPhase(GUIPLAY_PHASE_PLAYING);
 	}
 
 cleanup:
@@ -8685,7 +8694,7 @@ static int AmigaGenericInputPlay(const char *sourceName, InputSource *input, con
 	if (opt->debugDecoder && ext && StrCaseCmp(ext, "aac") == 0)
 		fprintf(stderr, "AAC: selected\n");
 	if (!input->radio && ext && StrCaseCmp(ext, "aac") == 0 && !ValidateAacAdtsInput(input, opt->debugDecoder)) {
-		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+		GuiSetPlaybackPhase(GUIPLAY_PHASE_ERROR);
 		gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
 		goto done_input;
 	}
@@ -8732,7 +8741,7 @@ static int AmigaGenericInputPlay(const char *sourceName, InputSource *input, con
 			(void *)handle, sinfo.sampleRate, sinfo.channels, sinfo.bitsPerSample);
 	if (!handle) {
 		fprintf(stderr, "decoder module failed to open: %s\n", sourceName ? sourceName : "(unknown)");
-		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_ERROR;
+		GuiSetPlaybackPhase(GUIPLAY_PHASE_ERROR);
 		gGuiPlaybackStatus.startupStage = GUISTART_FAILED;
 		goto done_module;
 	}
@@ -8910,7 +8919,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 	 * audio.device setup can block.  This keeps the GUI from sitting on
 	 * its optimistic launch message and proves the new playback process
 	 * accepted the start request. */
-	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_BUFFERING;
+	GuiSetPlaybackPhase(GUIPLAY_PHASE_BUFFERING);
 	buf[0] = NULL;
 	buf[1] = NULL;
 	buf[2] = NULL;
@@ -8985,7 +8994,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 	 * remains a true three-request audio.device ring.  Stereo queues only two
 	 * live DMA pairs (A/B) and keeps C as a Fast RAM decode-ahead buffer; C is
 	 * copied into whichever A/B chip pair has been WaitIO-reaped. */
-	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_BUFFERING;
+	GuiSetPlaybackPhase(GUIPLAY_PHASE_BUFFERING);
 	playbackChannels = opt->stereo ? 2UL : 1UL;
 	liveSlots = AmigaAudioLiveSlots(opt->stereo);
 	decodeAhead = opt->stereo ? 2 : -1;
@@ -9051,7 +9060,7 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		}
 	}
 	GuiPublishStartupStage(GUISTART_PLAYING);
-	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
+	GuiSetPlaybackPhase(GUIPLAY_PHASE_PLAYING);
 	if (opt->debugPlay) {
 		printf("debug-play: CMD_WRITE queued initial ring depth %d\n",
 			active < liveSlots ? active : liveSlots);
@@ -9188,9 +9197,9 @@ static int AmigaPlayStreaming(InputSource *input, HMP3Decoder decoder,
 		if (stream.effectiveRate)
 			gGuiPlaybackStatus.sampleRate = stream.effectiveRate;
 		if (underrun)
-			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_UNDERRUN;
+			GuiSetPlaybackPhase(GUIPLAY_PHASE_UNDERRUN);
 		else if (gGuiPlaybackStatus.phase == GUIPLAY_PHASE_UNDERRUN)
-			gGuiPlaybackStatus.phase = GUIPLAY_PHASE_PLAYING;
+			GuiSetPlaybackPhase(GUIPLAY_PHASE_PLAYING);
 	}
 
 	if (err == 0 && !gPlaybackInterrupted) {
@@ -9677,7 +9686,7 @@ int main(int argc, char **argv)
 		}
 	}
 	if (opt.play)
-		gGuiPlaybackStatus.phase = GUIPLAY_PHASE_BUFFERING;
+		GuiSetPlaybackPhase(GUIPLAY_PHASE_BUFFERING);
 	if (opt.play && AmigaPlaybackStopRequested(&opt, "after input open")) {
 		InputSourceClose(&input);
 		CloseInputFile(&infile, opt.debugCleanup);
