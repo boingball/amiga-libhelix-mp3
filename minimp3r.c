@@ -2779,6 +2779,7 @@ static void RadioDoSearch(MrApp *app)
 	SafeCopy(app->rbController.countrycode, sizeof(app->rbController.countrycode), text ? (const char *)text : "");
 	app->rbController.limit = 10;
 	rc = rb_controller_search(&app->rbController);
+	app->rbController.selected_index = -1;
 	RadioRefreshResults(app);
 	if (rc < 0)
 		RadioSetStatus(app, app->rbController.last_error);
@@ -2789,6 +2790,35 @@ static void RadioDoSearch(MrApp *app)
 	}
 }
 
+static void RadioSelectResult(MrApp *app)
+{
+	ULONG selected = (ULONG)~0;
+	const RadioBrowserStation *st;
+	char display[RB_MAX_NAME];
+	char msg[RB_MAX_NAME + 16];
+
+	if (!app->rbWin || !app->rbGadList) return;
+	GT_GetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
+		GTLV_Selected, (ULONG)&selected, TAG_DONE);
+	if (selected == (ULONG)~0 || selected >= (ULONG)app->rbController.station_count) {
+		app->rbController.selected_index = -1;
+		RadioSetStatus(app, "Select a station first.");
+		return;
+	}
+	if (rb_controller_set_selected(&app->rbController, (int)selected) < 0) {
+		RadioSetStatus(app, app->rbController.last_error);
+		return;
+	}
+	st = rb_controller_get_station(&app->rbController, app->rbController.selected_index);
+	if (!st) {
+		RadioSetStatus(app, "Select a station first.");
+		return;
+	}
+	rb_station_display_name(st, display, (int)sizeof(display));
+	sprintf(msg, "Selected: %.120s", display);
+	RadioSetStatus(app, msg);
+}
+
 static void RadioDoProbe(MrApp *app)
 {
 	static unsigned char peek[512];
@@ -2797,8 +2827,16 @@ static void RadioDoProbe(MrApp *app)
 	int rc;
 	const RadioBrowserStation *st;
 	char msg[512];
+	if (app->rbController.selected_index < 0) {
+		RadioSetStatus(app, "Select a station first.");
+		return;
+	}
 	st = rb_controller_get_station(&app->rbController, app->rbController.selected_index);
-	if (st && rb_station_play_url(st) && strncmp(rb_station_play_url(st), "https://", 8) == 0) {
+	if (!st) {
+		RadioSetStatus(app, "Select a station first.");
+		return;
+	}
+	if (rb_station_play_url(st) && strncmp(rb_station_play_url(st), "https://", 8) == 0) {
 		RadioSetStatus(app, "HTTPS/TLS streams are not supported yet");
 		return;
 	}
@@ -2866,7 +2904,10 @@ static void OpenRadioWindow(MrApp *app)
 	ng.ng_LeftEdge = 88; ng.ng_TopEdge = 52; ng.ng_Width = 220; ng.ng_GadgetText = (UBYTE *)"Country";
 	ng.ng_GadgetID = RB_GID_COUNTRY; gad = CreateGadget(STRING_KIND, gad, &ng, GTST_MaxChars, RB_MAX_COUNTRY, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 8; ng.ng_TopEdge = 82; ng.ng_Width = 472; ng.ng_Height = 116; ng.ng_GadgetText = NULL; ng.ng_GadgetID = RB_GID_LIST; ng.ng_Flags = 0;
-	app->rbGadList = gad = CreateGadget(LISTVIEW_KIND, gad, &ng, GTLV_Labels, (ULONG)&app->rbList, GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
+	app->rbGadList = gad = CreateGadget(LISTVIEW_KIND, gad, &ng,
+		GTLV_Labels, (ULONG)&app->rbList,
+		GTLV_Selected, (ULONG)~0,
+		GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
 	ng.ng_TopEdge = 208; ng.ng_Width = 86; ng.ng_Height = 18; ng.ng_Flags = PLACETEXT_IN;
 	ng.ng_LeftEdge = 8; ng.ng_GadgetText = (UBYTE *)"Search"; ng.ng_GadgetID = RB_GID_SEARCH; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 100; ng.ng_GadgetText = (UBYTE *)"Probe"; ng.ng_GadgetID = RB_GID_PROBE; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
@@ -2899,7 +2940,6 @@ static void HandleRadioWindow(MrApp *app)
 		ULONG cls = msg->Class;
 		struct Gadget *gad = (struct Gadget *)msg->IAddress;
 		UWORD gid = gad ? gad->GadgetID : 0;
-		UWORD code = msg->Code;
 		GT_ReplyIMsg(msg);
 		if (cls == IDCMP_CLOSEWINDOW) { CloseRadioWindow(app); return; }
 		if (cls == IDCMP_REFRESHWINDOW) {
@@ -2909,7 +2949,7 @@ static void HandleRadioWindow(MrApp *app)
 		}
 		if (cls == IDCMP_GADGETUP) {
 			if (gid == RB_GID_LIST)
-				rb_controller_set_selected(&app->rbController, (int)code);
+				RadioSelectResult(app);
 			else if (gid == RB_GID_SEARCH)
 				RadioDoSearch(app);
 			else if (gid == RB_GID_PROBE)
