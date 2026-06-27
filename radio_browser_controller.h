@@ -24,6 +24,7 @@ typedef struct RadioBrowserController {
     char countrycode[RB_MAX_COUNTRY];
     char tag[RB_MAX_TAGS];
     int limit;
+    int max_bitrate;
     int offset;
 } RadioBrowserController;
 

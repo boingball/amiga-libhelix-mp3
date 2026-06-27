@@ -28,6 +28,9 @@
 #ifndef RADIO_ZERO_BYTE_PUMP_MAX
 #define RADIO_ZERO_BYTE_PUMP_MAX 64
 #endif
+#ifndef RADIO_START_TIMEOUT_PUMPS
+#define RADIO_START_TIMEOUT_PUMPS 150
+#endif
 #ifdef RADIO_DEBUG_OPEN
 #define RADIO_OPEN_DEBUG_PRINTF(x) printf x
 #else
@@ -103,6 +106,7 @@ struct RadioStream {
     int metaLen, metaGot, metaLeft;
     int reconnectAttempts, reconnectDelay;
     int zeroBytePumps;
+    int startPumps;
     int everPlayed;
     int stopping;
     struct in_addr hostAddr;   /* cached DNS result so reconnects skip gethostbyname() */
@@ -248,8 +252,11 @@ static void reset_parser(RadioStream *rs)
     rs->parseState = RADIO_PARSE_HEADER;
     rs->metaint = 0; rs->audioUntilMeta = 0;
     rs->metaLen = rs->metaGot = rs->metaLeft = 0;
+    rs->rpos = rs->wpos = rs->used = 0;
+    rs->zeroBytePumps = 0;
     rs->contentType[0] = 0; rs->bitrate = 0;
     rs->stationName[0] = 0; rs->genre[0] = 0; rs->streamUrl[0] = 0;
+    rs->title[0] = 0;
 }
 
 static int connect_http(RadioStream *rs){
@@ -359,11 +366,23 @@ static int process_bytes(RadioStream *rs, const unsigned char *b, int n)
     return 0;
 }
 
+static int radio_note_start_wait(RadioStream *rs, const char *message)
+{
+    if (!rs || rs->everPlayed) return 0;
+    rs->startPumps++;
+    if (rs->startPumps >= RADIO_START_TIMEOUT_PUMPS) {
+        set_error(rs, message);
+        close_current_socket(rs);
+        return -1;
+    }
+    return 0;
+}
+
 RadioStream *Radio_Open(const char *url){ RadioStream *rs=(RadioStream*)calloc(1,sizeof(*rs)); if(!rs) return NULL; rs->sock=RADIO_INVALID_SOCKET; rs->status=RADIO_STATUS_CONNECTING; rs->size=RADIO_RING_BYTES; rs->ring=(unsigned char*)malloc(rs->size); if(!rs->ring){ rs->size=0; set_error(rs,"not enough memory for radio buffer"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: Radio_Open returning error\n")); return rs; } if(parse_url(rs,url)){ set_error(rs,"only direct http:// stream URLs are supported"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: Radio_Open returning error\n")); return rs; } if(connect_http(rs)==0) rs->status=RADIO_STATUS_BUFFERING; else { close_current_socket(rs); if(rs->status!=RADIO_STATUS_ERROR) set_error(rs, rs->error[0] ? rs->error : "cannot open radio stream"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: Radio_Open returning error\n")); } return rs; }
 void Radio_RequestStop(RadioStream *rs){ if(!rs)return; RADIO_STOP_DEBUG_PRINTF(("radio-stop: stop requested\n")); rs->stopping=1; rs->reconnectAttempts=RADIO_RECONNECT_MAX; rs->reconnectDelay=0; rs->status=RADIO_STATUS_STOPPING; close_current_socket(rs); RADIO_STOP_DEBUG_PRINTF(("radio-stop: marked stopping\n")); }
 void Radio_Close(RadioStream *rs){ if(!rs)return; RADIO_STOP_DEBUG_PRINTF(("radio-stop: Radio_Close entered\n")); Radio_RequestStop(rs); rs->status=RADIO_STATUS_CLOSED; free(rs->ring); rs->ring=NULL; rs->size=rs->used=rs->rpos=rs->wpos=0; RADIO_STOP_DEBUG_PRINTF(("radio-stop: Radio_Close exited\n")); free(rs); }
-int Radio_Pump(RadioStream *rs){ unsigned char b[1024]; int n; if(!rs||rs->status==RADIO_STATUS_ERROR) return -1; if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(rs->sock==RADIO_INVALID_SOCKET) { if(!rs->everPlayed){ set_error(rs,"radio stream closed before playback started"); return -1; } return reconnect_http(rs); } n=(int)recv(rs->sock,(char*)b,sizeof(b),0); if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(n<0 && radio_would_block()){ radio_backoff_sleep(); return 0; } /* non-blocking socket: no data yet - yield instead of freezing the emulator */ if(n<=0){ close_current_socket(rs); if(!rs->headerDone){ set_error(rs,"HTTP header read failed"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: HTTP header failed\n")); return -1; } if(!rs->everPlayed){ set_error(rs,"radio stream ended before audio buffered"); return -1; } rs->reconnectDelay = RADIO_RECONNECT_BACKOFF_PUMPS; set_status(rs, RADIO_STATUS_RECONNECTING); return 0; } rs->zeroBytePumps=0; if(process_bytes(rs,b,n)<0) return -1; if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(rs->headerDone && rs->used >= RADIO_START_THRESHOLD) { rs->reconnectAttempts = 0; rs->reconnectDelay = 0; rs->everPlayed = 1; rs->status=RADIO_STATUS_PLAYING; } else if(rs->headerDone && rs->status!=RADIO_STATUS_PLAYING) set_status(rs,RADIO_STATUS_BUFFERING); return n; }
-int Radio_ReadAudio(RadioStream *rs,unsigned char *buf,int maxBytes){ int got; if(!rs||!buf||maxBytes<=0)return 0; if(radio_is_stopping(rs)) return 0; while(!radio_is_stopping(rs) && rs->status!=RADIO_STATUS_PLAYING && rs->used<RADIO_START_THRESHOLD && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && ++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX) { set_error(rs,"radio stream did not buffer audio"); break; } } while(!radio_is_stopping(rs) && rs->used==0 && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && ++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX) { set_error(rs,"radio stream did not deliver audio"); break; } } if(radio_is_stopping(rs)) return 0; got=ring_read(rs,buf,maxBytes); if(rs->status==RADIO_STATUS_PLAYING && rs->used<RADIO_LOW_WATER_BYTES) rs->status=RADIO_STATUS_BUFFERING; if(rs->status==RADIO_STATUS_BUFFERING && rs->used>=RADIO_START_THRESHOLD) rs->status=RADIO_STATUS_PLAYING; return got; }
+int Radio_Pump(RadioStream *rs){ unsigned char b[1024]; int n; if(!rs||rs->status==RADIO_STATUS_ERROR) return -1; if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(rs->sock==RADIO_INVALID_SOCKET) { if(!rs->everPlayed){ set_error(rs,"radio stream closed before playback started"); return -1; } return reconnect_http(rs); } n=(int)recv(rs->sock,(char*)b,sizeof(b),0); if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(n<0 && radio_would_block()){ radio_backoff_sleep(); if(radio_note_start_wait(rs,"radio stream start timed out")<0) return -1; return 0; } /* non-blocking socket: no data yet - yield instead of freezing the emulator */ if(n<=0){ close_current_socket(rs); if(!rs->headerDone){ set_error(rs,"HTTP header read failed"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: HTTP header failed\n")); return -1; } if(!rs->everPlayed){ set_error(rs,"radio stream ended before audio buffered"); return -1; } rs->reconnectDelay = RADIO_RECONNECT_BACKOFF_PUMPS; set_status(rs, RADIO_STATUS_RECONNECTING); return 0; } rs->zeroBytePumps=0; if(!rs->everPlayed) rs->startPumps = 0; if(process_bytes(rs,b,n)<0) return -1; if(radio_is_stopping(rs)) { close_current_socket(rs); rs->status=RADIO_STATUS_CLOSED; return 0; } if(rs->headerDone && rs->used >= RADIO_START_THRESHOLD) { rs->reconnectAttempts = 0; rs->reconnectDelay = 0; rs->everPlayed = 1; rs->status=RADIO_STATUS_PLAYING; } else if(rs->headerDone && rs->status!=RADIO_STATUS_PLAYING) set_status(rs,RADIO_STATUS_BUFFERING); return n; }
+int Radio_ReadAudio(RadioStream *rs,unsigned char *buf,int maxBytes){ int got; if(!rs||!buf||maxBytes<=0)return 0; if(radio_is_stopping(rs)) return 0; while(!radio_is_stopping(rs) && rs->status!=RADIO_STATUS_PLAYING && rs->used<RADIO_START_THRESHOLD && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && (++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX || radio_note_start_wait(rs,"radio stream did not buffer audio")<0)) { if(rs->status!=RADIO_STATUS_ERROR) set_error(rs,"radio stream did not buffer audio"); break; } } while(!radio_is_stopping(rs) && rs->used==0 && rs->status!=RADIO_STATUS_ERROR) { if(Radio_Pump(rs)<=0 && !rs->everPlayed && (++rs->zeroBytePumps>=RADIO_ZERO_BYTE_PUMP_MAX || radio_note_start_wait(rs,"radio stream did not deliver audio")<0)) { if(rs->status!=RADIO_STATUS_ERROR) set_error(rs,"radio stream did not deliver audio"); break; } } if(radio_is_stopping(rs)) return 0; got=ring_read(rs,buf,maxBytes); if(rs->status==RADIO_STATUS_PLAYING && rs->used<RADIO_LOW_WATER_BYTES) rs->status=RADIO_STATUS_BUFFERING; if(rs->status==RADIO_STATUS_BUFFERING && rs->used>=RADIO_START_THRESHOLD) rs->status=RADIO_STATUS_PLAYING; return got; }
 RadioStatus Radio_GetStatus(RadioStream *rs){ return rs?rs->status:RADIO_STATUS_CLOSED; }
 const char *Radio_GetTitle(RadioStream *rs){ return rs?rs->title:""; }
 const char *Radio_GetStationName(RadioStream *rs){ return rs?rs->stationName:""; }
