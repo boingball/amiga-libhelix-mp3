@@ -55,6 +55,7 @@
 
 #define MR_ENV_PREFIX "ENVARC:MiniAMP3"
 #define MR_SETTINGS_VERSION 1
+#define MR_RADIO_FAV_MAX 20
 #if !defined(__AROS__) && !defined(MR_DISABLE_CIA_FILTER)
 #define MR_ENABLE_CIA_FILTER 1
 #endif
@@ -371,6 +372,11 @@ typedef struct MrApp {
 	int             rbVisibleToController[RB_CONTROLLER_MAX_STATIONS];
 	int             rbVisibleCount;
 	int             rbShowHttps;
+	int             rbShowingFavourites;
+	int             rbFavouriteCount;
+	int             rbSelectedFavourite;
+	char            rbFavouriteNames[MR_RADIO_FAV_MAX][RB_MAX_NAME];
+	char            rbFavouriteUrls[MR_RADIO_FAV_MAX][RB_MAX_URL];
 	APTR            rbVisualInfo;
 	RadioBrowserController rbController;
 
@@ -593,6 +599,17 @@ static void LoadSettings(MrApp *app)
 	app->artColorEnabled = LoadEnvInt("ArtworkColour", app->artColorEnabled, 0, 1);
 	app->progressEnabled = LoadEnvInt("ProgressBar", app->progressEnabled, 0, 1);
 	LoadEnvString("LastDrawer", app->lastDrawer, sizeof(app->lastDrawer));
+	{
+		int i;
+		char key[32];
+		app->rbFavouriteCount = LoadEnvInt("RadioFavCount", app->rbFavouriteCount, 0, MR_RADIO_FAV_MAX);
+		for (i = 0; i < MR_RADIO_FAV_MAX; i++) {
+			sprintf(key, "RadioFavName%d", i);
+			LoadEnvString(key, app->rbFavouriteNames[i], sizeof(app->rbFavouriteNames[i]));
+			sprintf(key, "RadioFavUrl%d", i);
+			LoadEnvString(key, app->rbFavouriteUrls[i], sizeof(app->rbFavouriteUrls[i]));
+		}
+	}
 }
 
 static void SaveSettings(MrApp *app)
@@ -619,6 +636,17 @@ static void SaveSettings(MrApp *app)
 	SaveEnvInt("ArtworkColour", app->artColorEnabled);
 	SaveEnvInt("ProgressBar", app->progressEnabled);
 	SaveEnvString("LastDrawer", app->lastDrawer);
+	{
+		int i;
+		char key[32];
+		SaveEnvInt("RadioFavCount", ClampInt(app->rbFavouriteCount, 0, MR_RADIO_FAV_MAX));
+		for (i = 0; i < MR_RADIO_FAV_MAX; i++) {
+			sprintf(key, "RadioFavName%d", i);
+			SaveEnvString(key, app->rbFavouriteNames[i]);
+			sprintf(key, "RadioFavUrl%d", i);
+			SaveEnvString(key, app->rbFavouriteUrls[i]);
+		}
+	}
 }
 
 static int SetReadonlyString(Object *gad, struct Window *win, char *cache, size_t cacheSize, const char *text)
@@ -2720,6 +2748,8 @@ enum {
 	RB_GID_RADIO_RESULTS,
 	RB_GID_SEARCH,
 	RB_GID_PROBE,
+	RB_GID_ADD_FAV,
+	RB_GID_FAVOURITES,
 	RB_GID_CLOSE,
 	RB_GID_SHOW_HTTPS,
 	RB_GID_LIMIT,
@@ -2783,7 +2813,6 @@ static void RadioRefreshResults(MrApp *app)
 	const RadioBrowserStation *st;
 	const char *url;
 	const char *reason;
-	/* Detach the current labels before rebuilding the backing node array. */
 	if (app->rbWin && app->rbGadList)
 		GT_SetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
 			GTLV_Labels, (ULONG)~0,
@@ -2791,30 +2820,45 @@ static void RadioRefreshResults(MrApp *app)
 			TAG_DONE);
 	NewList(&app->rbList);
 	app->rbVisibleCount = 0;
-	for (i = 0; i < app->rbController.station_count; i++) {
-		st = rb_controller_get_station(&app->rbController, i);
-		if (!st) continue;
-		url = rb_station_play_url(st);
-		reason = "show";
-		if (!app->rbShowHttps && !RadioIsHttpStation(st)) { reason = "hidden_https"; }
-		else if (app->rbController.max_bitrate > 0 && st->bitrate == 0) { reason = "hidden_bitrate_unknown"; }
-		else if (app->rbController.max_bitrate > 0 && st->bitrate > app->rbController.max_bitrate) { reason = "hidden_bitrate"; }
-		printf("Radio Browser filter: name=\"%s\" scheme=%s codec=%s bitrate=%d max=%d reason=%s\n",
-			st->name, url && strncmp(url, "https://", 8) == 0 ? "https" : (url && strncmp(url, "http://", 7) == 0 ? "http" : "other"),
-			st->codec, st->bitrate, app->rbController.max_bitrate, reason);
-		if (reason[0] != 's') continue;
-		row = app->rbVisibleCount++;
-		app->rbVisibleToController[row] = i;
-		rb_station_display_name(st, display, (int)sizeof(display));
-		sprintf(app->rbNames[row], "%.48s | %s | %d | %s",
-			display, st->codec, st->bitrate, st->countrycode);
-		memset(&app->rbNodes[row], 0, sizeof(app->rbNodes[row]));
-		app->rbNodes[row].ln_Name = app->rbNames[row];
-		app->rbNodes[row].ln_Type = NT_USER;
-		/* GadTools listview rows are filtered, so store the original controller
-		 * station index in ln_Pri and rbVisibleToController for selection. */
-		app->rbNodes[row].ln_Pri = (BYTE)i;
-		AddTail(&app->rbList, &app->rbNodes[row]);
+	app->rbSelectedFavourite = -1;
+	if (app->rbShowingFavourites) {
+		for (i = 0; i < app->rbFavouriteCount && app->rbVisibleCount < RB_CONTROLLER_MAX_STATIONS; i++) {
+			if (!app->rbFavouriteNames[i][0] || !app->rbFavouriteUrls[i][0]) continue;
+			row = app->rbVisibleCount++;
+			app->rbVisibleToController[row] = i;
+			sprintf(app->rbNames[row], "%.48s | favourite", app->rbFavouriteNames[i]);
+			memset(&app->rbNodes[row], 0, sizeof(app->rbNodes[row]));
+			app->rbNodes[row].ln_Name = app->rbNames[row];
+			app->rbNodes[row].ln_Type = NT_USER;
+			app->rbNodes[row].ln_Pri = (BYTE)i;
+			AddTail(&app->rbList, &app->rbNodes[row]);
+		}
+	} else {
+		for (i = 0; i < app->rbController.station_count; i++) {
+			st = rb_controller_get_station(&app->rbController, i);
+			if (!st) continue;
+			url = rb_station_play_url(st);
+			reason = "show";
+			if (!app->rbShowHttps && !RadioIsHttpStation(st)) { reason = "hidden_https"; }
+			else if (app->rbController.max_bitrate > 0 && st->bitrate == 0) { reason = "hidden_bitrate_unknown"; }
+			else if (app->rbController.max_bitrate > 0 && st->bitrate > app->rbController.max_bitrate) { reason = "hidden_bitrate"; }
+#ifdef MINIAMP3_DEBUG
+			printf("Radio Browser filter: name=\"%s\" scheme=%s codec=%s bitrate=%d max=%d reason=%s\n",
+				st->name, url && strncmp(url, "https://", 8) == 0 ? "https" : (url && strncmp(url, "http://", 7) == 0 ? "http" : "other"),
+				st->codec, st->bitrate, app->rbController.max_bitrate, reason);
+#endif
+			if (reason[0] != 's') continue;
+			row = app->rbVisibleCount++;
+			app->rbVisibleToController[row] = i;
+			rb_station_display_name(st, display, (int)sizeof(display));
+			sprintf(app->rbNames[row], "%.48s | %s | %d | %s",
+				display, st->codec, st->bitrate, st->countrycode);
+			memset(&app->rbNodes[row], 0, sizeof(app->rbNodes[row]));
+			app->rbNodes[row].ln_Name = app->rbNames[row];
+			app->rbNodes[row].ln_Type = NT_USER;
+			app->rbNodes[row].ln_Pri = (BYTE)i;
+			AddTail(&app->rbList, &app->rbNodes[row]);
+		}
 	}
 	app->rbController.selected_index = -1;
 	if (app->rbWin && app->rbGadList)
@@ -2871,8 +2915,11 @@ static void RadioDoSearch(MrApp *app)
 		RadioBitrateFilterLabel(app->rbController.max_bitrate),
 		app->rbController.limit);
 	RadioSetStatus(app, filterMsg);
+#ifdef MINIAMP3_DEBUG
 	printf("%s\n", filterMsg);
+#endif
 	rc = rb_controller_search(&app->rbController);
+	app->rbShowingFavourites = FALSE;
 	RadioRefreshResults(app);
 	if (rc < 0)
 		RadioSetStatus(app, app->rbController.last_error);
@@ -2904,6 +2951,7 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 	printf("radio results selection event row/index: %ld\n", (long)selected);
 #endif
 	if (selected == (ULONG)~0 || selected >= (ULONG)app->rbVisibleCount) {
+		app->rbSelectedFavourite = -1;
 		rb_controller_set_selected(&app->rbController, -1);
 #ifdef MINIAMP3_DEBUG
 		printf("radio results controller selected_index: %d\n", app->rbController.selected_index);
@@ -2913,6 +2961,14 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 	}
 	row = selected;
 	selected = (ULONG)app->rbVisibleToController[row];
+	if (app->rbShowingFavourites) {
+		app->rbSelectedFavourite = (int)selected;
+		GT_SetGadgetAttrs(app->rbGadList, app->rbWin, NULL, GTLV_Selected, (ULONG)row, TAG_DONE);
+		sprintf(msg, "Selected favourite: %.120s", app->rbFavouriteNames[app->rbSelectedFavourite]);
+		RadioSetStatus(app, msg);
+		return;
+	}
+	app->rbSelectedFavourite = -1;
 	if (rb_controller_set_selected(&app->rbController, (int)selected) < 0) {
 		RadioSetStatus(app, app->rbController.last_error);
 		return;
@@ -2933,6 +2989,55 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 	RadioSetStatus(app, msg);
 }
 
+static void RadioAddFavourite(MrApp *app)
+{
+	const RadioBrowserStation *st;
+	const char *url;
+	char display[RB_MAX_NAME];
+	char msg[160];
+	int i;
+	if (app->rbController.selected_index < 0) {
+		RadioSetStatus(app, "Select a search result to favourite.");
+		return;
+	}
+	st = rb_controller_get_station(&app->rbController, app->rbController.selected_index);
+	if (!st) {
+		RadioSetStatus(app, "Select a search result to favourite.");
+		return;
+	}
+	url = rb_station_play_url(st);
+	if (!url || !url[0]) {
+		RadioSetStatus(app, "Selected station has no URL.");
+		return;
+	}
+	rb_station_display_name(st, display, (int)sizeof(display));
+	for (i = 0; i < app->rbFavouriteCount; i++) {
+		if (!strcmp(app->rbFavouriteUrls[i], url)) {
+			SafeCopy(app->rbFavouriteNames[i], sizeof(app->rbFavouriteNames[i]), display);
+			SaveSettings(app);
+			RadioSetStatus(app, "Favourite updated.");
+			return;
+		}
+	}
+	if (app->rbFavouriteCount >= MR_RADIO_FAV_MAX) {
+		RadioSetStatus(app, "Radio favourites are full.");
+		return;
+	}
+	i = app->rbFavouriteCount++;
+	SafeCopy(app->rbFavouriteNames[i], sizeof(app->rbFavouriteNames[i]), display);
+	SafeCopy(app->rbFavouriteUrls[i], sizeof(app->rbFavouriteUrls[i]), url);
+	SaveSettings(app);
+	sprintf(msg, "Added favourite: %.120s", display);
+	RadioSetStatus(app, msg);
+}
+
+static void RadioToggleFavourites(MrApp *app)
+{
+	app->rbShowingFavourites = app->rbShowingFavourites ? FALSE : TRUE;
+	RadioRefreshResults(app);
+	RadioSetStatus(app, app->rbShowingFavourites ? "Showing radio favourites." : "Showing search results.");
+}
+
 static void RadioDoProbeAndPlay(MrApp *app)
 {
 	static unsigned char peek[512];
@@ -2941,6 +3046,19 @@ static void RadioDoProbeAndPlay(MrApp *app)
 	int rc;
 	const RadioBrowserStation *st;
 	char msg[512];
+	if (app->rbShowingFavourites) {
+		if (app->rbSelectedFavourite < 0 || app->rbSelectedFavourite >= app->rbFavouriteCount) {
+			RadioSetStatus(app, "Select a favourite first.");
+			return;
+		}
+		SafeCopy(app->inputName, sizeof(app->inputName), app->rbFavouriteUrls[app->rbSelectedFavourite]);
+		UpdateFileGadget(app);
+		RefreshFileInfoAndTags(app);
+		sprintf(msg, "Playing favourite: %.120s", app->rbFavouriteNames[app->rbSelectedFavourite]);
+		RadioSetStatus(app, msg);
+		StartPlayback(app);
+		return;
+	}
 	if (app->rbController.selected_index < 0) {
 		RadioSetStatus(app, "Select a station first.");
 		return;
@@ -3011,6 +3129,8 @@ static void OpenRadioWindow(MrApp *app)
 	if (app->rbWin || !app->win || !GadToolsBase) return;
 	rb_controller_init(&app->rbController);
 	app->rbShowHttps = FALSE;
+	app->rbShowingFavourites = FALSE;
+	app->rbSelectedFavourite = -1;
 	app->rbVisibleCount = 0;
 	app->rbVisualInfo = GetVisualInfoA(app->win->WScreen, NULL);
 	if (!app->rbVisualInfo) return;
@@ -3045,13 +3165,15 @@ static void OpenRadioWindow(MrApp *app)
 	ng.ng_TopEdge = 236; ng.ng_Width = 86; ng.ng_Height = 18; ng.ng_Flags = PLACETEXT_IN;
 	ng.ng_LeftEdge = 8; ng.ng_GadgetText = (UBYTE *)"Search"; ng.ng_GadgetID = RB_GID_SEARCH; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 100; ng.ng_GadgetText = (UBYTE *)"Play"; ng.ng_GadgetID = RB_GID_PROBE; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
-	ng.ng_LeftEdge = 192; ng.ng_GadgetText = (UBYTE *)"Close"; ng.ng_GadgetID = RB_GID_CLOSE; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 192; ng.ng_GadgetText = (UBYTE *)"Add Fav"; ng.ng_GadgetID = RB_GID_ADD_FAV; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 284; ng.ng_GadgetText = (UBYTE *)"Favourites"; ng.ng_GadgetID = RB_GID_FAVOURITES; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 376; ng.ng_GadgetText = (UBYTE *)"Close"; ng.ng_GadgetID = RB_GID_CLOSE; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 8; ng.ng_TopEdge = 264; ng.ng_Width = 472; ng.ng_GadgetText = NULL; ng.ng_GadgetID = RB_GID_STATUS; ng.ng_Flags = 0;
 	gad = CreateGadget(STRING_KIND, gad, &ng, GTST_String, (ULONG)"Ready.", GTST_MaxChars, 512, TAG_DONE); if (!gad) goto fail;
 	memset(&nw, 0, sizeof(nw));
 	nw.LeftEdge = app->win->LeftEdge + 30; nw.TopEdge = app->win->TopEdge + 30;
 	nw.Width = 496; nw.Height = 306;
-	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW;
+	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_VANILLAKEY;
 	nw.Flags = WFLG_CLOSEGADGET | WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_SMART_REFRESH;
 	nw.Title = (UBYTE *)"Internet Radio";
 	nw.MinWidth = nw.MaxWidth = 496; nw.MinHeight = nw.MaxHeight = 306;
@@ -3082,6 +3204,10 @@ static void HandleRadioWindow(MrApp *app)
 			GT_EndRefresh(app->rbWin, TRUE);
 			continue;
 		}
+		if (cls == IDCMP_VANILLAKEY && code == 13) {
+			RadioDoSearch(app);
+			continue;
+		}
 		if (cls == IDCMP_GADGETUP) {
 			if (gid == RB_GID_RADIO_RESULTS)
 				RadioSelectResult(app, (ULONG)code);
@@ -3089,6 +3215,10 @@ static void HandleRadioWindow(MrApp *app)
 				RadioDoSearch(app);
 			else if (gid == RB_GID_PROBE)
 				RadioDoProbeAndPlay(app);
+			else if (gid == RB_GID_ADD_FAV)
+				RadioAddFavourite(app);
+			else if (gid == RB_GID_FAVOURITES)
+				RadioToggleFavourites(app);
 			else if (gid == RB_GID_SHOW_HTTPS) {
 				app->rbShowHttps = app->rbShowHttps ? FALSE : TRUE;
 				GT_SetGadgetAttrs(gad, app->rbWin, NULL, GTCB_Checked, app->rbShowHttps, TAG_DONE);
@@ -3354,7 +3484,7 @@ static void OpenPlaylistWindow(MrApp *app)
 	memset(&nw, 0, sizeof(nw));
 	nw.LeftEdge = app->win->LeftEdge + 20; nw.TopEdge = app->win->TopEdge + 20;
 	nw.Width = 368; nw.Height = 200;
-	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW;
+	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_VANILLAKEY;
 	nw.Flags = WFLG_CLOSEGADGET | WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_SMART_REFRESH;
 	nw.Title = (UBYTE *)"MiniAMP3 Playlist";
 	nw.MinWidth = nw.MaxWidth = 368; nw.MinHeight = nw.MaxHeight = 200;
