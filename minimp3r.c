@@ -3075,7 +3075,7 @@ static void RadioDoProbeAndPlay(MrApp *app)
 	}
 #if !defined(HAVE_AMISSL)
 	if (rb_station_play_url(st) && strncmp(rb_station_play_url(st), "https://", 8) == 0) {
-		RadioSetStatus(app, "HTTPS/TLS streams are not supported yet");
+		RadioSetStatus(app, "HTTPS not supported in this build");
 		return;
 	}
 #endif
@@ -3135,7 +3135,11 @@ static void OpenRadioWindow(MrApp *app)
 	static STRPTR codecs[] = { (STRPTR)"All", (STRPTR)"MP3", (STRPTR)"AAC", (STRPTR)"AAC+", NULL };
 	if (app->rbWin || !app->win || !GadToolsBase) return;
 	rb_controller_init(&app->rbController);
+	#if defined(HAVE_AMISSL)
+	app->rbShowHttps = TRUE;
+#else
 	app->rbShowHttps = FALSE;
+#endif
 	app->rbShowingFavourites = FALSE;
 	app->rbSelectedFavourite = -1;
 	app->rbVisibleCount = 0;

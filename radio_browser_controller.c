@@ -161,7 +161,7 @@ int rb_controller_probe_selected(
 
 #if !defined(HAVE_AMISSL)
     if (rb_controller_starts_with(url, "https://")) {
-        rb_controller_set_error(controller, "HTTPS streams are not supported yet");
+        rb_controller_set_error(controller, "HTTPS not supported in this build");
         return RB_CONTROLLER_ERR_HTTPS_UNSUPPORTED;
     }
 #endif
