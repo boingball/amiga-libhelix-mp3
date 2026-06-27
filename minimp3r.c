@@ -2961,7 +2961,7 @@ static void RadioDoProbeAndPlay(MrApp *app)
 		RadioSetStatus(app, app->rbController.last_error);
 		return;
 	}
-	if (info.codec != RB_STREAM_CODEC_MP3) {
+	if (info.codec != RB_STREAM_CODEC_MP3 && info.codec != RB_STREAM_CODEC_AAC) {
 		sprintf(msg, "Unsupported stream codec: %s (%.48s)", ProbeCodecName(info.codec), info.content_type);
 		RadioSetStatus(app, msg);
 		return;
