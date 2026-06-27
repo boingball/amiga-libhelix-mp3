@@ -873,7 +873,7 @@ static void BuildPlaybackArgs(MrApp *app, MrPlayArgs *args)
 	memset(args, 0, sizeof(*args));
 	AddArg(args, "minimp3r");
 	AddArg(args, "--play");
-	if (!strncmp(app->inputName, "http://", 7) || !strncmp(app->inputName, "https://", 8))
+	if (MrIsRadioInput(app->inputName))
 		AddArg(args, "--radio-stream");
 	if (app->fastMem)
 		AddArg(args, "--fast-mem");
@@ -915,7 +915,10 @@ static void BuildPlaybackArgs(MrApp *app, MrPlayArgs *args)
 	AddArg(args, "--quality");
 	sprintf(num, "%d", app->qualityIndex);
 	AddArg(args, num);
-	if (app->decodeThenPlay)
+	/* Internet radio streams are unbounded, so decode-then-play would wait for
+	 * the stream to end before starting audio.  Force true streaming playback for
+	 * radio even if the saved GUI setting is enabled for local files. */
+	if (app->decodeThenPlay && !MrIsRadioInput(app->inputName))
 		AddArg(args, "--decode-then-play");
 	if (app->bench)
 		AddArg(args, "--bench");
