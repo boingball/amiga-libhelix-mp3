@@ -290,6 +290,7 @@ int main(void)
 #define RB_RADIO_E2E_HOST "de1.api.radio-browser.info"
 #define RB_RADIO_E2E_BODY_SIZE 131072
 #define RB_RADIO_E2E_PEEK_SIZE 512
+#define RB_RADIO_E2E_BODY_PREVIEW 200
 
 static const char *rb_radio_e2e_codec_name(RbStreamCodec codec)
 {
@@ -310,6 +311,37 @@ static int rb_radio_e2e_is_https_url(const char *url)
     return url && strncmp(url, "https://", 8) == 0;
 }
 
+static void rb_radio_e2e_print_escaped_preview(const char *text, int max_chars)
+{
+    int i;
+
+    if (!text || max_chars <= 0) {
+        printf("(none)");
+        return;
+    }
+
+    for (i = 0; text[i] && i < max_chars; i++) {
+        unsigned char ch;
+
+        ch = (unsigned char)text[i];
+        if (ch == '\n') {
+            printf("\\n");
+        } else if (ch == '\r') {
+            printf("\\r");
+        } else if (ch == '\t') {
+            printf("\\t");
+        } else if (ch == '\\') {
+            printf("\\\\");
+        } else if (ch == '"') {
+            printf("\\\"");
+        } else if (ch < 32 || ch >= 127) {
+            printf("\\x%02X", (unsigned int)ch);
+        } else {
+            putchar((int)ch);
+        }
+    }
+}
+
 int main(void)
 {
     static char path[512];
@@ -324,7 +356,7 @@ int main(void)
     int i;
     int peek_len;
 
-    rc = rb_build_station_search_path(path, (int)sizeof(path), 0, 0, 0, 0, RB_MAX_STATIONS, 0);
+    rc = rb_build_station_search_path(path, (int)sizeof(path), "groove", 0, "MP3", 0, 10, 0);
     if (rc < 0) {
         printf("build search path failed: %d\n", rc);
         return 1;
@@ -332,13 +364,26 @@ int main(void)
     printf("search path: %s\n", path);
 
     rc = rb_http_get_json(RB_RADIO_E2E_HOST, path, body, (int)sizeof(body));
+    printf("rb_http_get_json return: %d\n", rc);
     if (rc < 0) {
-        printf("http get json failed: %d\n", rc);
+        printf("rb_http_get_json error: %d\n", rc);
         return 1;
     }
+    printf("JSON body length: %lu\n", (unsigned long)strlen(body));
+    printf("JSON body first %d chars: \"", RB_RADIO_E2E_BODY_PREVIEW);
+    rb_radio_e2e_print_escaped_preview(body, RB_RADIO_E2E_BODY_PREVIEW);
+    printf("\"\n");
 
     count = rb_parse_stations_json(body, stations, RB_MAX_STATIONS);
-    printf("station count: %d\n", count);
+    printf("rb_parse_stations_json return/count: %d\n", count);
+    if (count == 0) {
+        printf("station count is 0; not probing streams\n");
+        return 1;
+    }
+    if (count < 0) {
+        printf("rb_parse_stations_json error: %d\n", count);
+        return 1;
+    }
 
     for (i = 0; i < count; i++) {
         play_url = rb_station_play_url(&stations[i]);
