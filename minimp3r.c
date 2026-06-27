@@ -2776,22 +2776,13 @@ static int RadioIsHttpStation(const RadioBrowserStation *st)
 	return url && strncmp(url, "http://", 7) == 0;
 }
 
-static int RadioCountHttpStations(MrApp *app)
-{
-	int i, count = 0;
-	const RadioBrowserStation *st;
-	for (i = 0; i < app->rbController.station_count; i++) {
-		st = rb_controller_get_station(&app->rbController, i);
-		if (RadioIsHttpStation(st)) count++;
-	}
-	return count;
-}
-
 static void RadioRefreshResults(MrApp *app)
 {
 	int i, row;
 	char display[RB_MAX_NAME];
 	const RadioBrowserStation *st;
+	const char *url;
+	const char *reason;
 	/* Detach the current labels before rebuilding the backing node array. */
 	if (app->rbWin && app->rbGadList)
 		GT_SetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
@@ -2803,7 +2794,15 @@ static void RadioRefreshResults(MrApp *app)
 	for (i = 0; i < app->rbController.station_count; i++) {
 		st = rb_controller_get_station(&app->rbController, i);
 		if (!st) continue;
-		if (!app->rbShowHttps && !RadioIsHttpStation(st)) continue;
+		url = rb_station_play_url(st);
+		reason = "show";
+		if (!app->rbShowHttps && !RadioIsHttpStation(st)) { reason = "hidden_https"; }
+		else if (app->rbController.max_bitrate > 0 && st->bitrate == 0) { reason = "hidden_bitrate_unknown"; }
+		else if (app->rbController.max_bitrate > 0 && st->bitrate > app->rbController.max_bitrate) { reason = "hidden_bitrate"; }
+		printf("Radio Browser filter: name=\"%s\" scheme=%s codec=%s bitrate=%d max=%d reason=%s\n",
+			st->name, url && strncmp(url, "https://", 8) == 0 ? "https" : (url && strncmp(url, "http://", 7) == 0 ? "http" : "other"),
+			st->codec, st->bitrate, app->rbController.max_bitrate, reason);
+		if (reason[0] != 's') continue;
 		row = app->rbVisibleCount++;
 		app->rbVisibleToController[row] = i;
 		rb_station_display_name(st, display, (int)sizeof(display));
@@ -2878,9 +2877,13 @@ static void RadioDoSearch(MrApp *app)
 	if (rc < 0)
 		RadioSetStatus(app, app->rbController.last_error);
 	else {
-		char msg[96];
-		sprintf(msg, "Found %d stations, showing %d playable HTTP stations",
-			rc, app->rbShowHttps ? RadioCountHttpStations(app) : app->rbVisibleCount);
+		char msg[128];
+		int hidden = app->rbController.raw_station_count - app->rbVisibleCount;
+		if (app->rbVisibleCount == 0 && app->rbController.raw_station_count == 0)
+			sprintf(msg, "No stations found");
+		else
+			sprintf(msg, "Found %d stations, showing %d HTTP playable (%d hidden)",
+				app->rbController.raw_station_count, app->rbVisibleCount, hidden < 0 ? 0 : hidden);
 		RadioSetStatus(app, msg);
 	}
 }
