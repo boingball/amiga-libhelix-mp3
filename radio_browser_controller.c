@@ -66,6 +66,8 @@ int rb_controller_search(RadioBrowserController *controller)
     if (limit <= 0 || limit > RB_CONTROLLER_MAX_STATIONS)
         limit = RB_CONTROLLER_MAX_STATIONS;
 
+    printf("rb_controller_search: using plain HTTP Radio Browser API %s:80\n",
+           RB_CONTROLLER_DEFAULT_HOST);
     count = rb_search_stations(RB_CONTROLLER_DEFAULT_HOST,
                                rb_controller_optional_string(controller->name),
                                rb_controller_optional_string(controller->tag),
@@ -78,10 +80,13 @@ int rb_controller_search(RadioBrowserController *controller)
                                controller->json_buffer,
                                RB_CONTROLLER_JSON_BUFFER_SIZE);
     if (count < 0) {
-        rb_controller_set_error(controller, "Radio Browser search failed");
+        char message[RB_CONTROLLER_LAST_ERROR_SIZE];
+        sprintf(message, "Radio Browser search failed (code %d)", count);
+        rb_controller_set_error(controller, message);
         return count;
     }
 
+    printf("rb_controller_search: rb_parse_stations_json station count=%d\n", count);
     controller->station_count = count;
     if (count > 0) controller->selected_index = 0;
     return count;

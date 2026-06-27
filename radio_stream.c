@@ -277,9 +277,7 @@ static void reset_parser(RadioStream *rs)
 static int connect_http(RadioStream *rs){
     struct sockaddr_in sa; char req[512]; int n; int cr;
 #if defined(AMIGA_M68K)
-#if !defined(ENABLE_AMISSL)
     if(!SocketBase) SocketBase=OpenLibrary("bsdsocket.library",4);
-#endif
     if(!SocketBase){ set_error(rs,"bsdsocket.library unavailable"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: bsdsocket open failed\n")); return -1; }
 #endif
     if (radio_is_stopping(rs)) return -1;

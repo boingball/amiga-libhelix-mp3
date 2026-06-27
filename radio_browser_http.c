@@ -87,7 +87,11 @@ static int rb_http_transport_open(RbHttpTransport *transport, const char *host, 
     if (!transport || !host) return RB_HTTP_ERR_BAD_ARG;
     transport->sock = RB_HTTP_INVALID_SOCKET;
 
-#if defined(AMIGA_M68K) && !defined(ENABLE_AMISSL)
+#if defined(AMIGA_M68K)
+    /* Radio Browser API search is deliberately plain HTTP only, even in
+     * SSL builds.  Open bsdsocket.library directly and do not initialise
+     * or route through AmiSSL here; HTTPS fetches belong in explicit
+     * scheme-aware callers. */
     if (!SocketBase) {
         SocketBase = OpenLibrary("bsdsocket.library", 4);
         if (!SocketBase) return RB_HTTP_ERR_CONNECT;
