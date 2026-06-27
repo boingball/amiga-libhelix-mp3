@@ -31,10 +31,13 @@ struct Library *SocketBase __attribute__((weak));
 #include <proto/amisslmaster.h>
 #include <proto/amissl.h>
 #include <amissl/amissl.h>
+#include <errno.h>
 /* Weak so this module can link standalone (test harness) or beside
  * radio_stream.c which provides the strong definitions. */
 struct Library *AmiSSLMasterBase __attribute__((weak));
 struct Library *AmiSSLBase __attribute__((weak));
+struct Library *AmiSSLExtBase __attribute__((weak));
+static int rb_probe_amissl_initialized = 0;
 #endif /* HAVE_AMISSL */
 #else
 #include <unistd.h>
@@ -335,7 +338,11 @@ static int rb_probe_resolve_location(const RbProbeUrl *base, const char *locatio
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
 static int rb_probe_ensure_amissl(void)
 {
-    if (AmiSSLBase) return 0;
+    if (!SocketBase) {
+        SocketBase = OpenLibrary("bsdsocket.library", 4);
+        if (!SocketBase) return -1;
+    }
+    if (AmiSSLBase && rb_probe_amissl_initialized) return 0;
     if (!AmiSSLMasterBase) {
         AmiSSLMasterBase = OpenLibrary("amisslmaster.library", AMISSLMASTER_MIN_VERSION);
         if (!AmiSSLMasterBase) return -1;
@@ -343,9 +350,40 @@ static int rb_probe_ensure_amissl(void)
             CloseLibrary(AmiSSLMasterBase); AmiSSLMasterBase = NULL; return -1;
         }
     }
-    AmiSSLBase = OpenAmiSSL();
-    return AmiSSLBase ? 0 : -1;
+    if (OpenAmiSSLTags(AMISSL_CURRENT_VERSION,
+                       AmiSSL_UsesOpenSSLStructs, TRUE,
+                       AmiSSL_GetAmiSSLBase, (ULONG)&AmiSSLBase,
+                       AmiSSL_GetAmiSSLExtBase, (ULONG)&AmiSSLExtBase,
+                       AmiSSL_SocketBase, (ULONG)SocketBase,
+                       AmiSSL_ErrNoPtr, (ULONG)&errno,
+                       TAG_DONE) != 0)
+        return -1;
+    if (InitAmiSSL(AmiSSL_SocketBase, (ULONG)SocketBase,
+                   AmiSSL_ErrNoPtr, (ULONG)&errno,
+                   TAG_DONE) != 0) {
+        CloseAmiSSL(); AmiSSLBase = NULL; AmiSSLExtBase = NULL; return -1;
+    }
+    rb_probe_amissl_initialized = 1;
+    return 0;
 }
+
+static void rb_probe_cleanup_amissl(void)
+{
+    if (rb_probe_amissl_initialized) {
+        CleanupAmiSSL(TAG_DONE);
+        rb_probe_amissl_initialized = 0;
+    }
+    if (AmiSSLBase) {
+        CloseAmiSSL();
+        AmiSSLBase = NULL;
+        AmiSSLExtBase = NULL;
+    }
+    if (AmiSSLMasterBase) {
+        CloseLibrary(AmiSSLMasterBase);
+        AmiSSLMasterBase = NULL;
+    }
+}
+
 #endif
 
 static int rb_probe_transport_open(RbProbeTransport *transport, const char *host, int port, int use_ssl)
@@ -387,7 +425,7 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
             transport->sock = RB_PROBE_INVALID_SOCKET;
             return RB_STREAM_PROBE_ERR_CONNECT;
         }
-        transport->ctx = SSL_CTX_new(TLS_client_method());
+        transport->ctx = SSL_CTX_new(SSLv23_client_method());
         if (!transport->ctx) {
             rb_probe_close_socket(transport->sock);
             transport->sock = RB_PROBE_INVALID_SOCKET;
@@ -694,8 +732,16 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
     rb_probe_transport_close(&transport);
     info->redirect_count = redirects;
     rc = rb_probe_set_final_url(info, current_url);
-    if (rc < 0) return rc;
+    if (rc < 0) {
+#if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+        rb_probe_cleanup_amissl();
+#endif
+        return rc;
+    }
     info->codec = rb_probe_detect_codec(&parsed, info, peek_buf, *peek_len);
+#if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+    rb_probe_cleanup_amissl();
+#endif
     return RB_STREAM_PROBE_OK;
 }
 
