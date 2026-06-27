@@ -422,6 +422,17 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
     }
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
     if (use_ssl) {
+        int ssl_connect_rc;
+        int ssl_error;
+        unsigned long ssl_lib_error;
+        char ssl_error_buf[160];
+        int sni_set;
+
+        ssl_connect_rc = 0;
+        ssl_error = 0;
+        ssl_lib_error = 0;
+        ssl_error_buf[0] = '\0';
+        sni_set = 0;
         if (rb_probe_ensure_amissl() != 0) {
             rb_probe_close_socket(transport->sock);
             transport->sock = RB_PROBE_INVALID_SOCKET;
@@ -443,7 +454,21 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
             return RB_STREAM_PROBE_ERR_CONNECT;
         }
         SSL_set_fd(transport->ssl, (int)transport->sock);
-        if (SSL_connect(transport->ssl) != 1) {
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+        sni_set = (SSL_set_tlsext_host_name(transport->ssl, host) == 1);
+#else
+        sni_set = -1;
+#endif
+        printf("rb-probe TLS: host=%s port=%d sni=%s verify=disabled method=SSLv23_client_method\n",
+               host, port, sni_set > 0 ? host : (sni_set == 0 ? "not-set" : "unavailable"));
+        ssl_connect_rc = SSL_connect(transport->ssl);
+        if (ssl_connect_rc != 1) {
+            ssl_error = SSL_get_error(transport->ssl, ssl_connect_rc);
+            ssl_lib_error = ERR_get_error();
+            if (ssl_lib_error != 0)
+                ERR_error_string_n(ssl_lib_error, ssl_error_buf, sizeof(ssl_error_buf));
+            printf("rb-probe TLS: SSL_connect rc=%d SSL_get_error=%d error=\"%s\" verify=disabled method=SSLv23_client_method\n",
+                   ssl_connect_rc, ssl_error, ssl_error_buf[0] ? ssl_error_buf : "none");
             SSL_free(transport->ssl); transport->ssl = NULL;
             SSL_CTX_free(transport->ctx); transport->ctx = NULL;
             rb_probe_close_socket(transport->sock);
@@ -605,6 +630,8 @@ static RbStreamCodec rb_probe_detect_codec(const RbProbeUrl *url, const RbStream
     }
     if (url && (rb_probe_contains_nocase(url->path, ".aac") || rb_probe_contains_nocase(url->path, ".aacp")))
         return RB_STREAM_CODEC_AAC;
+    if (url && rb_probe_contains_nocase(url->path, ".mp3"))
+        return RB_STREAM_CODEC_MP3;
     if (peek && peek_len >= 3 && peek[0] == 'I' && peek[1] == 'D' && peek[2] == '3')
         return RB_STREAM_CODEC_MP3;
     if (peek && peek_len >= 2 && peek[0] == 0xff && (peek[1] & 0xe0) == 0xe0 &&
@@ -653,7 +680,7 @@ const char *rb_probe_error_text(int rc)
     case RB_STREAM_PROBE_ERR_HLS_UNSUPPORTED: return "HLS stream not supported";
     case RB_STREAM_PROBE_ERR_UNSUPPORTED_CONTENT_TYPE: return "Unsupported stream content type";
     case RB_STREAM_PROBE_ERR_SERVER_CLOSED: return "Stream probe failed: server closed connection during probe";
-    case RB_STREAM_PROBE_ERR_TLS_HANDSHAKE: return "Stream probe failed: TLS handshake failure";
+    case RB_STREAM_PROBE_ERR_TLS_HANDSHAKE: return "TLS handshake failed";
     default: return "Stream probe failed";
     }
 }
