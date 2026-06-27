@@ -4904,10 +4904,11 @@ static const char *RadioDecoderExtFromUrlOrType(const char *url, const char *con
 {
 	const char *ext = GetFileExtension(url);
 	if (ext && (StrCaseCmp(ext, "aac") == 0 ||
+		StrCaseCmp(ext, "aacp") == 0 ||
 		StrCaseCmp(ext, "flac") == 0 ||
 		StrCaseCmp(ext, "fla") == 0 ||
 		StrCaseCmp(ext, "mp3") == 0))
-		return ext;
+		return StrCaseCmp(ext, "aacp") == 0 ? "aac" : ext;
 	return RadioDecoderExtFromContentType(contentType);
 }
 

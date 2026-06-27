@@ -45,14 +45,13 @@ Suggested screenshots:
 | MP3 | Working | Main supported format. Helix fixed-point decoder with m68k optimisation. |
 | AAC-LC ADTS | Working | External decoder module. ADTS `.aac` streams/files only. |
 | FLAC | Working | External decoder module. Performance depends heavily on CPU. |
-| HTTP MP3 radio | Working | Plain `http://` MP3 streams. ICY metadata supported. |
+| HTTP MP3/AAC radio | Working | Plain `http://` MP3 and ADTS AAC/AAC+ streams. ICY metadata supported where provided. |
 | HTTPS radio | Not supported | Use plain HTTP streams for now. |
 | HLS / M3U8 | Not supported | Out of scope currently. |
-| AAC+ / HE-AAC radio | Not supported yet | AAC-LC ADTS support exists, but AAC radio is not wired as a supported target yet. |
 
 ## Internet radio
 
-The player can stream direct HTTP MP3 radio streams when built with `RADIO=1`.
+The player can stream direct HTTP MP3 and ADTS AAC/AAC+ radio streams when built with `RADIO=1`.
 
 Known working test stream:
 
@@ -71,7 +70,7 @@ Title/Artist: updates automatically from ICY StreamTitle
 Track: Live
 ```
 
-Radio support currently expects direct plain HTTP MP3 streams. It does not currently support HTTPS, HLS, playlist parsing, or AAC+ radio.
+Radio support currently expects direct plain HTTP MP3 or ADTS AAC/AAC+ streams. It does not currently support HTTPS, HLS, or playlist parsing.
 
 ## Build requirements
 
