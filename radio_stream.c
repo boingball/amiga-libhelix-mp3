@@ -47,7 +47,11 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#if defined(ENABLE_AMISSL)
+extern struct Library *SocketBase;
+#else
 struct Library *SocketBase = NULL;
+#endif
 #define RADIO_SOCKET long
 #define RADIO_INVALID_SOCKET (-1)
 #define radio_close_socket(s) CloseSocket(s)
@@ -273,13 +277,16 @@ static void reset_parser(RadioStream *rs)
 static int connect_http(RadioStream *rs){
     struct sockaddr_in sa; char req[512]; int n; int cr;
 #if defined(AMIGA_M68K)
-    if(!SocketBase) SocketBase=OpenLibrary("bsdsocket.library",4); if(!SocketBase){ set_error(rs,"bsdsocket.library unavailable"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: bsdsocket open failed\n")); return -1; }
+#if !defined(ENABLE_AMISSL)
+    if(!SocketBase) SocketBase=OpenLibrary("bsdsocket.library",4);
+#endif
+    if(!SocketBase){ set_error(rs,"bsdsocket.library unavailable"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: bsdsocket open failed\n")); return -1; }
 #endif
     if (radio_is_stopping(rs)) return -1;
     /* Resolve once and cache it; gethostbyname() is blocking and would freeze
      * the emulator on every reconnect if we re-resolved each time. */
     if(!rs->haveHostAddr){
-        struct hostent *he=gethostbyname(rs->host);
+        const struct hostent *he=gethostbyname(rs->host);
         if(!he || !he->h_addr){ set_error(rs,"cannot resolve stream host"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: DNS failed for %s\n", rs->host)); return -1; }
         memcpy(&rs->hostAddr, he->h_addr, sizeof(rs->hostAddr));
         rs->haveHostAddr=1;
