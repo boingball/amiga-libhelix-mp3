@@ -9,6 +9,8 @@
 #include "radio_browser_http.h"
 #include "radio_browser_url.h"
 
+#include <stdio.h>
+
 #define RB_SEARCH_PATH_SIZE 512
 
 int rb_search_stations(
@@ -32,10 +34,15 @@ int rb_search_stations(
                                       countrycode, limit, offset);
     if (rc < 0) return rc;
 
+    printf("rb_search_stations: before rb_http_get_json host=%s port=80 path=%s\n",
+           host ? host : "(null)", path);
     rc = rb_http_get_json(host, path, json_buffer, json_buffer_size);
+    printf("rb_search_stations: rb_http_get_json returned %d\n", rc);
     if (rc < 0) return rc;
 
-    return rb_parse_stations_json(json_buffer, stations, max_stations);
+    rc = rb_parse_stations_json(json_buffer, stations, max_stations);
+    printf("rb_search_stations: rb_parse_stations_json count=%d\n", rc);
+    return rc;
 }
 
 #ifdef RB_SEARCH_API_TEST

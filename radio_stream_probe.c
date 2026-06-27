@@ -316,7 +316,7 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
     transport->ctx = NULL;
     transport->ssl = NULL;
 #endif
-#if defined(AMIGA_M68K) && !defined(ENABLE_AMISSL)
+#if defined(AMIGA_M68K)
     if (!SocketBase) {
         SocketBase = OpenLibrary("bsdsocket.library", 4);
         if (!SocketBase) return RB_STREAM_PROBE_ERR_CONNECT;
