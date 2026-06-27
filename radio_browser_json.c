@@ -275,7 +275,7 @@ int main(void)
         "{\"name\":\"Escaped URL Station\",\"url\":\"http:\\/\\/example.com\\/stream.mp3\",\"url_resolved\":\"\",\"countrycode\":\"DE\",\"codec\":\"MP3\",\"bitrate\":192,\"lastcheckok\":true,\"hls\":false},"
         "{\"name\":\"Long Station Name 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 END\",\"url\":\"http://long.example/stream\",\"countrycode\":\"US\",\"codec\":\"OGG\",\"bitrate\":96,\"lastcheckok\":true,\"hls\":false}"
         "]";
-    RadioBrowserStation stations[RB_MAX_STATIONS];
+    static RadioBrowserStation stations[RB_MAX_STATIONS];
     int count;
 
     printf("static sample:\n");
@@ -299,7 +299,7 @@ int main(void)
 int main(int argc, char **argv)
 {
     static char json[RB_JSON_FILE_BUFFER_SIZE];
-    RadioBrowserStation stations[RB_MAX_STATIONS];
+    static RadioBrowserStation stations[RB_MAX_STATIONS];
     FILE *fp;
     size_t len;
     int count;

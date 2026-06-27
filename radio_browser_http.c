@@ -252,7 +252,7 @@ int main(void)
 {
     static char path[512];
     static char body[RB_HTTP_TEST_BODY_SIZE];
-    RadioBrowserStation stations[RB_MAX_STATIONS];
+    static RadioBrowserStation stations[RB_MAX_STATIONS];
     int rc;
     int count;
     int i;
@@ -343,7 +343,7 @@ int main(void)
     static char path[512];
     static char body[RB_RADIO_E2E_BODY_SIZE];
     static RadioBrowserStation stations[RB_MAX_STATIONS];
-    unsigned char peek[RB_RADIO_E2E_PEEK_SIZE];
+    static unsigned char peek[RB_RADIO_E2E_PEEK_SIZE];
     RbStreamInfo info;
     char display[RB_MAX_NAME];
     const char *play_url;
