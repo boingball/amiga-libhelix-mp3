@@ -2820,6 +2820,8 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 		RadioSetStatus(app, app->rbController.last_error);
 		return;
 	}
+	GT_SetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
+		GTLV_Selected, (ULONG)selected, TAG_DONE);
 	st = rb_controller_get_station(&app->rbController, app->rbController.selected_index);
 	if (!st) {
 		RadioSetStatus(app, "Select a station first.");
@@ -2832,7 +2834,7 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 	RadioSetStatus(app, msg);
 }
 
-static void RadioDoProbe(MrApp *app)
+static void RadioDoProbeAndPlay(MrApp *app)
 {
 	static unsigned char peek[512];
 	RbStreamInfo info;
@@ -2860,10 +2862,22 @@ static void RadioDoProbe(MrApp *app)
 		RadioSetStatus(app, app->rbController.last_error);
 		return;
 	}
-	sprintf(msg, "URL: %.120s | codec: %s | type: %.48s | icy-name: %.64s | icy-br: %d | icy-metaint: %d | redirects: %d",
-		info.final_url, ProbeCodecName(info.codec), info.content_type,
-		info.icy_name, info.icy_br, info.icy_metaint, info.redirect_count);
+	if (info.codec != RB_STREAM_CODEC_MP3) {
+		sprintf(msg, "Unsupported stream codec: %s (%.48s)", ProbeCodecName(info.codec), info.content_type);
+		RadioSetStatus(app, msg);
+		return;
+	}
+	if (!info.final_url[0]) {
+		RadioSetStatus(app, "Stream probe did not return a playable URL.");
+		return;
+	}
+	SafeCopy(app->inputName, sizeof(app->inputName), info.final_url);
+	UpdateFileGadget(app);
+	RefreshFileInfoAndTags(app);
+	sprintf(msg, "Playing: %.120s | type: %.48s | icy-name: %.64s | icy-br: %d | redirects: %d",
+		info.final_url, info.content_type, info.icy_name, info.icy_br, info.redirect_count);
 	RadioSetStatus(app, msg);
+	StartPlayback(app);
 }
 
 static void CloseRadioWindow(MrApp *app)
@@ -2923,7 +2937,7 @@ static void OpenRadioWindow(MrApp *app)
 		GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
 	ng.ng_TopEdge = 208; ng.ng_Width = 86; ng.ng_Height = 18; ng.ng_Flags = PLACETEXT_IN;
 	ng.ng_LeftEdge = 8; ng.ng_GadgetText = (UBYTE *)"Search"; ng.ng_GadgetID = RB_GID_SEARCH; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
-	ng.ng_LeftEdge = 100; ng.ng_GadgetText = (UBYTE *)"Probe"; ng.ng_GadgetID = RB_GID_PROBE; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 100; ng.ng_GadgetText = (UBYTE *)"Play"; ng.ng_GadgetID = RB_GID_PROBE; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 192; ng.ng_GadgetText = (UBYTE *)"Close"; ng.ng_GadgetID = RB_GID_CLOSE; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 8; ng.ng_TopEdge = 236; ng.ng_Width = 472; ng.ng_GadgetText = NULL; ng.ng_GadgetID = RB_GID_STATUS; ng.ng_Flags = 0;
 	gad = CreateGadget(STRING_KIND, gad, &ng, GTST_String, (ULONG)"Ready.", GTST_MaxChars, 512, TAG_DONE); if (!gad) goto fail;
@@ -2967,7 +2981,7 @@ static void HandleRadioWindow(MrApp *app)
 			else if (gid == RB_GID_SEARCH)
 				RadioDoSearch(app);
 			else if (gid == RB_GID_PROBE)
-				RadioDoProbe(app);
+				RadioDoProbeAndPlay(app);
 			else if (gid == RB_GID_CLOSE) {
 				CloseRadioWindow(app);
 				return;
