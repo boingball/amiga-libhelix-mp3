@@ -127,6 +127,7 @@ struct RadioStream {
     int zeroBytePumps;
     int startPumps;
     int everPlayed;
+    int firstDataLogged;
     int stopping;
     struct in_addr hostAddr;   /* cached DNS result so reconnects skip gethostbyname() */
     int haveHostAddr;
@@ -462,6 +463,7 @@ static void reset_parser(RadioStream *rs)
     rs->metaLen = rs->metaGot = rs->metaLeft = 0;
     rs->rpos = rs->wpos = rs->used = 0;
     rs->zeroBytePumps = 0;
+    rs->firstDataLogged = 0;
     rs->contentType[0] = 0; rs->bitrate = 0;
     rs->stationName[0] = 0; rs->genre[0] = 0; rs->streamUrl[0] = 0;
     rs->title[0] = 0;
@@ -708,10 +710,22 @@ int Radio_Pump(RadioStream *rs)
         return 0;
     }
     rs->zeroBytePumps = 0;
+    if (!rs->firstDataLogged) {
+        printf("radio-stream: first data received fd=%ld ssl=%p\n",
+            (long)rs->sock,
+#if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+            (void *)rs->ssl
+#else
+            (void *)0
+#endif
+        );
+        rs->firstDataLogged = 1;
+    }
     if (!rs->everPlayed) rs->startPumps = 0;
     if (process_bytes(rs, b, n) < 0) return -1;
     if (radio_is_stopping(rs)) { close_current_socket(rs); rs->status = RADIO_STATUS_CLOSED; return 0; }
     if (rs->headerDone && rs->used >= RADIO_START_THRESHOLD) {
+        if (!rs->everPlayed) printf("radio-stream: first decoder frame / playback buffer ready fd=%ld\n", (long)rs->sock);
         rs->reconnectAttempts = 0; rs->reconnectDelay = 0; rs->everPlayed = 1; rs->status = RADIO_STATUS_PLAYING;
     } else if (rs->headerDone && rs->status != RADIO_STATUS_PLAYING)
         set_status(rs, RADIO_STATUS_BUFFERING);
