@@ -869,30 +869,52 @@ static void AddArg(MrPlayArgs *args, const char *text)
 static void BuildPlaybackArgs(MrApp *app, MrPlayArgs *args)
 {
 	char num[16];
+	int isRadio;
+	int useCd32Ultrafast;
+	int useUltrafast;
+	int useSuperfast;
+	int useFastLowrate;
+	int useMono;
+	int useFakeStereo;
+	int rateIndex;
 
 	memset(args, 0, sizeof(*args));
+	isRadio = MrIsRadioInput(app->inputName);
+	useCd32Ultrafast = app->cd32Ultrafast;
+	useUltrafast = app->ultrafast;
+	useSuperfast = app->superfastLowrate;
+	useFastLowrate = app->fastLowrate;
+	useMono = app->mono;
+	useFakeStereo = app->fakeStereo;
+	rateIndex = app->rateIndex;
+	if (isRadio && (useCd32Ultrafast || (useUltrafast && useMono && rateIndex == 3))) {
+		useCd32Ultrafast = 0;
+		useUltrafast = 0;
+		useSuperfast = 0;
+		useFastLowrate = 0;
+	}
 	AddArg(args, "minimp3r");
 	AddArg(args, "--play");
-	if (!strncmp(app->inputName, "http://", 7))
+	if (isRadio)
 		AddArg(args, "--radio-stream");
 	if (app->fastMem)
 		AddArg(args, "--fast-mem");
-	if (app->cd32Ultrafast) {
+	if (useCd32Ultrafast) {
 		AddArg(args, "--fast-lowrate");
 		AddArg(args, "--superfast-lowrate");
 		AddArg(args, "--exp-reduced-taps");
 		AddArg(args, "--subband-cap");
 		AddArg(args, "12");
-	} else if (app->superfastLowrate ||
-		(app->ultrafast && strcmp(kRates[app->rateIndex], "28600") != 0)) {
+	} else if (useSuperfast ||
+		(useUltrafast && strcmp(kRates[rateIndex], "28600") != 0)) {
 		AddArg(args, "--fast-lowrate");
 		AddArg(args, "--superfast-lowrate");
-	} else if (app->fastLowrate && strcmp(kRates[app->rateIndex], "28600")) {
+	} else if (useFastLowrate && strcmp(kRates[rateIndex], "28600")) {
 		AddArg(args, "--fast-lowrate");
 	}
-	if (app->ultrafast && strcmp(kRates[app->rateIndex], "28600") == 0)
+	if (useUltrafast && strcmp(kRates[rateIndex], "28600") == 0)
 		AddArg(args, "--ultrafast");
-	if (app->fakeStereo) {
+	if (useFakeStereo) {
 		AddArg(args, "--fake-stereo");
 		AddArg(args, "--fake-stereo-delay");
 		sprintf(num, "%d", kFakeStereoDelays[app->fakeStereoDelayIndex]);
@@ -900,12 +922,12 @@ static void BuildPlaybackArgs(MrApp *app, MrPlayArgs *args)
 		AddArg(args, "--fake-stereo-shift");
 		sprintf(num, "%d", kFakeStereoShifts[app->fakeStereoWidthIndex]);
 		AddArg(args, num);
-	} else if (app->mono)
+	} else if (useMono)
 		AddArg(args, "--mono");
 	else
 		AddArg(args, "--stereo");
 	AddArg(args, "--rate");
-	AddArg(args, kRates[app->rateIndex]);
+	AddArg(args, kRates[rateIndex]);
 	AddArg(args, "--buffer-seconds");
 	sprintf(num, "%d", ClampInt(app->bufferSeconds, 1, 10));
 	AddArg(args, num);
@@ -1080,7 +1102,11 @@ static void StartPlayback(MrApp *app)
 	app->lastRadioStatusShown = -1;
 	UpdateTimeDisplay(app);
 	EnablePlayStop(app, 1);
-	SetStatus(app, "Starting playback...");
+	if (MrIsRadioInput(app->inputName) &&
+		(app->cd32Ultrafast || (app->ultrafast && app->mono && app->rateIndex == 3)))
+		SetStatus(app, "Internet Radio: using safe decoder settings");
+	else
+		SetStatus(app, "Starting playback...");
 	SetGauge(app, 0);
 }
 
@@ -2696,8 +2722,16 @@ enum {
 	RB_GID_PROBE,
 	RB_GID_CLOSE,
 	RB_GID_SHOW_HTTPS,
+	RB_GID_LIMIT,
+	RB_GID_BITRATE,
 	RB_GID_STATUS
 };
+
+
+static const int kRadioSearchLimits[] = { 10, 25, 50 };
+static STRPTR kRadioSearchLimitLabels[] = { (STRPTR)"10", (STRPTR)"25", (STRPTR)"50", NULL };
+static const int kRadioBitrateMax[] = { 0, 56, 64, 96, 128 };
+static STRPTR kRadioBitrateLabels[] = { (STRPTR)"Any", (STRPTR)"<=56", (STRPTR)"<=64", (STRPTR)"<=96", (STRPTR)"<=128", NULL };
 
 static const char *RadioCodecFromIndex(int idx)
 {
@@ -2797,6 +2831,8 @@ static void RadioDoSearch(MrApp *app)
 	struct Gadget *nameGad = FindRadioGadget(app, RB_GID_SEARCH_TEXT);
 	struct Gadget *codecGad = FindRadioGadget(app, RB_GID_CODEC);
 	struct Gadget *countryGad = FindRadioGadget(app, RB_GID_COUNTRY);
+	struct Gadget *limitGad = FindRadioGadget(app, RB_GID_LIMIT);
+	struct Gadget *bitrateGad = FindRadioGadget(app, RB_GID_BITRATE);
 	STRPTR text;
 	ULONG v;
 	int rc;
@@ -2811,7 +2847,14 @@ static void RadioDoSearch(MrApp *app)
 	text = NULL;
 	GT_GetGadgetAttrs(countryGad, app->rbWin, NULL, GTST_String, (ULONG)(void *)&text, TAG_DONE);
 	SafeCopy(app->rbController.countrycode, sizeof(app->rbController.countrycode), text ? (const char *)text : "");
-	app->rbController.limit = 10;
+	v = 1;
+	if (limitGad)
+		GT_GetGadgetAttrs(limitGad, app->rbWin, NULL, GTCY_Active, (ULONG)&v, TAG_DONE);
+	app->rbController.limit = kRadioSearchLimits[ClampInt((int)v, 0, 2)];
+	v = 0;
+	if (bitrateGad)
+		GT_GetGadgetAttrs(bitrateGad, app->rbWin, NULL, GTCY_Active, (ULONG)&v, TAG_DONE);
+	app->rbController.max_bitrate = kRadioBitrateMax[ClampInt((int)v, 0, 4)];
 	rc = rb_controller_search(&app->rbController);
 	RadioRefreshResults(app);
 	if (rc < 0)
@@ -2969,24 +3012,28 @@ static void OpenRadioWindow(MrApp *app)
 	ng.ng_GadgetID = RB_GID_COUNTRY; gad = CreateGadget(STRING_KIND, gad, &ng, GTST_MaxChars, RB_MAX_COUNTRY, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 340; ng.ng_TopEdge = 52; ng.ng_Width = 140; ng.ng_GadgetText = (UBYTE *)"Show HTTPS stations"; ng.ng_GadgetID = RB_GID_SHOW_HTTPS; ng.ng_Flags = PLACETEXT_RIGHT;
 	gad = CreateGadget(CHECKBOX_KIND, gad, &ng, GTCB_Checked, FALSE, GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
-	ng.ng_LeftEdge = 8; ng.ng_TopEdge = 82; ng.ng_Width = 472; ng.ng_Height = 116; ng.ng_GadgetText = NULL; ng.ng_GadgetID = RB_GID_RADIO_RESULTS; ng.ng_Flags = 0;
+	ng.ng_LeftEdge = 88; ng.ng_TopEdge = 80; ng.ng_Width = 90; ng.ng_GadgetText = (UBYTE *)"Limit"; ng.ng_GadgetID = RB_GID_LIMIT; ng.ng_Flags = PLACETEXT_LEFT;
+	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)kRadioSearchLimitLabels, GTCY_Active, 1, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 288; ng.ng_TopEdge = 80; ng.ng_Width = 90; ng.ng_GadgetText = (UBYTE *)"Max kbps"; ng.ng_GadgetID = RB_GID_BITRATE; ng.ng_Flags = PLACETEXT_LEFT;
+	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)kRadioBitrateLabels, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 8; ng.ng_TopEdge = 110; ng.ng_Width = 472; ng.ng_Height = 116; ng.ng_GadgetText = NULL; ng.ng_GadgetID = RB_GID_RADIO_RESULTS; ng.ng_Flags = 0;
 	app->rbGadList = gad = CreateGadget(LISTVIEW_KIND, gad, &ng,
 		GTLV_Labels, (ULONG)&app->rbList,
 		GTLV_Selected, (ULONG)~0,
 		GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
-	ng.ng_TopEdge = 208; ng.ng_Width = 86; ng.ng_Height = 18; ng.ng_Flags = PLACETEXT_IN;
+	ng.ng_TopEdge = 236; ng.ng_Width = 86; ng.ng_Height = 18; ng.ng_Flags = PLACETEXT_IN;
 	ng.ng_LeftEdge = 8; ng.ng_GadgetText = (UBYTE *)"Search"; ng.ng_GadgetID = RB_GID_SEARCH; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 100; ng.ng_GadgetText = (UBYTE *)"Play"; ng.ng_GadgetID = RB_GID_PROBE; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 192; ng.ng_GadgetText = (UBYTE *)"Close"; ng.ng_GadgetID = RB_GID_CLOSE; gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
-	ng.ng_LeftEdge = 8; ng.ng_TopEdge = 236; ng.ng_Width = 472; ng.ng_GadgetText = NULL; ng.ng_GadgetID = RB_GID_STATUS; ng.ng_Flags = 0;
+	ng.ng_LeftEdge = 8; ng.ng_TopEdge = 264; ng.ng_Width = 472; ng.ng_GadgetText = NULL; ng.ng_GadgetID = RB_GID_STATUS; ng.ng_Flags = 0;
 	gad = CreateGadget(STRING_KIND, gad, &ng, GTST_String, (ULONG)"Ready.", GTST_MaxChars, 512, TAG_DONE); if (!gad) goto fail;
 	memset(&nw, 0, sizeof(nw));
 	nw.LeftEdge = app->win->LeftEdge + 30; nw.TopEdge = app->win->TopEdge + 30;
-	nw.Width = 496; nw.Height = 278;
+	nw.Width = 496; nw.Height = 306;
 	nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW;
 	nw.Flags = WFLG_CLOSEGADGET | WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_SMART_REFRESH;
 	nw.Title = (UBYTE *)"Internet Radio";
-	nw.MinWidth = nw.MaxWidth = 496; nw.MinHeight = nw.MaxHeight = 278;
+	nw.MinWidth = nw.MaxWidth = 496; nw.MinHeight = nw.MaxHeight = 306;
 	nw.Type = WBENCHSCREEN;
 	app->rbWin = OpenWindowTags(&nw, TAG_DONE);
 	if (!app->rbWin) goto fail;

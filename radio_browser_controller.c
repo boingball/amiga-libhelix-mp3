@@ -47,7 +47,8 @@ void rb_controller_init(RadioBrowserController *controller)
     if (!controller) return;
     memset(controller, 0, sizeof(*controller));
     controller->selected_index = -1;
-    controller->limit = RB_CONTROLLER_MAX_STATIONS;
+    controller->limit = 25;
+    controller->max_bitrate = 0;
     controller->offset = 0;
 }
 
@@ -55,6 +56,8 @@ int rb_controller_search(RadioBrowserController *controller)
 {
     int limit;
     int count;
+    int i;
+    int kept;
 
     if (!controller) return RB_CONTROLLER_ERR_BAD_ARG;
 
@@ -80,6 +83,19 @@ int rb_controller_search(RadioBrowserController *controller)
     if (count < 0) {
         rb_controller_set_error(controller, "Radio Browser search failed");
         return count;
+    }
+
+    if (controller->max_bitrate > 0) {
+        kept = 0;
+        for (i = 0; i < count; i++) {
+            if (controller->stations[i].bitrate <= 0 ||
+                controller->stations[i].bitrate <= controller->max_bitrate) {
+                if (kept != i)
+                    controller->stations[kept] = controller->stations[i];
+                kept++;
+            }
+        }
+        count = kept;
     }
 
     controller->station_count = count;
@@ -162,7 +178,8 @@ int main(void)
     rb_controller_init(&controller);
     strcpy(controller.name, "groove");
     strcpy(controller.codec, "MP3");
-    controller.limit = 10;
+    controller.limit = 25;
+    controller.max_bitrate = 64;
 
     rc = rb_controller_search(&controller);
     if (rc < 0) {
