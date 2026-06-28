@@ -1762,6 +1762,13 @@ static void SplitRadioStreamTitle(const char *streamTitle, char *artist, unsigne
 	}
 }
 
+
+static int RadioPlaybackHasStarted(void)
+{
+	return gGuiPlaybackStatus.phase == GUIPLAY_PHASE_PLAYING ||
+		gGuiPlaybackStatus.decodedFrames > 0;
+}
+
 static void FormatRadioStreamingStatus(HelixAmp3Gui *gui, const char *station, char *status, unsigned long statusSize)
 {
 	const char *name = station;
@@ -1818,13 +1825,13 @@ static void UpdateRadioTagDisplay(HelixAmp3Gui *gui)
 		return;
 	}
 	if (gGuiPlaybackStatus.radioStatus == RADIO_STATUS_BUFFERING &&
-		gGuiPlaybackStatus.phase != GUIPLAY_PHASE_PLAYING) {
+		!RadioPlaybackHasStarted()) {
 		sprintf(status, "Buffering - %.140s", station[0] ? station :
 			(gui->currentRadioStationName[0] ? gui->currentRadioStationName : "Internet Radio"));
 		SetStatus(gui, status);
 		RadioSetStatus(gui, status);
-	} else if (gGuiPlaybackStatus.phase == GUIPLAY_PHASE_PLAYING ||
-		gGuiPlaybackStatus.radioStatus == RADIO_STATUS_PLAYING) {
+	} else if (gGuiPlaybackStatus.radioStatus == RADIO_STATUS_PLAYING ||
+		(gGuiPlaybackStatus.radioStatus == RADIO_STATUS_BUFFERING && RadioPlaybackHasStarted())) {
 		FormatRadioStreamingStatus(gui, station, status, sizeof(status));
 		SetStatus(gui, status);
 		RadioSetStatus(gui, status);
