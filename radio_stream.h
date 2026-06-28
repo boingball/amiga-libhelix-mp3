@@ -53,6 +53,9 @@ const char *Radio_StatusText(RadioStatus status);
  * exactly once, at application exit.  Call only after every playback child has
  * been stopped and reaped.  Safe to call when nothing was ever opened. */
 void Radio_NetworkShutdown(void);
+void Radio_GetNetworkStats(long *active_stream_sessions, long *active_stream_tasks,
+    long *open_socket_count, long *active_ssl_count, long *active_ssl_ctx_count);
+void Radio_GetNetworkBases(void **socket_base, void **amissl_base, void **amissl_master_base);
 #else
 static RadioStream *Radio_OpenWithHostAddr(const char *url, int haveHostAddr, unsigned long hostAddrBe) { (void)url; (void)haveHostAddr; (void)hostAddrBe; return (RadioStream *)0; }
 static RadioStream *Radio_Open(const char *url) { (void)url; return (RadioStream *)0; }
@@ -73,6 +76,21 @@ static const char *Radio_GetError(RadioStream *rs) { (void)rs; return "radio sup
 static int Radio_GetBitrate(RadioStream *rs) { (void)rs; return 0; }
 static int Radio_GetBufferedBytes(RadioStream *rs) { (void)rs; return 0; }
 static void Radio_NetworkShutdown(void) { }
+static void Radio_GetNetworkStats(long *active_stream_sessions, long *active_stream_tasks,
+    long *open_socket_count, long *active_ssl_count, long *active_ssl_ctx_count)
+{
+    if (active_stream_sessions) *active_stream_sessions = 0;
+    if (active_stream_tasks) *active_stream_tasks = 0;
+    if (open_socket_count) *open_socket_count = 0;
+    if (active_ssl_count) *active_ssl_count = 0;
+    if (active_ssl_ctx_count) *active_ssl_ctx_count = 0;
+}
+static void Radio_GetNetworkBases(void **socket_base, void **amissl_base, void **amissl_master_base)
+{
+    if (socket_base) *socket_base = 0;
+    if (amissl_base) *amissl_base = 0;
+    if (amissl_master_base) *amissl_master_base = 0;
+}
 static const char *Radio_StatusText(RadioStatus status)
 {
     switch (status) {

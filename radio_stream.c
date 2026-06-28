@@ -932,11 +932,40 @@ void Radio_Close(RadioStream *rs)
  * socket in that task is gone.  This exit hook only catches any still-open
  * process-wide AmiSSL master state and a SocketBase that survived an unusual
  * shutdown path. */
+void Radio_GetNetworkStats(long *active_stream_sessions, long *active_stream_tasks,
+    long *open_socket_count, long *active_ssl_count, long *active_ssl_ctx_count)
+{
+    if (active_stream_sessions) *active_stream_sessions = radio_active_stream_sessions;
+    if (active_stream_tasks) *active_stream_tasks = radio_active_stream_tasks;
+    if (open_socket_count) *open_socket_count = radio_open_socket_count;
+    if (active_ssl_count) *active_ssl_count = radio_active_ssl_count;
+    if (active_ssl_ctx_count) *active_ssl_ctx_count = radio_active_ssl_ctx_count;
+}
+
+void Radio_GetNetworkBases(void **socket_base, void **amissl_base, void **amissl_master_base)
+{
+#if defined(AMIGA_M68K)
+    if (socket_base) *socket_base = (void *)SocketBase;
+#if defined(HAVE_AMISSL)
+    if (amissl_base) *amissl_base = (void *)AmiSSLBase;
+    if (amissl_master_base) *amissl_master_base = (void *)AmiSSLMasterBase;
+#else
+    if (amissl_base) *amissl_base = 0;
+    if (amissl_master_base) *amissl_master_base = 0;
+#endif
+#else
+    if (socket_base) *socket_base = 0;
+    if (amissl_base) *amissl_base = 0;
+    if (amissl_master_base) *amissl_master_base = 0;
+#endif
+}
+
 void Radio_NetworkShutdown(void)
 {
 #if defined(AMIGA_M68K)
 #if defined(HAVE_AMISSL)
-    radio_ssl_global_cleanup();           /* closes any still-open per-task AmiSSL */
+    if (radio_amissl_initialized || AmiSSLBase)
+        radio_ssl_global_cleanup();           /* closes any still-open per-task AmiSSL */
     if (AmiSSLMasterBase) {
         CloseLibrary(AmiSSLMasterBase);
         AmiSSLMasterBase = NULL;

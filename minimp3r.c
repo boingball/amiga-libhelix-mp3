@@ -485,6 +485,7 @@ typedef struct MrApp {
 	int   shownChannelDisabled;
 	int   shownNextDisabled;
 	int   lastRadioStatusShown;
+	int   shuttingDown;
 } MrApp;
 
 static void UpdateTimeDisplay(MrApp *app);
@@ -540,9 +541,70 @@ static void MrDebugSession(const char *event, const MrApp *app)
 		gPlayer.lastIoState ? (const char *)gPlayer.lastIoState : "");)
 }
 
+static int PlaybackProcessStillExists(void);
+static int StopPlaybackAndWait(MrApp *app, int ticks, const char *timeoutStatus);
+static void HandleDoneSignal(MrApp *app);
+
 /* ------------------------------------------------------------------------- */
 /* Small helpers                                                             */
 /* ------------------------------------------------------------------------- */
+
+
+static void AppCloseDebug(const char *stage, const MrApp *app)
+{
+	long active_stream_sessions = 0;
+	long active_stream_tasks = 0;
+	long open_socket_count = 0;
+	long active_ssl_count = 0;
+	long active_ssl_ctx_count = 0;
+	void *socket_base = 0;
+	void *amissl_base = 0;
+	void *amissl_master_base = 0;
+	Radio_GetNetworkStats(&active_stream_sessions, &active_stream_tasks,
+		&open_socket_count, &active_ssl_count, &active_ssl_ctx_count);
+	Radio_GetNetworkBases(&socket_base, &amissl_base, &amissl_master_base);
+	printf("APP_CLOSE: %s streamState=%s playbackActive=%d playbackDonePending=%d activeChildCount=%lu gPlayer.process=%p gPlayer.task=%p gPlayer.stopRequested=%d active_stream_sessions=%ld active_stream_tasks=%ld open_socket_count=%ld active_ssl_count=%ld active_ssl_ctx_count=%ld browser_probe_socket_counts=unavailable SocketBase=%p AmiSSLBase=%p AmiSSLMasterBase=%p\n",
+		stage ? stage : "stage",
+		app ? MrStreamStateName(app->streamState) : "(no-app)",
+		app ? app->playbackActive : 0,
+		app ? app->playbackDonePending : 0,
+		app ? app->activeChildCount : 0,
+		gPlayer.process, gPlayer.task, gPlayer.stopRequested,
+		active_stream_sessions, active_stream_tasks, open_socket_count,
+		active_ssl_count, active_ssl_ctx_count,
+		socket_base, amissl_base, amissl_master_base
+	);
+}
+
+static int AppHasActivePlaybackChild(const MrApp *app)
+{
+	return app && app->activeChildCount > 0 &&
+		(app->playbackActive || app->playbackDonePending ||
+		 gPlayer.process || gPlayer.task || PlaybackProcessStillExists());
+}
+
+static void AppCloseShutdown(MrApp *app)
+{
+	if (!app)
+		return;
+	app->shuttingDown = 1;
+	AppCloseDebug("begin", app);
+	AppCloseDebug("playback state", app);
+	if (AppHasActivePlaybackChild(app)) {
+		AppCloseDebug("stop active playback if needed", app);
+		if (!StopPlaybackAndWait(app, 500, "Failed to stop previous stream")) {
+			while (PlaybackProcessStillExists())
+				Delay(5);
+			HandleDoneSignal(app);
+		}
+	} else {
+		AppCloseDebug("playback already idle, skip stop", app);
+		printf("APP_CLOSE: playback idle, no stop needed\n");
+	}
+	AppCloseDebug("dispose radio browser controller", app);
+	AppCloseDebug("free favourites/search results", app);
+	AppCloseDebug("dispose GUI objects", app);
+}
 
 static void SafeCopy(char *dst, size_t size, const char *src)
 {
@@ -3400,6 +3462,10 @@ static void CloseRadioWindow(MrApp *app)
 {
 	struct IntuiMessage *msg;
 	if (!app->rbWin) return;
+	if (app->rbGadList)
+		GT_SetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
+			GTLV_Labels, (ULONG)~0,
+			GTLV_Selected, (ULONG)~0, TAG_DONE);
 	ModifyIDCMP(app->rbWin, 0);
 	while ((msg = GT_GetIMsg(app->rbWin->UserPort)) != NULL)
 		GT_ReplyIMsg(msg);
@@ -4236,22 +4302,8 @@ int main(int argc, char **argv)
 		}
 	}
 
-	/* Make sure any running child is stopped and reaped before we tear the
-	 * window (and its shared status block) down. */
-	if (app.playbackActive || app.playbackDonePending || PlaybackProcessStillExists()) {
-		RADIO_DBG(printf("radio-guard: app close path\n");)
-		RADIO_DBG(printf("radio-ui: app close cleanup start active=%d donePending=%d state=%s process=%p task=%p\n",
-			app.playbackActive, app.playbackDonePending,
-			MrStreamStateName(app.streamState), gPlayer.process, gPlayer.task);)
-		if (!StopPlaybackAndWait(&app, 500, "Failed to stop previous stream")) {
-			while (PlaybackProcessStillExists())
-				Delay(5);
-			HandleDoneSignal(&app);
-		}
-		RADIO_DBG(printf("radio-ui: app close cleanup end active=%d donePending=%d state=%s process=%p task=%p\n",
-			app.playbackActive, app.playbackDonePending,
-			MrStreamStateName(app.streamState), gPlayer.process, gPlayer.task);)
-	}
+	/* Ordered, idempotent app-close teardown. */
+	AppCloseShutdown(&app);
 
 	SyncFromGadgets(&app);
 	SaveSettings(&app);
@@ -4269,7 +4321,10 @@ int main(int argc, char **argv)
 	 * that the probe/search/streams opened.  Without this the app left
 	 * bsdsocket.library open on exit and the next launch could not open a working
 	 * socket ("Search failed" with the network otherwise up). */
+	AppCloseDebug("close SocketBase fallback", &app);
+	AppCloseDebug("AmiSSL shutdown fallback", &app);
 	Radio_NetworkShutdown();
+	AppCloseDebug("end", &app);
 	CloseLibs();
 	return 0;
 }
