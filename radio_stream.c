@@ -127,7 +127,10 @@ typedef enum {
     RADIO_PARSE_META_PAYLOAD
 } RadioParseState;
 
+#define RADIO_STREAM_MAGIC 0x52535452UL
+
 struct RadioStream {
+    unsigned long magic;
     RADIO_SOCKET sock;
     RadioStatus status;
     char url[256], host[128], path[192];
@@ -200,6 +203,13 @@ static void radio_debug_mem_report(unsigned long session_id, const char *where)
     RADIO_DBG(printf("radio-mem: session=%lu %s AvailMem(any)=n/a fast=n/a chip=n/a\n",
         session_id, where ? where : ""));
 #endif
+}
+
+static int radio_stream_magic_valid(const RadioStream *rs, const char *where)
+{
+    int ok = rs && rs->magic == RADIO_STREAM_MAGIC;
+    if (!ok) RADIO_DBG(printf("radio-guard: BAD RadioStream magic where=%s rs=%p magic=%08lx expected=%08lx\n", where ? where : "", (void *)rs, rs ? rs->magic : 0UL, RADIO_STREAM_MAGIC););
+    return ok;
 }
 
 static void radio_resource_summary(const RadioStream *rs, const char *where)
@@ -408,27 +418,34 @@ static void radio_ssl_global_cleanup(void)
     RADIO_DBG(printf("radio-ssl-diag: cleanup EXIT  initialized=%d base=%p ext=%p master=%p\n", radio_amissl_initialized, (void *)AmiSSLBase, (void *)AmiSSLExtBase, (void *)AmiSSLMasterBase););
 }
 
+static void radio_ssl_close_stream(RadioStream *rs);
+
 /* Poll SSL_connect on the non-blocking socket — same budget as radio_wait_connected. */
 static int radio_ssl_do_handshake(RadioStream *rs)
 {
     int tries;
+    int last_error = 0;
     for (tries = 0; tries < 150; tries++) {
         int r, e;
         if (radio_is_stopping(rs)) return -1;
         r = SSL_connect(rs->ssl);
         if (r == 1) return 0;
         e = SSL_get_error(rs->ssl, r);
+        last_error = e;
+        RADIO_DBG(printf("radio-tls: SSL_connect session=%lu ret=%d ssl_error=%d fd=%ld ssl=%p ctx=%p\n", rs ? rs->session_id : 0, r, e, rs ? (long)rs->sock : -1L, rs ? (void *)rs->ssl : 0, rs ? (void *)rs->ctx : 0););
         if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) {
             radio_backoff_sleep(); continue;
         }
         return -1;
     }
+    RADIO_DBG(printf("radio-tls: SSL_connect timeout session=%lu last_ssl_error=%d fd=%ld\n", rs ? rs->session_id : 0, last_error, rs ? (long)rs->sock : -1L););
     return -1;
 }
 
 static int radio_ssl_connect(RadioStream *rs)
 {
     const SSL_METHOD *method;
+    int set_fd_ok;
     if (radio_ssl_global_init(rs) != 0) return -1;
     method = SSLv23_client_method();
     if (!method) { set_error(rs, "AmiSSL init failed"); return -1; }
@@ -438,12 +455,12 @@ static int radio_ssl_connect(RadioStream *rs)
     SSL_CTX_set_verify(rs->ctx, SSL_VERIFY_NONE, NULL);
     rs->ssl = SSL_new(rs->ctx);
     if (rs->ssl) { radio_active_ssl_count++; RADIO_DBG(printf("radio-resource: session=%lu SSL allocated active_ssl_count=%ld\n", rs->session_id, radio_active_ssl_count)); }
-    if (!rs->ssl) { SSL_CTX_free(rs->ctx); rs->ctx = NULL; if (radio_active_ssl_ctx_count > 0) radio_active_ssl_ctx_count--; set_error(rs, "AmiSSL init failed"); return -1; }
-    SSL_set_fd(rs->ssl, (int)rs->sock);
+    if (!rs->ssl) { radio_ssl_close_stream(rs); set_error(rs, "AmiSSL init failed"); return -1; }
+    set_fd_ok = SSL_set_fd(rs->ssl, (int)rs->sock);
+    if (!set_fd_ok) { RADIO_DBG(printf("radio-tls: SSL_set_fd failed session=%lu fd=%ld ssl=%p ctx=%p\n", rs->session_id, (long)rs->sock, (void *)rs->ssl, (void *)rs->ctx);); radio_ssl_close_stream(rs); set_error(rs, "TLS handshake failed"); return -1; }
     if (radio_ssl_do_handshake(rs) != 0) {
-        SSL_free(rs->ssl); rs->ssl = NULL; if (radio_active_ssl_count > 0) radio_active_ssl_count--;
-        if (rs->ctx) { SSL_CTX_free(rs->ctx); rs->ctx = NULL; if (radio_active_ssl_ctx_count > 0) radio_active_ssl_ctx_count--; }
-        rs->sslHandshakeDone = 0;
+        RADIO_DBG(printf("radio-tls: handshake cleanup session=%lu error_ptr=%p stream_range=%p..%p status=%d open_socket_count=%ld active_ssl_count=%ld active_ssl_ctx_count=%ld SocketBase=%p AmiSSLBase=%p AmiSSLMasterBase=%p\n", rs->session_id, (void *)rs->error, (void *)rs, (void *)(rs + 1), (int)rs->status, radio_open_socket_count, radio_active_ssl_count, radio_active_ssl_ctx_count, (void *)SocketBase, (void *)AmiSSLBase, (void *)AmiSSLMasterBase););
+        radio_ssl_close_stream(rs);
         set_error(rs, "TLS handshake failed"); return -1;
     }
     rs->sslHandshakeDone = 1;
@@ -704,6 +721,7 @@ static int connect_http(RadioStream *rs){
 static void close_current_socket(RadioStream *rs)
 {
     if (!rs) return;
+    radio_stream_magic_valid(rs, "close_current_socket");
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
     radio_ssl_close_stream(rs);
 #endif
