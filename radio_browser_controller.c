@@ -90,7 +90,7 @@ int rb_controller_search(RadioBrowserController *controller)
                                RB_CONTROLLER_JSON_BUFFER_SIZE);
     if (count < 0) {
         if (count == -100) {
-            rb_controller_set_error(controller, "Response too large; reduce result limit");
+            rb_controller_set_error(controller, "Search result too large");
             return RB_CONTROLLER_ERR_RESPONSE_TOO_LARGE;
         }
         if (count == -101) {
