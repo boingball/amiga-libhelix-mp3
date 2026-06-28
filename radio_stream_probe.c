@@ -43,13 +43,26 @@ static int rb_probe_amissl_initialized = 0;
 #include <unistd.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #define RB_PROBE_SOCKET int
 #define RB_PROBE_INVALID_SOCKET (-1)
 #define rb_probe_close_socket(s) close(s)
 #endif
+
+
+static void rb_probe_format_ipv4_be(unsigned long addr_be, char *out, int out_size)
+{
+    unsigned char *b;
+
+    if (!out || out_size <= 0) return;
+    b = (unsigned char *)&addr_be;
+    sprintf(out, "%u.%u.%u.%u",
+            (unsigned int)b[0],
+            (unsigned int)b[1],
+            (unsigned int)b[2],
+            (unsigned int)b[3]);
+}
 
 #define RB_PROBE_DEFAULT_PORT 80
 #define RB_PROBE_MAX_HOST 256
@@ -419,8 +432,11 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
     he = gethostbyname(host);
     if (!he || !he->h_addr_list || !he->h_addr_list[0]) return RB_STREAM_PROBE_ERR_DNS;
     if (host_addr_be) {
-        memcpy(host_addr_be, he->h_addr_list[0], sizeof(*host_addr_be));
-        printf("rb-probe DNS: resolved %s -> %s\n", host, inet_ntoa(*(struct in_addr *)he->h_addr_list[0]));
+        char addr_text[16];
+        memset(host_addr_be, 0, sizeof(*host_addr_be));
+        memcpy(host_addr_be, he->h_addr_list[0], 4);
+        rb_probe_format_ipv4_be(*host_addr_be, addr_text, (int)sizeof(addr_text));
+        printf("rb-probe DNS: resolved %s -> %s\n", host, addr_text);
     }
     transport->sock = socket(AF_INET, SOCK_STREAM, 0);
     if (transport->sock == RB_PROBE_INVALID_SOCKET) return RB_STREAM_PROBE_ERR_CONNECT;

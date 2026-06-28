@@ -79,7 +79,6 @@ static int radio_amissl_initialized = 0;
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #define RADIO_SOCKET int
@@ -91,6 +90,20 @@ static int radio_amissl_initialized = 0;
  * fallbacks rather than pulling in <sys/ioctl.h>/<sys/errno.h>, whose presence
  * varies across the m68k netinclude (and to avoid the header churn that broke
  * an earlier attempt).  0x8004667E is the standard BSD/bsdsocket FIONBIO. */
+
+static void radio_format_ipv4_be(unsigned long addr_be, char *out, int out_size)
+{
+    unsigned char *b;
+
+    if (!out || out_size <= 0) return;
+    b = (unsigned char *)&addr_be;
+    sprintf(out, "%u.%u.%u.%u",
+            (unsigned int)b[0],
+            (unsigned int)b[1],
+            (unsigned int)b[2],
+            (unsigned int)b[3]);
+}
+
 #ifndef FIONBIO
 #define FIONBIO 0x8004667EUL
 #endif
@@ -583,7 +596,12 @@ static int connect_http(RadioStream *rs){
     /* Resolve once and cache it; gethostbyname() is blocking and would freeze
      * the emulator on every reconnect if we re-resolved each time. */
     if(rs->haveHostAddr){
-        printf("radio-dns: session=%lu using cached probe DNS %s\n", rs->session_id, inet_ntoa(rs->hostAddr));
+        unsigned long addr_be;
+        char addr_text[16];
+        memset(&addr_be, 0, sizeof(addr_be));
+        memcpy(&addr_be, &rs->hostAddr.s_addr, sizeof(rs->hostAddr.s_addr));
+        radio_format_ipv4_be(addr_be, addr_text, (int)sizeof(addr_text));
+        printf("radio-dns: session=%lu using cached probe DNS %s\n", rs->session_id, addr_text);
     } else {
         struct hostent *he;
         printf("radio-dns: WARNING blocking DNS lookup in playback child host=%s\n", rs->host);
