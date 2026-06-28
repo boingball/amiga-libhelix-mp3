@@ -834,13 +834,19 @@ static int SetReadonlyString(Object *gad, struct Window *win, char *cache, size_
 	return 1;
 }
 
+static int SetStatusIfChanged(MrApp *app, const char *text)
+{
+	const char *safeText = text ? text : "";
+	if (!app)
+		return 0;
+	SafeCopy(app->lastRadioError, sizeof(app->lastRadioError), safeText);
+	return SetReadonlyString(app->statusGad, app->win, app->shownStatus,
+		sizeof(app->shownStatus), app->lastRadioError);
+}
+
 static void SetStatus(MrApp *app, const char *text)
 {
-	if (!app)
-		return;
-	SafeCopy(app->lastRadioError, sizeof(app->lastRadioError), text ? text : "");
-	SetReadonlyString(app->statusGad, app->win, app->shownStatus,
-		sizeof(app->shownStatus), app->lastRadioError);
+	(void)SetStatusIfChanged(app, text);
 }
 
 static int PointInGadget(struct Gadget *gad, int x, int y)
@@ -950,20 +956,44 @@ static void MrSplitStreamTitle(const char *streamTitle, char *artist, unsigned l
 	if (sep) { ((char *)sep)[0] = 0; SafeCopy(artist, artistSize, tmp); SafeCopy(title, titleSize, sep + 3); }
 }
 
+static const char *MrRadioCodecName(const char *contentType)
+{
+	if (!contentType) return "";
+	if (strstr(contentType, "aac") || strstr(contentType, "AAC") ||
+		strstr(contentType, "aach") || strstr(contentType, "AACH"))
+		return "AAC+";
+	if (strstr(contentType, "mpeg") || strstr(contentType, "MPEG") ||
+		strstr(contentType, "mp3") || strstr(contentType, "MP3"))
+		return "MP3";
+	return "";
+}
+
 static int MrSetRadioMetadata(MrApp *app, int updateStatus)
 {
-	char streamTitle[128], station[128], genre[64], radioError[128], artist[64], title[64], fileInfo[128], status[128];
+	char streamTitle[128], station[128], genre[64], contentType[64], radioError[128], artist[64], title[64], fileInfo[128], status[128];
+	const char *codec;
+	int bitrate;
 	int updates = 0;
 	int radioStatus;
 
 	MrCopyVolatileString(streamTitle, sizeof(streamTitle), gGuiPlaybackStatus.radioTitle);
 	MrCopyVolatileString(station, sizeof(station), gGuiPlaybackStatus.radioStationName);
 	MrCopyVolatileString(genre, sizeof(genre), gGuiPlaybackStatus.radioGenre);
+	MrCopyVolatileString(contentType, sizeof(contentType), gGuiPlaybackStatus.radioContentType);
 	MrCopyVolatileString(radioError, sizeof(radioError), gGuiPlaybackStatus.radioError);
 	radioStatus = gGuiPlaybackStatus.radioStatus;
 
 	MrSplitStreamTitle(streamTitle, artist, sizeof(artist), title, sizeof(title));
-	sprintf(fileInfo, "Internet Stream");
+	codec = MrRadioCodecName(contentType);
+	bitrate = gGuiPlaybackStatus.radioBitrateKbps;
+	if (codec[0] && bitrate > 0)
+		sprintf(fileInfo, "Internet Stream - %s %dkbps", codec, bitrate);
+	else if (codec[0])
+		sprintf(fileInfo, "Internet Stream - %s", codec);
+	else if (bitrate > 0)
+		sprintf(fileInfo, "Internet Stream - %dkbps", bitrate);
+	else
+		sprintf(fileInfo, "Internet Stream");
 	updates += SetReadonlyString(app->titleGad, app->win, app->shownTitle, sizeof(app->shownTitle), title[0] ? title : "-");
 	updates += SetReadonlyString(app->artistGad, app->win, app->shownArtist, sizeof(app->shownArtist), artist[0] ? artist : "-");
 	updates += SetAlbumDisplay(app, station[0] ? station : "Internet Radio");
@@ -978,11 +1008,8 @@ static int MrSetRadioMetadata(MrApp *app, int updateStatus)
 		else if (radioStatus == RADIO_STATUS_CONNECTING)
 			sprintf(status, "Connecting stream...");
 		else if (radioStatus == RADIO_STATUS_PLAYING && gGuiPlaybackStatus.decodedFrames > 0) {
-			char streamStatus[192];
 			RADIO_DBG(printf("radio-ui: UI state set to PLAYING after first audio frame\n");)
 			sprintf(status, "Streaming");
-			sprintf(streamStatus, "Stream: %.160s", station[0] ? station : app->inputName);
-			RadioSetStatus(app, streamStatus);
 		}
 		else if (radioStatus == RADIO_STATUS_BUFFERING || radioStatus == RADIO_STATUS_PLAYING)
 			sprintf(status, "Buffering stream...");
@@ -1608,10 +1635,7 @@ static void PollPlaybackStatus(MrApp *app)
 			gGuiPlaybackStatus.radioBufferedBytes = 0;
 			sprintf(status, "Stream failed: %s", radioError[0] ? radioError : "radio error");
 			SafeCopy(app->lastRadioError, sizeof(app->lastRadioError), status);
-			if (strcmp(app->shownStatus, app->lastRadioError)) {
-				SetStatus(app, app->lastRadioError);
-				updates++;
-			}
+			updates += SetStatusIfChanged(app, app->lastRadioError);
 			RadioSetStatus(app, app->lastRadioError);
 		} else if (radioActive &&
 			radioStatus != RADIO_STATUS_STOPPING &&
@@ -3348,24 +3372,30 @@ static void RadioDoSearch(MrApp *app)
 	}
 }
 
+static int RadioCurrentSelectedRow(MrApp *app)
+{
+	int i, wanted;
+	if (!app || app->rbVisibleCount <= 0) return -1;
+	wanted = app->rbShowingFavourites ? app->rbSelectedFavourite : app->rbController.selected_index;
+	for (i = 0; i < app->rbVisibleCount; i++)
+		if (app->rbVisibleToController[i] == wanted)
+			return i;
+	return -1;
+}
+
 static void RadioMoveSelection(MrApp *app, int delta)
 {
-	ULONG selected = (ULONG)~0;
 	int row;
 	if (!app || !app->rbWin || !app->rbGadList) return;
 	if (app->rbVisibleCount <= 0) {
 		RadioSetStatus(app, "No stations to select.");
 		return;
 	}
-	GT_GetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
-		GTLV_Selected, (ULONG)&selected, TAG_DONE);
-	if (selected == (ULONG)~0 || selected >= (ULONG)app->rbVisibleCount) {
-		row = delta < 0 ? app->rbVisibleCount - 1 : 0;
-	} else {
-		row = (int)selected + delta;
-		if (row < 0) row = 0;
-		if (row >= app->rbVisibleCount) row = app->rbVisibleCount - 1;
-	}
+	row = RadioCurrentSelectedRow(app);
+	if (row < 0) row = 0;
+	else row += delta;
+	if (row < 0) row = 0;
+	if (row >= app->rbVisibleCount) row = app->rbVisibleCount - 1;
 	RadioSelectResult(app, (ULONG)row);
 }
 
@@ -3398,6 +3428,7 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 	if (app->rbShowingFavourites) {
 		app->rbSelectedFavourite = (int)selected;
 		GT_SetGadgetAttrs(app->rbGadList, app->rbWin, NULL, GTLV_Selected, (ULONG)row, TAG_DONE);
+		RefreshGList(app->rbGadList, app->rbWin, NULL, 1);
 		sprintf(msg, "Selected favourite: %.120s", app->rbFavouriteNames[app->rbSelectedFavourite]);
 		RadioSetStatus(app, msg);
 		return;
@@ -3409,6 +3440,7 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 	}
 	GT_SetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
 		GTLV_Selected, (ULONG)row, TAG_DONE);
+	RefreshGList(app->rbGadList, app->rbWin, NULL, 1);
 	st = rb_controller_get_station(&app->rbController, app->rbController.selected_index);
 	if (!st) {
 		RadioSetStatus(app, "Select a station first.");
@@ -3638,7 +3670,7 @@ static void OpenRadioWindow(MrApp *app)
 	 * from clipping into the draggable title bar on ReAction/ClassAct systems.
 	 */
 	ng.ng_LeftEdge = 88; ng.ng_TopEdge = 24; ng.ng_Width = 220; ng.ng_Height = 18; ng.ng_GadgetText = (UBYTE *)"Search";
-	ng.ng_GadgetID = RB_GID_SEARCH_TEXT; gad = CreateGadget(STRING_KIND, gad, &ng, GTST_String, (ULONG)app->rbController.name, GTST_MaxChars, RB_MAX_NAME, TAG_DONE); if (!gad) goto fail;
+	ng.ng_GadgetID = RB_GID_SEARCH_TEXT; gad = CreateGadget(STRING_KIND, gad, &ng, GTST_String, (ULONG)app->rbController.name, GTST_MaxChars, RB_MAX_NAME, GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 390; ng.ng_TopEdge = 24; ng.ng_Width = 90; ng.ng_GadgetText = (UBYTE *)"Codec"; ng.ng_GadgetID = RB_GID_CODEC;
 	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)codecs, GTCY_Active, RadioCodecToIndex(app->rbController.codec), TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 88; ng.ng_TopEdge = 52; ng.ng_Width = 220; ng.ng_GadgetText = (UBYTE *)"Country";
@@ -3705,7 +3737,9 @@ static void HandleRadioWindow(MrApp *app)
 			continue;
 		}
 		if (cls == IDCMP_GADGETUP) {
-			if (gid == RB_GID_RADIO_RESULTS)
+			if (gid == RB_GID_SEARCH_TEXT && code == 13)
+				RadioDoSearch(app);
+			else if (gid == RB_GID_RADIO_RESULTS)
 				RadioSelectResult(app, (ULONG)code);
 			else if (gid == RB_GID_SEARCH)
 				RadioDoSearch(app);
