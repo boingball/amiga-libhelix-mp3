@@ -1761,6 +1761,20 @@ static void SplitRadioStreamTitle(const char *streamTitle, char *artist, unsigne
 	}
 }
 
+static void FormatRadioStreamingStatus(HelixAmp3Gui *gui, const char *station, char *status, unsigned long statusSize)
+{
+	const char *name = station;
+	char streamUrl[128];
+
+	if (!status || statusSize == 0)
+		return;
+	if (!name || !name[0]) {
+		CopyVolatileGuiString(streamUrl, sizeof(streamUrl), gGuiPlaybackStatus.radioStreamUrl);
+		name = streamUrl[0] ? streamUrl : (gui && gui->inputName[0] ? gui->inputName : "Internet Radio");
+	}
+	sprintf(status, "Streaming ... %.140s", name);
+}
+
 static void SetRadioFailureStatus(HelixAmp3Gui *gui, const char *fallback)
 {
 	char radioError[128], status[160];
@@ -1802,14 +1816,11 @@ static void UpdateRadioTagDisplay(HelixAmp3Gui *gui)
 		return;
 	}
 	if (gGuiPlaybackStatus.phase == GUIPLAY_PHASE_PLAYING ||
-		gGuiPlaybackStatus.radioStatus == RADIO_STATUS_PLAYING) {
-		char streamUrl[128];
-		CopyVolatileGuiString(streamUrl, sizeof(streamUrl), gGuiPlaybackStatus.radioStreamUrl);
-		sprintf(status, "Stream: %.140s", station[0] ? station : (streamUrl[0] ? streamUrl : gui->inputName));
-		SetStatus(gui, "Streaming");
+		gGuiPlaybackStatus.radioStatus == RADIO_STATUS_PLAYING ||
+		gGuiPlaybackStatus.radioStatus == RADIO_STATUS_BUFFERING) {
+		FormatRadioStreamingStatus(gui, station, status, sizeof(status));
+		SetStatus(gui, status);
 		RadioSetStatus(gui, status);
-	} else if (gGuiPlaybackStatus.radioStatus == RADIO_STATUS_BUFFERING) {
-		SetStatus(gui, "Buffering stream...");
 	}
 }
 
@@ -3434,8 +3445,9 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 		long spareMs = gGuiPlaybackStatus.spareMs;
 		unsigned long halfBufferMs = gGuiPlaybackStatus.halfBufferMs;
 		int phaseChanged = (phase != gui->lastDisplayedPhase);
+		int isRadioInput = IsRadioInputName(gui->inputName);
 
-		if (IsRadioInputName(gui->inputName)) {
+		if (isRadioInput) {
 			if (gGuiPlaybackStatus.radioStatus == RADIO_STATUS_ERROR) {
 				SetRadioFailureStatus(gui, "radio error");
 			} else if (gGuiPlaybackStatus.radioActive &&
@@ -3480,6 +3492,8 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 		case GUIPLAY_PHASE_BUFFERING: {
 			int stage = gGuiPlaybackStatus.startupStage;
 			int stageChanged = (stage != gui->lastStartupStage);
+			if (isRadioInput)
+				break;
 			if (stageChanged) {
 				gui->lastStartupStage = stage;
 				gui->startupStageStableTicks = 0;
@@ -3521,6 +3535,8 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 			break;
 		}
 		case GUIPLAY_PHASE_UNDERRUN:
+			if (isRadioInput)
+				break;
 			if (underruns != gui->lastUnderrunCount) {
 				char buf[64];
 				gui->lastUnderrunCount = underruns;
@@ -3571,7 +3587,13 @@ static void HandleTimerSignal(HelixAmp3Gui *gui)
 			if (phaseChanged) {
 				gui->lastDisplayedSpareMs = spareMs;
 				gui->lastUnderrunCount = underruns;
-				SetStatus(gui, IsRadioInputName(gui->inputName) ? "Streaming" : "Playing");
+				if (IsRadioInputName(gui->inputName)) {
+					char station[128], status[160];
+					CopyVolatileGuiString(station, sizeof(station), gGuiPlaybackStatus.radioStationName);
+					FormatRadioStreamingStatus(gui, station, status, sizeof(status));
+					SetStatus(gui, status);
+				} else
+					SetStatus(gui, "Playing");
 			}
 #endif
 			break;
