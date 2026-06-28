@@ -4912,16 +4912,35 @@ static const char *RadioDecoderExtFromContentType(const char *contentType)
 	return NULL;
 }
 
+static int RadioUrlHasMp3Hint(const char *url)
+{
+	const char *p;
+	if (!url)
+		return 0;
+	for (p = url; *p; p++) {
+		if ((p[0] == 'm' || p[0] == 'M') &&
+			(p[1] == 'p' || p[1] == 'P') &&
+			(p[2] == '3'))
+			return 1;
+	}
+	return 0;
+}
+
 static const char *RadioDecoderExtFromUrlOrType(const char *url, const char *contentType)
 {
 	const char *ext = GetFileExtension(url);
+	const char *typeExt = RadioDecoderExtFromContentType(contentType);
+	if (typeExt)
+		return typeExt;
 	if (ext && (StrCaseCmp(ext, "aac") == 0 ||
 		StrCaseCmp(ext, "aacp") == 0 ||
 		StrCaseCmp(ext, "flac") == 0 ||
 		StrCaseCmp(ext, "fla") == 0 ||
 		StrCaseCmp(ext, "mp3") == 0))
 		return StrCaseCmp(ext, "aacp") == 0 ? "aac" : ext;
-	return RadioDecoderExtFromContentType(contentType);
+	if (RadioUrlHasMp3Hint(url))
+		return "mp3";
+	return NULL;
 }
 
 typedef struct FakeStereo {

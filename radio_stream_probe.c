@@ -618,9 +618,30 @@ static int rb_probe_contains_nocase(const char *s, const char *needle)
     return 0;
 }
 
+static int rb_probe_url_has_mp3_hint(const RbProbeUrl *url)
+{
+    if (!url) return 0;
+    return rb_probe_contains_nocase(url->path, "-mp3") ||
+           rb_probe_contains_nocase(url->path, ".mp3") ||
+           rb_probe_contains_nocase(url->path, "mp3");
+}
+
 static RbStreamCodec rb_probe_detect_codec(const RbProbeUrl *url, const RbStreamInfo *info,
                                            const unsigned char *peek, int peek_len)
 {
+    if (peek && peek_len >= 3 && peek[0] == 'I' && peek[1] == 'D' && peek[2] == '3') {
+        printf("rb-probe codec: initial byte sniff=ID3 final=MP3\n");
+        return RB_STREAM_CODEC_MP3;
+    }
+    if (peek && peek_len >= 2 && peek[0] == 0xff && (peek[1] & 0xe0) == 0xe0 &&
+        peek[1] != 0xf1 && peek[1] != 0xf9) {
+        printf("rb-probe codec: initial byte sniff=MPEG frame sync final=MP3\n");
+        return RB_STREAM_CODEC_MP3;
+    }
+    if (peek && peek_len >= 2 && peek[0] == 0xff && (peek[1] == 0xf1 || peek[1] == 0xf9)) {
+        printf("rb-probe codec: initial byte sniff=ADTS final=AAC\n");
+        return RB_STREAM_CODEC_AAC;
+    }
     if (info && info->content_type[0]) {
         if (rb_probe_contains_nocase(info->content_type, "audio/mpeg") ||
             rb_probe_contains_nocase(info->content_type, "audio/mp3")) return RB_STREAM_CODEC_MP3;
@@ -630,14 +651,8 @@ static RbStreamCodec rb_probe_detect_codec(const RbProbeUrl *url, const RbStream
     }
     if (url && (rb_probe_contains_nocase(url->path, ".aac") || rb_probe_contains_nocase(url->path, ".aacp")))
         return RB_STREAM_CODEC_AAC;
-    if (url && rb_probe_contains_nocase(url->path, ".mp3"))
+    if (rb_probe_url_has_mp3_hint(url))
         return RB_STREAM_CODEC_MP3;
-    if (peek && peek_len >= 3 && peek[0] == 'I' && peek[1] == 'D' && peek[2] == '3')
-        return RB_STREAM_CODEC_MP3;
-    if (peek && peek_len >= 2 && peek[0] == 0xff && (peek[1] & 0xe0) == 0xe0 &&
-        peek[1] != 0xf1 && peek[1] != 0xf9) return RB_STREAM_CODEC_MP3;
-    if (peek && peek_len >= 2 && peek[0] == 0xff && (peek[1] == 0xf1 || peek[1] == 0xf9))
-        return RB_STREAM_CODEC_AAC;
     return RB_STREAM_CODEC_UNKNOWN;
 }
 
@@ -678,7 +693,7 @@ const char *rb_probe_error_text(int rc)
     case RB_STREAM_PROBE_ERR_TOO_MANY_REDIRECTS: return "Stream probe failed: too many redirects";
     case RB_STREAM_PROBE_ERR_URL_TOO_LONG: return "Stream probe failed: URL too long";
     case RB_STREAM_PROBE_ERR_HLS_UNSUPPORTED: return "HLS stream not supported";
-    case RB_STREAM_PROBE_ERR_UNSUPPORTED_CONTENT_TYPE: return "Unsupported stream content type";
+    case RB_STREAM_PROBE_ERR_UNSUPPORTED_CONTENT_TYPE: return "Unsupported stream format";
     case RB_STREAM_PROBE_ERR_SERVER_CLOSED: return "Stream probe failed: server closed connection during probe";
     case RB_STREAM_PROBE_ERR_TLS_HANDSHAKE: return "TLS handshake failed";
     default: return "Stream probe failed";
@@ -823,7 +838,11 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
 #endif
         return rc;
     }
+    printf("rb-probe codec: final URL=%s content-type=%s URL codec hint=%s initial-bytes=%d\n",
+           current_url, info->content_type, rb_probe_url_has_mp3_hint(&parsed) ? "MP3" : "none", *peek_len);
     info->codec = rb_probe_detect_codec(&parsed, info, peek_buf, *peek_len);
+    printf("rb-probe codec: final selected codec=%s\n",
+           info->codec == RB_STREAM_CODEC_MP3 ? "MP3" : (info->codec == RB_STREAM_CODEC_AAC ? "AAC" : "unsupported"));
     if (rb_probe_is_hls(&parsed, info)) {
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
         rb_probe_cleanup_amissl();
@@ -831,9 +850,11 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
         return RB_STREAM_PROBE_ERR_HLS_UNSUPPORTED;
     }
     if (info->content_type[0] && info->codec == RB_STREAM_CODEC_UNKNOWN) {
+        printf("rb-probe cleanup: unsupported cleanup start final_url=%s content_type=%s\n", current_url, info->content_type);
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
         rb_probe_cleanup_amissl();
 #endif
+        printf("rb-probe cleanup: unsupported cleanup end final_state=ERROR codec=unsupported\n");
         return RB_STREAM_PROBE_ERR_UNSUPPORTED_CONTENT_TYPE;
     }
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
@@ -852,6 +873,25 @@ static const char *rb_probe_codec_name(RbStreamCodec codec)
     }
 }
 
+static int rb_probe_selftest(void)
+{
+    RbProbeUrl url;
+    RbStreamInfo info;
+    unsigned char id3[] = { 'I', 'D', '3', 4, 0, 0 };
+    unsigned char mpeg[] = { 0xff, 0xfb, 0x90, 0x64 };
+
+    rb_probe_info_init(&info);
+    if (rb_probe_parse_url("http://ice1.somafm.com/groovesalad-128-mp3", &url) != RB_STREAM_PROBE_OK) return 1;
+    if (rb_probe_detect_codec(&url, &info, NULL, 0) != RB_STREAM_CODEC_MP3) return 2;
+    if (rb_probe_parse_url("http://ice1.somafm.com/groovesalad-64-mp3", &url) != RB_STREAM_PROBE_OK) return 3;
+    if (rb_probe_detect_codec(&url, &info, NULL, 0) != RB_STREAM_CODEC_MP3) return 4;
+    if (rb_probe_detect_codec(&url, &info, id3, (int)sizeof(id3)) != RB_STREAM_CODEC_MP3) return 5;
+    if (rb_probe_detect_codec(&url, &info, mpeg, (int)sizeof(mpeg)) != RB_STREAM_CODEC_MP3) return 6;
+    if (!rb_probe_url_looks_hls("http://example.com/live.m3u8")) return 7;
+    printf("rb-probe selftest: ok\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     RbStreamInfo info;
@@ -859,8 +899,10 @@ int main(int argc, char **argv)
     int peek_len;
     int rc;
 
+    if (argc >= 2 && strcmp(argv[1], "--selftest") == 0)
+        return rb_probe_selftest();
     if (argc < 2) {
-        fprintf(stderr, "usage: %s URL\n", argv[0]);
+        fprintf(stderr, "usage: %s URL | --selftest\n", argv[0]);
         return 2;
     }
     rc = rb_probe_stream_url(argv[1], &info, peek, (int)sizeof(peek), &peek_len);
