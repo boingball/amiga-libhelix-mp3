@@ -8,7 +8,8 @@
 #ifndef RADIO_DEBUG_STOP
 #define RADIO_DEBUG_STOP 0
 #endif
-#if RADIO_DEBUG_STOP
+#include "radio_debug.h"
+#if defined(RADIO_DEBUG) || RADIO_DEBUG_STOP
 #include <stdio.h>
 #define RADIO_STOP_DEBUG_PRINTF(x) do { printf x; } while (0)
 #else

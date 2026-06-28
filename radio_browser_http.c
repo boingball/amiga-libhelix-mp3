@@ -7,6 +7,7 @@
  */
 
 #include "radio_browser_http.h"
+#include "radio_debug.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -52,7 +53,7 @@ static void rb_http_release_socketbase(void)
     if (SocketBase) {
         CloseLibrary(SocketBase);
         SocketBase = NULL;
-        printf("radio-socket: browser SocketBase closed after request\n");
+        RADIO_DBG(printf("radio-socket: browser SocketBase closed after request\n");)
     }
 }
 #endif
@@ -388,27 +389,27 @@ int main(void)
         printf("build search path failed: %d\n", rc);
         return 1;
     }
-    printf("search path: %s\n", path);
+    RADIO_DBG(printf("search path: %s\n", path);)
 
     rc = rb_http_get_json(RB_RADIO_E2E_HOST, path, body, (int)sizeof(body));
-    printf("rb_http_get_json return: %d\n", rc);
+    RADIO_DBG(printf("rb_http_get_json return: %d\n", rc);)
     if (rc < 0) {
-        printf("rb_http_get_json error: %d\n", rc);
+        RADIO_DBG(printf("rb_http_get_json error: %d\n", rc);)
         return 1;
     }
-    printf("JSON body length: %lu\n", (unsigned long)strlen(body));
-    printf("JSON body first %d chars: \"", RB_RADIO_E2E_BODY_PREVIEW);
+    RADIO_DBG(printf("JSON body length: %lu\n", (unsigned long)strlen(body));)
+    RADIO_DBG(printf("JSON body first %d chars: \"", RB_RADIO_E2E_BODY_PREVIEW);)
     rb_radio_e2e_print_escaped_preview(body, RB_RADIO_E2E_BODY_PREVIEW);
     printf("\"\n");
 
     count = rb_parse_stations_json(body, stations, RB_MAX_STATIONS);
-    printf("rb_parse_stations_json return/count: %d\n", count);
+    RADIO_DBG(printf("rb_parse_stations_json return/count: %d\n", count);)
     if (count == 0) {
-        printf("station count is 0; not probing streams\n");
+        RADIO_DBG(printf("station count is 0; not probing streams\n");)
         return 1;
     }
     if (count < 0) {
-        printf("rb_parse_stations_json error: %d\n", count);
+        RADIO_DBG(printf("rb_parse_stations_json error: %d\n", count);)
         return 1;
     }
 
@@ -416,49 +417,49 @@ int main(void)
         play_url = rb_station_play_url(&stations[i]);
         if (!play_url[0]) continue;
         if (rb_radio_e2e_is_https_url(play_url)) {
-            printf("skip https station %d: %s\n", i + 1, play_url);
+            RADIO_DBG(printf("skip https station %d: %s\n", i + 1, play_url);)
             continue;
         }
         if (!rb_radio_e2e_is_http_url(play_url)) {
-            printf("skip non-http station %d: %s\n", i + 1, play_url);
+            RADIO_DBG(printf("skip non-http station %d: %s\n", i + 1, play_url);)
             continue;
         }
 
         peek_len = 0;
         rc = rb_probe_stream_url(play_url, &info, peek, (int)sizeof(peek), &peek_len);
         if (rc == RB_STREAM_PROBE_ERR_UNSUPPORTED_TLS) {
-            printf("skip station %d: redirect to unsupported TLS\n", i + 1);
+            RADIO_DBG(printf("skip station %d: redirect to unsupported TLS\n", i + 1);)
             continue;
         }
         if (rc < 0) {
-            printf("skip station %d: probe error %d\n", i + 1, rc);
+            RADIO_DBG(printf("skip station %d: probe error %d\n", i + 1, rc);)
             continue;
         }
         if (info.codec != RB_STREAM_CODEC_MP3 && info.codec != RB_STREAM_CODEC_AAC) {
-            printf("skip station %d: unsupported/unknown codec %s\n",
-                   i + 1, rb_radio_e2e_codec_name(info.codec));
+            RADIO_DBG(printf("skip station %d: unsupported/unknown codec %s\n",
+                   i + 1, rb_radio_e2e_codec_name(info.codec));)
             continue;
         }
 
         rb_station_display_name(&stations[i], display, (int)sizeof(display));
-        printf("selected station display name: %s\n", display);
+        RADIO_DBG(printf("selected station display name: %s\n", display);)
         printf("radio browser codec: %s\n", stations[i].codec);
         printf("radio browser bitrate: %d\n", stations[i].bitrate);
         printf("radio browser country: %s\n", stations[i].countrycode);
-        printf("original play URL: %s\n", play_url);
-        printf("final URL: %s\n", info.final_url);
-        printf("redirect count: %d\n", info.redirect_count);
-        printf("HTTP status: %d\n", info.http_status);
-        printf("content type: %s\n", info.content_type);
-        printf("icy-name: %s\n", info.icy_name);
-        printf("icy-br: %d\n", info.icy_br);
-        printf("icy-metaint: %d\n", info.icy_metaint);
-        printf("detected codec: %s\n", rb_radio_e2e_codec_name(info.codec));
-        printf("peek byte count: %d\n", peek_len);
+        RADIO_DBG(printf("original play URL: %s\n", play_url);)
+        RADIO_DBG(printf("final URL: %s\n", info.final_url);)
+        RADIO_DBG(printf("redirect count: %d\n", info.redirect_count);)
+        RADIO_DBG(printf("HTTP status: %d\n", info.http_status);)
+        RADIO_DBG(printf("content type: %s\n", info.content_type);)
+        RADIO_DBG(printf("icy-name: %s\n", info.icy_name);)
+        RADIO_DBG(printf("icy-br: %d\n", info.icy_br);)
+        RADIO_DBG(printf("icy-metaint: %d\n", info.icy_metaint);)
+        RADIO_DBG(printf("detected codec: %s\n", rb_radio_e2e_codec_name(info.codec));)
+        RADIO_DBG(printf("peek byte count: %d\n", peek_len);)
         return 0;
     }
 
-    printf("no MP3 or AAC station probed successfully\n");
+    RADIO_DBG(printf("no MP3 or AAC station probed successfully\n");)
     return 1;
 }
 #endif

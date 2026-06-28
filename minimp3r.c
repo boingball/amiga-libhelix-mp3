@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "radio_debug.h"
 
 #if defined(AMIGA_M68K)
 
@@ -522,7 +523,7 @@ static const char *MrStreamStateName(MrStreamState state)
 
 static void MrDebugSession(const char *event, const MrApp *app)
 {
-	printf("radio-session: %s session=%lu state=%s childTask=%p childProc=%p url=\"%s\" codec=%s stop=%d done=%d active_child_count=%lu active_stream_sessions=%lu active_stream_tasks=%lu stage=\"%s\" startup=\"%s\" cleanup=\"%s\" io=\"%s\"\n",
+	RADIO_DBG(printf("radio-session: %s session=%lu state=%s childTask=%p childProc=%p url=\"%s\" codec=%s stop=%d done=%d active_child_count=%lu active_stream_sessions=%lu active_stream_tasks=%lu stage=\"%s\" startup=\"%s\" cleanup=\"%s\" io=\"%s\"\n",
 		event ? event : "event",
 		gPlayer.sessionId,
 		app ? MrStreamStateName(app->streamState) : "(no-app)",
@@ -536,7 +537,7 @@ static void MrDebugSession(const char *event, const MrApp *app)
 		gPlayer.stage ? (const char *)gPlayer.stage : "",
 		gPlayer.startupStage ? (const char *)gPlayer.startupStage : "",
 		gPlayer.cleanupStage ? (const char *)gPlayer.cleanupStage : "",
-		gPlayer.lastIoState ? (const char *)gPlayer.lastIoState : "");
+		gPlayer.lastIoState ? (const char *)gPlayer.lastIoState : "");)
 }
 
 /* ------------------------------------------------------------------------- */
@@ -556,8 +557,8 @@ static void SafeCopy(char *dst, size_t size, const char *src)
 static int MrVerifyAppMagic(MrApp *app, const char *where)
 {
 	if (!app || app->magic != MR_APP_MAGIC) {
-		printf("radio-guard: WARNING app magic corrupt before %s app=%p magic=%08lx expected=%08lx\n",
-			where ? where : "operation", app, app ? app->magic : 0UL, (unsigned long)MR_APP_MAGIC);
+		RADIO_DBG(printf("radio-guard: WARNING app magic corrupt before %s app=%p magic=%08lx expected=%08lx\n",
+			where ? where : "operation", app, app ? app->magic : 0UL, (unsigned long)MR_APP_MAGIC);)
 		return 0;
 	}
 	return 1;
@@ -904,7 +905,7 @@ static int MrSetRadioMetadata(MrApp *app, int updateStatus)
 		else if (radioStatus == RADIO_STATUS_CONNECTING)
 			sprintf(status, "Connecting stream...");
 		else if (radioStatus == RADIO_STATUS_PLAYING) {
-			printf("radio-ui: UI state set to PLAYING\n");
+			RADIO_DBG(printf("radio-ui: UI state set to PLAYING\n");)
 			sprintf(status, "Streaming");
 		}
 		else
@@ -1108,7 +1109,7 @@ static void PlaybackEntry(void)
 	gPlayer.task = FindTask(NULL);
 	gPlayer.stage = "STARTING";
 	gPlayer.startupStage = "child entered";
-	printf("radio-session: child entered session=%lu childTask=%p childProc=%p url=\"%s\" codec=%s state=STARTING\n", gPlayer.sessionId, gPlayer.task, gPlayer.process, gPlayer.url, gPlayer.codec);
+	RADIO_DBG(printf("radio-session: child entered session=%lu childTask=%p childProc=%p url=\"%s\" codec=%s state=STARTING\n", gPlayer.sessionId, gPlayer.task, gPlayer.process, gPlayer.url, gPlayer.codec);)
 	pending = SetSignal(0, 0);
 	earlyStop = gPlayer.stopRequested || gPlaybackInterrupted ||
 		(pending & SIGBREAKF_CTRL_C);
@@ -1128,34 +1129,34 @@ static void PlaybackEntry(void)
 		gMiniAmp3EmbeddedPlayback = 1;
 		gPlayer.stage = "PLAYING";
 		gPlayer.startupStage = "decoder main";
-		printf("radio-teardown: child entering HelixAmp3CliMain session=%lu\n", gPlayer.sessionId);
+		RADIO_DBG(printf("radio-teardown: child entering HelixAmp3CliMain session=%lu\n", gPlayer.sessionId);)
 		HelixAmp3CliMain(gPlayer.argc, gPlayer.argv);
-		printf("radio-teardown: child returned from HelixAmp3CliMain session=%lu stop=%d\n", gPlayer.sessionId, gPlayer.stopRequested);
+		RADIO_DBG(printf("radio-teardown: child returned from HelixAmp3CliMain session=%lu stop=%d\n", gPlayer.sessionId, gPlayer.stopRequested);)
 		gMiniAmp3EmbeddedPlayback = 0;
 	}
 
 	gPlayer.stage = "EXITING";
 	gPlayer.cleanupStage = "cleanup enter";
-	printf("radio-session: child begins cleanup session=%lu reason=%s\n", gPlayer.sessionId, gPlayer.stopRequested ? "stop" : "normal");
+	RADIO_DBG(printf("radio-session: child begins cleanup session=%lu reason=%s\n", gPlayer.sessionId, gPlayer.stopRequested ? "stop" : "normal");)
 	gGuiPlaybackStatus.phase = GUIPLAY_PHASE_DONE;
 	gGuiPlaybackStatus.cleanupComplete = 1;
 	gPlayer.cleanupStage = "cleanup complete";
-	printf("radio-session: child cleanup complete session=%lu\n", gPlayer.sessionId);
+	RADIO_DBG(printf("radio-session: child cleanup complete session=%lu\n", gPlayer.sessionId);)
 	(void)ranDecoder;
 
 	gDoneRunId = gGuiPlaybackStatus.runId;
 	donePort = gDonePort;
 	if (donePort) {
 		gDoneMsg.mn_Node.ln_Type = NT_MESSAGE;
-		printf("radio-teardown: child posting done message session=%lu\n", gPlayer.sessionId);
+		RADIO_DBG(printf("radio-teardown: child posting done message session=%lu\n", gPlayer.sessionId);)
 		gPlayer.donePosted = 1;
 		postedDone = 1;
 		PutMsg(donePort, &gDoneMsg);
 	}
-	if (!postedDone) printf("radio-session: child no done port session=%lu done message not posted\n", gPlayer.sessionId);
+	if (!postedDone) RADIO_DBG(printf("radio-session: child no done port session=%lu done message not posted\n", gPlayer.sessionId);)
 	gPlayer.stage = "EXITED";
-	printf("child exiting session=%lu reason=%s\n", gPlayer.sessionId, gPlayer.stopRequested ? "stop" : "normal");
-	printf("radio-teardown: child PlaybackEntry exiting (task will terminate) session=%lu\n", gPlayer.sessionId);
+	RADIO_DBG(printf("child exiting session=%lu reason=%s\n", gPlayer.sessionId, gPlayer.stopRequested ? "stop" : "normal");)
+	RADIO_DBG(printf("radio-teardown: child PlaybackEntry exiting (task will terminate) session=%lu\n", gPlayer.sessionId);)
 }
 
 static void StartPlayback(MrApp *app)
@@ -1284,13 +1285,13 @@ static void StopPlayback(MrApp *app)
 
 	if (!MrVerifyAppMagic(app, "StopPlayback"))
 		return;
-	printf("radio-guard: before StopPlayback\n");
-	printf("radio-stop: button streamState=%s playbackActive=%d playbackDonePending=%d activeChildCount=%lu process=%p task=%p stopRequested=%d queuedStreamUrl=\"%s\" playlistNextPending=%d session=%lu lastExit=\"%s\" lastError=\"%s\"\n",
+	RADIO_DBG(printf("radio-guard: before StopPlayback\n");)
+	RADIO_DBG(printf("radio-stop: button streamState=%s playbackActive=%d playbackDonePending=%d activeChildCount=%lu process=%p task=%p stopRequested=%d queuedStreamUrl=\"%s\" playlistNextPending=%d session=%lu lastExit=\"%s\" lastError=\"%s\"\n",
 		MrStreamStateName(app->streamState), app->playbackActive,
 		app->playbackDonePending, app->activeChildCount, gPlayer.process,
 		gPlayer.task, gPlayer.stopRequested, app->queuedStreamUrl,
 		app->playlistNextPending, gPlayer.sessionId, app->lastChildExitReason,
-		app->lastChildError);
+		app->lastChildError);)
 	canStop = app->playbackActive &&
 		app->streamState != MR_STREAM_IDLE &&
 		app->streamState != MR_STREAM_EXITED &&
@@ -1298,14 +1299,14 @@ static void StopPlayback(MrApp *app)
 		app->activeChildCount > 0 &&
 		(gPlayer.process || gPlayer.task || PlaybackProcessStillExists());
 	if (!canStop) {
-		printf("Stop ignored: no active playback child\n");
+		RADIO_DBG(printf("Stop ignored: no active playback child\n");)
 		SetStatus(app, "Stopped.");
-		printf("radio-guard: after StopPlayback\n");
+		RADIO_DBG(printf("radio-guard: after StopPlayback\n");)
 		return;
 	}
 	if (gPlayer.stopRequested) {
 		SetStatus(app, "Stopping...");
-		printf("radio-guard: after StopPlayback\n");
+		RADIO_DBG(printf("radio-guard: after StopPlayback\n");)
 		return;
 	}
 	app->stoppedByUser = 1;
@@ -1339,7 +1340,7 @@ static void StopPlayback(MrApp *app)
 	gPlayer.stage = "STOPPING";
 	SetStatus(app, "Stopping...");
 	UpdateNextButtonState(app);
-	printf("radio-guard: after StopPlayback\n");
+	RADIO_DBG(printf("radio-guard: after StopPlayback\n");)
 }
 
 static int StopPlaybackAndWait(MrApp *app, int ticks, const char *timeoutStatus)
@@ -1361,7 +1362,7 @@ static int StopPlaybackAndWait(MrApp *app, int ticks, const char *timeoutStatus)
 	if (timeoutStatus && timeoutStatus[0])
 		SetStatus(app, timeoutStatus);
 	MrDebugSession("parent stop timeout - queued stream not started", app);
-	printf("radio-session: stop timeout details childTask=%p session=%lu currentStage=\"%s\" lastStartup=\"%s\" lastCleanup=\"%s\" currentUrl=\"%s\" lastReadDecode=\"%s\" stopFlag=%d donePosted=%d\n", gPlayer.task, gPlayer.sessionId, gPlayer.stage ? (const char *)gPlayer.stage : "", gPlayer.startupStage ? (const char *)gPlayer.startupStage : "", gPlayer.cleanupStage ? (const char *)gPlayer.cleanupStage : "", gPlayer.url, gPlayer.lastIoState ? (const char *)gPlayer.lastIoState : "", gPlayer.stopRequested, gPlayer.donePosted);
+	RADIO_DBG(printf("radio-session: stop timeout details childTask=%p session=%lu currentStage=\"%s\" lastStartup=\"%s\" lastCleanup=\"%s\" currentUrl=\"%s\" lastReadDecode=\"%s\" stopFlag=%d donePosted=%d\n", gPlayer.task, gPlayer.sessionId, gPlayer.stage ? (const char *)gPlayer.stage : "", gPlayer.startupStage ? (const char *)gPlayer.startupStage : "", gPlayer.cleanupStage ? (const char *)gPlayer.cleanupStage : "", gPlayer.url, gPlayer.lastIoState ? (const char *)gPlayer.lastIoState : "", gPlayer.stopRequested, gPlayer.donePosted);)
 	return 0;
 }
 static void RadioSetStatus(MrApp *app, const char *text);
@@ -1375,7 +1376,7 @@ static void FinalizePlayback(MrApp *app)
 
 	if (!MrVerifyAppMagic(app, "FinalizePlayback"))
 		return;
-	printf("radio-guard: before FinalizePlayback\n");
+	RADIO_DBG(printf("radio-guard: before FinalizePlayback\n");)
 	MrCopyVolatileString(radioError, sizeof(radioError), gGuiPlaybackStatus.radioError);
 	failedStart = (!stoppedByUser && gGuiPlaybackStatus.radioStatus == RADIO_STATUS_ERROR &&
 		gGuiPlaybackStatus.decodedFrames == 0);
@@ -1390,10 +1391,10 @@ static void FinalizePlayback(MrApp *app)
 	app->stoppedByUser = 0;
 	app->streamState = failedStart ? MR_STREAM_ERROR : MR_STREAM_EXITED;
 	MrDebugSession("parent receives done and clears child pointer", app);
-	printf("radio-done: parent done received childExit=\"%s\" childError=\"%s\" everPlayed=%d firstData=%d streamStateBeforeFinalize=%s\n",
+	RADIO_DBG(printf("radio-done: parent done received childExit=\"%s\" childError=\"%s\" everPlayed=%d firstData=%d streamStateBeforeFinalize=%s\n",
 		app->lastChildExitReason, app->lastChildError,
 		app->lastChildEverPlayed, app->lastChildFirstData,
-		failedStart ? "ERROR" : "EXITED");
+		failedStart ? "ERROR" : "EXITED");)
 	gPlayer.process = NULL;
 	gPlayer.task = NULL;
 	gPlayer.stopRequested = 0;
@@ -1416,14 +1417,14 @@ static void FinalizePlayback(MrApp *app)
 		SetStatus(app, finalStatus);
 		app->streamState = MR_STREAM_IDLE;
 	}
-	printf("radio-done: streamStateAfterFinalize=%s guiStatus=\"%s\"\n",
-		MrStreamStateName(app->streamState), finalStatus);
-	printf("radio-guard: after FinalizePlayback\n");
+	RADIO_DBG(printf("radio-done: streamStateAfterFinalize=%s guiStatus=\"%s\"\n",
+		MrStreamStateName(app->streamState), finalStatus);)
+	RADIO_DBG(printf("radio-guard: after FinalizePlayback\n");)
 	if (app->queuedStreamUrl[0]) {
 		app->queuedStreamUrl[0] = '\0';
 		RadioSetStatus(app, "Starting queued stream...");
 #if defined(AMIGA_M68K)
-		printf("radio-done: Delay before queued stream start after parent done received\n");
+		RADIO_DBG(printf("radio-done: Delay before queued stream start after parent done received\n");)
 		Delay(3);
 #endif
 		RadioDoProbeAndPlay(app);
@@ -1456,10 +1457,10 @@ static void HandleDoneSignal(MrApp *app)
 		(gGuiPlaybackStatus.radioStatus == RADIO_STATUS_ERROR ? "error" : "normal");
 	doneEverPlayed = gGuiPlaybackStatus.decodedFrames > 0 ? 1 : 0;
 	doneFirstData = gGuiPlaybackStatus.radioBufferedBytes > 0 ? 1 : 0;
-	printf("radio-session: parent receives done message session=%lu doneRun=%lu active=%d pending=%d childExit=\"%s\" childError=\"%s\" everPlayed=%d firstData=%d streamStateBefore=%s\n",
+	RADIO_DBG(printf("radio-session: parent receives done message session=%lu doneRun=%lu active=%d pending=%d childExit=\"%s\" childError=\"%s\" everPlayed=%d firstData=%d streamStateBefore=%s\n",
 		gPlayer.sessionId, gDoneRunId, app->playbackActive,
 		app->playbackDonePending, doneReason, doneError,
-		doneEverPlayed, doneFirstData, MrStreamStateName(app->streamState));
+		doneEverPlayed, doneFirstData, MrStreamStateName(app->streamState));)
 	app->playbackDonePending = 1;
 	/* The child posts its done message just before returning from
 	 * PlaybackEntry(); wait for DOS to actually reap the task before we let a
@@ -3097,9 +3098,9 @@ static void RadioRefreshResults(MrApp *app)
 			else if (app->rbController.max_bitrate > 0 && st->bitrate == 0) { reason = "hidden_bitrate_unknown"; }
 			else if (app->rbController.max_bitrate > 0 && st->bitrate > app->rbController.max_bitrate) { reason = "hidden_bitrate"; }
 #ifdef MINIAMP3_DEBUG
-			printf("Radio Browser filter: name=\"%s\" scheme=%s codec=%s bitrate=%d max=%d reason=%s\n",
+			RADIO_DBG(printf("Radio Browser filter: name=\"%s\" scheme=%s codec=%s bitrate=%d max=%d reason=%s\n",
 				st->name, url && strncmp(url, "https://", 8) == 0 ? "https" : (url && strncmp(url, "http://", 7) == 0 ? "http" : "other"),
-				st->codec, st->bitrate, app->rbController.max_bitrate, reason);
+				st->codec, st->bitrate, app->rbController.max_bitrate, reason);)
 #endif
 			if (reason[0] != 's') continue;
 			row = app->rbVisibleCount++;
@@ -3202,13 +3203,13 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 		GT_GetGadgetAttrs(app->rbGadList, app->rbWin, NULL,
 			GTLV_Selected, (ULONG)&selected, TAG_DONE);
 #ifdef MINIAMP3_DEBUG
-	printf("radio results selection event row/index: %ld\n", (long)selected);
+	RADIO_DBG(printf("radio results selection event row/index: %ld\n", (long)selected);)
 #endif
 	if (selected == (ULONG)~0 || selected >= (ULONG)app->rbVisibleCount) {
 		app->rbSelectedFavourite = -1;
 		rb_controller_set_selected(&app->rbController, -1);
 #ifdef MINIAMP3_DEBUG
-		printf("radio results controller selected_index: %d\n", app->rbController.selected_index);
+		RADIO_DBG(printf("radio results controller selected_index: %d\n", app->rbController.selected_index);)
 #endif
 		RadioSetStatus(app, "Select a station first.");
 		return;
@@ -3236,8 +3237,8 @@ static void RadioSelectResult(MrApp *app, ULONG eventSelected)
 	}
 	rb_station_display_name(st, display, (int)sizeof(display));
 #ifdef MINIAMP3_DEBUG
-	printf("radio results controller selected_index: %d\n", app->rbController.selected_index);
-	printf("radio results station display name: %s\n", display);
+	RADIO_DBG(printf("radio results controller selected_index: %d\n", app->rbController.selected_index);)
+	RADIO_DBG(printf("radio results station display name: %s\n", display);)
 #endif
 	sprintf(msg, "Selected: %.120s", display);
 	RadioSetStatus(app, msg);
@@ -3300,8 +3301,8 @@ static void RadioDoProbeAndPlay(MrApp *app)
 	int rc;
 	const RadioBrowserStation *st;
 	char msg[512];
-	printf("radio-ui: play requested currentActive=%d donePending=%d stopRequested=%d state=%s input=\"%s\"\n",
-		app->playbackActive, app->playbackDonePending, gPlayer.stopRequested, MrStreamStateName(app->streamState), app->inputName);
+	RADIO_DBG(printf("radio-ui: play requested currentActive=%d donePending=%d stopRequested=%d state=%s input=\"%s\"\n",
+		app->playbackActive, app->playbackDonePending, gPlayer.stopRequested, MrStreamStateName(app->streamState), app->inputName);)
 	if (app->streamState == MR_STREAM_STARTING) { RadioSetStatus(app, "Still starting previous stream"); return; }
 	if (app->streamState == MR_STREAM_STOP_REQUESTED || app->streamState == MR_STREAM_STOPPING || app->streamState == MR_STREAM_STOP_TIMEOUT) {
 		SafeCopy(app->queuedStreamUrl, sizeof(app->queuedStreamUrl), "radio-selection");
@@ -3329,7 +3330,7 @@ static void RadioDoProbeAndPlay(MrApp *app)
 		MrIsRadioInput(app->inputName)) {
 		SafeCopy(app->queuedStreamUrl, sizeof(app->queuedStreamUrl), "radio-selection");
 		RadioSetStatus(app, "Queued stream; stopping previous stream...");
-		printf("radio-ui: queued stream while stopping old stream\n");
+		RADIO_DBG(printf("radio-ui: queued stream while stopping old stream\n");)
 		if (!gPlayer.stopRequested)
 			StopPlayback(app);
 		return;
@@ -3366,10 +3367,10 @@ static void RadioDoProbeAndPlay(MrApp *app)
 #endif
 	memset(&info, 0, sizeof(info));
 	RadioSetStatus(app, "Probing selected stream...");
-	printf("radio-ui: new stream probe start url=\"%s\"\n", rb_station_play_url(st));
+	RADIO_DBG(printf("radio-ui: new stream probe start url=\"%s\"\n", rb_station_play_url(st));)
 	rc = rb_controller_probe_selected(&app->rbController, &info, peek, (int)sizeof(peek), &peekLen);
-	printf("radio-ui: new stream probe result rc=%d final=\"%s\" content=\"%s\" codec=%d redirects=%d\n",
-		rc, info.final_url, info.content_type, (int)info.codec, info.redirect_count);
+	RADIO_DBG(printf("radio-ui: new stream probe result rc=%d final=\"%s\" content=\"%s\" codec=%d redirects=%d\n",
+		rc, info.final_url, info.content_type, (int)info.codec, info.redirect_count);)
 	if (rc < 0) {
 		RadioSetStatus(app, app->rbController.last_error);
 		return;
@@ -3391,7 +3392,7 @@ static void RadioDoProbeAndPlay(MrApp *app)
 	sprintf(msg, "Starting: %.120s | type: %.48s | icy-name: %.64s | icy-br: %d | redirects: %d",
 		info.final_url, info.content_type, info.icy_name, info.icy_br, info.redirect_count);
 	RadioSetStatus(app, msg);
-	printf("radio-ui: new stream start url=\"%s\"\n", info.final_url);
+	RADIO_DBG(printf("radio-ui: new stream start url=\"%s\"\n", info.final_url);)
 	StartPlayback(app);
 }
 
@@ -4238,18 +4239,18 @@ int main(int argc, char **argv)
 	/* Make sure any running child is stopped and reaped before we tear the
 	 * window (and its shared status block) down. */
 	if (app.playbackActive || app.playbackDonePending || PlaybackProcessStillExists()) {
-		printf("radio-guard: app close path\n");
-		printf("radio-ui: app close cleanup start active=%d donePending=%d state=%s process=%p task=%p\n",
+		RADIO_DBG(printf("radio-guard: app close path\n");)
+		RADIO_DBG(printf("radio-ui: app close cleanup start active=%d donePending=%d state=%s process=%p task=%p\n",
 			app.playbackActive, app.playbackDonePending,
-			MrStreamStateName(app.streamState), gPlayer.process, gPlayer.task);
+			MrStreamStateName(app.streamState), gPlayer.process, gPlayer.task);)
 		if (!StopPlaybackAndWait(&app, 500, "Failed to stop previous stream")) {
 			while (PlaybackProcessStillExists())
 				Delay(5);
 			HandleDoneSignal(&app);
 		}
-		printf("radio-ui: app close cleanup end active=%d donePending=%d state=%s process=%p task=%p\n",
+		RADIO_DBG(printf("radio-ui: app close cleanup end active=%d donePending=%d state=%s process=%p task=%p\n",
 			app.playbackActive, app.playbackDonePending,
-			MrStreamStateName(app.streamState), gPlayer.process, gPlayer.task);
+			MrStreamStateName(app.streamState), gPlayer.process, gPlayer.task);)
 	}
 
 	SyncFromGadgets(&app);
