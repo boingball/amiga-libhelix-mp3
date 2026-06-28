@@ -328,12 +328,21 @@ typedef struct MrPlayer {
 
 static MrPlayer        gPlayer;
 static MrPlayArgs      gArgs;
-static struct Message  gDoneMsg;
+typedef struct MrDoneMessage {
+	struct Message msg;
+	unsigned long magic;
+	unsigned long runId;
+	int posted;
+} MrDoneMessage;
+
+static MrDoneMessage gDoneMsg;
 static struct MsgPort *gDonePort;
 static volatile unsigned long gRunCounter;
 static volatile unsigned long gEntryRunId;
 static volatile unsigned long gDoneRunId;
 #define MR_APP_MAGIC 0x4d523047UL
+#define MR_DONE_MAGIC 0x4d52444fUL
+#define MR_WINDOW_TITLE "Amiga MP3 Player"
 
 /* ------------------------------------------------------------------------- */
 /* Application state                                                         */
@@ -461,6 +470,8 @@ typedef struct MrApp {
 	int   stoppedByUser;
 	char  lastChildExitReason[32];
 	char  lastChildError[128];
+	char  lastRadioError[256];
+	int   parentDoneHandled;
 	int   lastChildEverPlayed;
 	int   lastChildFirstData;
 	int   lastPhaseShown;
@@ -822,8 +833,9 @@ static void SetStatus(MrApp *app, const char *text)
 {
 	if (!app)
 		return;
+	SafeCopy(app->lastRadioError, sizeof(app->lastRadioError), text ? text : "");
 	SetReadonlyString(app->statusGad, app->win, app->shownStatus,
-		sizeof(app->shownStatus), text);
+		sizeof(app->shownStatus), app->lastRadioError);
 }
 
 static int PointInGadget(struct Gadget *gad, int x, int y)
@@ -1208,12 +1220,17 @@ static void PlaybackEntry(void)
 
 	gDoneRunId = gGuiPlaybackStatus.runId;
 	donePort = gDonePort;
-	if (donePort) {
-		gDoneMsg.mn_Node.ln_Type = NT_MESSAGE;
-		RADIO_DBG(printf("radio-teardown: child posting done message session=%lu\n", gPlayer.sessionId);)
+	if (donePort && !gPlayer.donePosted && !gDoneMsg.posted) {
+		gDoneMsg.msg.mn_Node.ln_Type = NT_MESSAGE;
+		gDoneMsg.magic = MR_DONE_MAGIC;
+		gDoneMsg.runId = gGuiPlaybackStatus.runId;
+		gDoneMsg.posted = 1;
+		RADIO_DBG(printf("radio-teardown: child posting done message session=%lu done_magic=%08lx error_ptr=%p\n", gPlayer.sessionId, gDoneMsg.magic, (void *)gGuiPlaybackStatus.radioError);)
 		gPlayer.donePosted = 1;
 		postedDone = 1;
-		PutMsg(donePort, &gDoneMsg);
+		PutMsg(donePort, &gDoneMsg.msg);
+	} else if (donePort) {
+		RADIO_DBG(printf("radio-teardown: duplicate child done suppressed session=%lu donePosted=%d msgPosted=%d\n", gPlayer.sessionId, gPlayer.donePosted, gDoneMsg.posted);)
 	}
 	if (!postedDone) RADIO_DBG(printf("radio-session: child no done port session=%lu done message not posted\n", gPlayer.sessionId);)
 	gPlayer.stage = "EXITED";
@@ -1255,8 +1272,9 @@ static void StartPlayback(MrApp *app)
 	while ((stale = GetMsg(app->donePort)) != NULL)
 		;
 	memset(&gDoneMsg, 0, sizeof(gDoneMsg));
-	gDoneMsg.mn_Length = sizeof(gDoneMsg);
-	gDoneMsg.mn_Node.ln_Type = NT_MESSAGE;
+	gDoneMsg.msg.mn_Length = sizeof(gDoneMsg);
+	gDoneMsg.msg.mn_Node.ln_Type = NT_MESSAGE;
+	gDoneMsg.magic = MR_DONE_MAGIC;
 
 	memset((void *)&gGuiPlaybackStatus, 0, sizeof(gGuiPlaybackStatus));
 	app->streamState = MR_STREAM_STARTING;
@@ -1278,6 +1296,8 @@ static void StartPlayback(MrApp *app)
 	gPlayer.donePosted = 0;
 	app->lastChildExitReason[0] = '\0';
 	app->lastChildError[0] = '\0';
+	app->lastRadioError[0] = '\0';
+	app->parentDoneHandled = 0;
 	app->lastChildEverPlayed = 0;
 	app->lastChildFirstData = 0;
 	gPlaybackInterrupted = 0;
@@ -1472,8 +1492,9 @@ static void FinalizePlayback(MrApp *app)
 	if (failedStart) {
 		char status[160];
 		sprintf(status, "Stream failed: %s", app->lastChildError[0] ? app->lastChildError : "radio stream failed");
-		finalStatus = status;
-		SetStatus(app, status);
+		SafeCopy(app->lastRadioError, sizeof(app->lastRadioError), status);
+		finalStatus = app->lastRadioError;
+		SetStatus(app, app->lastRadioError);
 	} else {
 		finalStatus = stoppedByUser ? "Stopped." : "Finished.";
 		SetStatus(app, finalStatus);
@@ -1509,10 +1530,18 @@ static void HandleDoneSignal(MrApp *app)
 
 	if (!app->donePort)
 		return;
-	while ((msg = GetMsg(app->donePort)) != NULL)
+	while ((msg = GetMsg(app->donePort)) != NULL) {
 		gotDone = 1;
+		if (((MrDoneMessage *)msg)->magic != MR_DONE_MAGIC)
+			RADIO_DBG(printf("radio-done: bad done message magic msg=%p magic=%08lx\n", (void *)msg, ((MrDoneMessage *)msg)->magic);)
+	}
 	if (!gotDone)
 		return;
+	if (app->parentDoneHandled) {
+		RADIO_DBG(printf("radio-done: duplicate parent done ignored session=%lu handled=%d pending=%d active=%d\n", gPlayer.sessionId, app->parentDoneHandled, app->playbackDonePending, app->playbackActive);)
+		return;
+	}
+	app->parentDoneHandled = 1;
 
 	MrCopyVolatileString(doneError, sizeof(doneError), gGuiPlaybackStatus.radioError);
 	doneReason = gPlayer.stopRequested ? "stop" :
@@ -1576,8 +1605,9 @@ static void PollPlaybackStatus(MrApp *app)
 			gGuiPlaybackStatus.radioActive = 0;
 			gGuiPlaybackStatus.radioBufferedBytes = 0;
 			sprintf(status, "Stream failed: %s", radioError[0] ? radioError : "radio error");
-			if (strcmp(app->shownStatus, status)) {
-				SetStatus(app, status);
+			SafeCopy(app->lastRadioError, sizeof(app->lastRadioError), status);
+			if (strcmp(app->shownStatus, app->lastRadioError)) {
+				SetStatus(app, app->lastRadioError);
 				updates++;
 			}
 		} else if (radioActive &&
@@ -2098,8 +2128,8 @@ static int MrOpenWindow(MrApp *app)
 	}
 
 	app->winObj = (Object *)NewObject(WINDOW_GetClass(), NULL,
-		WA_Title, (ULONG)"minimp3r",
-		WA_ScreenTitle, (ULONG)"minimp3r - Helix MP3 player",
+		WA_Title, (ULONG)MR_WINDOW_TITLE,
+		WA_ScreenTitle, (ULONG)MR_WINDOW_TITLE,
 		WA_Activate, TRUE,
 		WA_DepthGadget, TRUE,
 		WA_DragBar, TRUE,
@@ -3104,12 +3134,14 @@ static const char *ProbeCodecName(RbStreamCodec codec)
 static void RadioSetStatus(MrApp *app, const char *text)
 {
 	struct Gadget *gad;
-	if (!app->rbWin || !app->rbGadgets) return;
+	if (!app || !app->rbWin || !app->rbGadgets) return;
 	gad = app->rbGadgets;
 	while (gad && gad->GadgetID != RB_GID_STATUS) gad = gad->NextGadget;
-	if (gad)
+	if (gad) {
+		SafeCopy(app->lastRadioError, sizeof(app->lastRadioError), text ? text : "");
 		GT_SetGadgetAttrs(gad, app->rbWin, NULL,
-			GTST_String, (ULONG)(text ? text : ""), TAG_DONE);
+			GTST_String, (ULONG)app->lastRadioError, TAG_DONE);
+	}
 }
 
 static int RadioIsHttpStation(const RadioBrowserStation *st)
