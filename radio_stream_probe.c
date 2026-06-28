@@ -379,10 +379,16 @@ static void rb_probe_cleanup_amissl(void)
         AmiSSLBase = NULL;
         AmiSSLExtBase = NULL;
     }
-    if (AmiSSLMasterBase) {
-        CloseLibrary(AmiSSLMasterBase);
-        AmiSSLMasterBase = NULL;
-    }
+    /* Deliberately keep amisslmaster.library open for the lifetime of the
+     * program.  AmiSSL requires InitAmiSSLMaster() to run exactly once; only the
+     * per-task OpenAmiSSL()/CloseAmiSSL() pair above may repeat.  Closing and
+     * re-opening the master library on every probe/stream stop (the probe and
+     * the playback child each ran their own full teardown) re-ran
+     * InitAmiSSLMaster() several times within a single stop->probe->start cycle,
+     * which wedged the next HTTPS connection and froze the machine when the user
+     * pressed Play on an already-playing stream.  The master base is shared with
+     * radio_stream.c via the weak AmiSSLBase/AmiSSLMasterBase symbols and is
+     * reclaimed by the OS at program exit. */
 }
 
 #endif

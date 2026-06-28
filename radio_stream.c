@@ -346,14 +346,16 @@ static void radio_ssl_global_cleanup(void)
     } else {
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: CloseAmiSSL skipped\n"));
     }
-    if (AmiSSLMasterBase) {
-        RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: CloseLibrary(amisslmaster) start master=%p\n", (void *)AmiSSLMasterBase));
-        CloseLibrary(AmiSSLMasterBase);
-        AmiSSLMasterBase = NULL;
-        RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: CloseLibrary(amisslmaster) done\n"));
-    } else {
-        RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: CloseLibrary(amisslmaster) skipped\n"));
-    }
+    /* Keep amisslmaster.library open for the lifetime of the program.  AmiSSL
+     * requires InitAmiSSLMaster() to run exactly once; only the per-task
+     * OpenAmiSSL()/CloseAmiSSL() pair above is allowed to repeat.  The previous
+     * code closed and re-opened the master library on every stream stop, so a
+     * stop->probe->start cycle (Play pressed on an already-playing stream) re-ran
+     * InitAmiSSLMaster() several times in quick succession and wedged the next
+     * HTTPS connection, freezing the machine.  The master base is shared with
+     * radio_stream_probe.c through the weak AmiSSLMasterBase symbol and the OS
+     * reclaims it at program exit. */
+    RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: amisslmaster kept open master=%p\n", (void *)AmiSSLMasterBase));
     RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: AmiSSL global cleanup complete\n"));
 }
 
