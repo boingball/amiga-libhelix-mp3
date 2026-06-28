@@ -6,6 +6,7 @@
  */
 
 #include "radio_stream_probe.h"
+#include "radio_debug.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -83,7 +84,7 @@ static void rb_probe_release_idle_socketbase(void)
     if (rb_probe_open_socket_count == 0 && SocketBase) {
         CloseLibrary(SocketBase);
         SocketBase = NULL;
-        printf("radio-socket: probe SocketBase closed after idle cleanup\n");
+        RADIO_DBG(printf("radio-socket: probe SocketBase closed after idle cleanup\n");)
     }
 }
 #endif
@@ -165,10 +166,10 @@ static long rb_probe_ioerr_value(void)
 
 static void rb_probe_socket_fail(const RbProbeTransport *transport, const char *where)
 {
-    printf("radio-socket: probe socket failed session=%lu host=%s fd=-1 errno=%ld IoErr=%ld open_socket_count=%ld probe_open_socket_count=%ld where=%s\n",
+    RADIO_DBG(printf("radio-socket: probe socket failed session=%lu host=%s fd=-1 errno=%ld IoErr=%ld open_socket_count=%ld probe_open_socket_count=%ld where=%s\n",
         transport ? transport->session_id : 0, transport ? transport->host : "",
         rb_probe_sock_errno(), rb_probe_ioerr_value(), rb_probe_open_socket_count,
-        rb_probe_open_socket_count, where ? where : "");
+        rb_probe_open_socket_count, where ? where : "");)
 }
 
 static void rb_probe_info_init(RbStreamInfo *info)
@@ -428,7 +429,7 @@ static int rb_probe_ensure_amissl(void)
 
 static void rb_probe_cleanup_amissl(void)
 {
-    printf("radio-ssl-diag: probe cleanup ENTER probe_init=%d base=%p ext=%p master=%p\n", rb_probe_amissl_initialized, (void *)AmiSSLBase, (void *)AmiSSLExtBase, (void *)AmiSSLMasterBase);
+    RADIO_DBG(printf("radio-ssl-diag: probe cleanup ENTER probe_init=%d base=%p ext=%p master=%p\n", rb_probe_amissl_initialized, (void *)AmiSSLBase, (void *)AmiSSLExtBase, (void *)AmiSSLMasterBase);)
     if (rb_probe_amissl_initialized) {
         CleanupAmiSSL(TAG_DONE);
         rb_probe_amissl_initialized = 0;
@@ -438,7 +439,7 @@ static void rb_probe_cleanup_amissl(void)
         AmiSSLBase = NULL;
         AmiSSLExtBase = NULL;
     }
-    printf("radio-ssl-diag: probe cleanup EXIT  probe_init=%d base=%p ext=%p master=%p\n", rb_probe_amissl_initialized, (void *)AmiSSLBase, (void *)AmiSSLExtBase, (void *)AmiSSLMasterBase);
+    RADIO_DBG(printf("radio-ssl-diag: probe cleanup EXIT  probe_init=%d base=%p ext=%p master=%p\n", rb_probe_amissl_initialized, (void *)AmiSSLBase, (void *)AmiSSLExtBase, (void *)AmiSSLMasterBase);)
     /* Deliberately keep amisslmaster.library open for the lifetime of the
      * program.  AmiSSL requires InitAmiSSLMaster() to run exactly once; only the
      * per-task OpenAmiSSL()/CloseAmiSSL() pair above may repeat.  Closing and
@@ -487,12 +488,12 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
         memset(host_addr_be, 0, sizeof(*host_addr_be));
         memcpy(host_addr_be, he->h_addr_list[0], 4);
         rb_probe_format_ipv4_be(*host_addr_be, addr_text, (int)sizeof(addr_text));
-        printf("rb-probe DNS: resolved %s -> %s\n", host, addr_text);
+        RADIO_DBG(printf("rb-probe DNS: resolved %s -> %s\n", host, addr_text);)
     }
     transport->sock = socket(AF_INET, SOCK_STREAM, 0);
     if (transport->sock == RB_PROBE_INVALID_SOCKET) { rb_probe_socket_fail(transport, "socket"); return RB_STREAM_PROBE_ERR_CONNECT; }
     rb_probe_open_socket_count++;
-    printf("radio-socket: probe socket opened session=%lu host=%s fd=%ld open_socket_count=%ld probe_open_socket_count=%ld\n", transport->session_id, transport->host, (long)transport->sock, rb_probe_open_socket_count, rb_probe_open_socket_count);
+    RADIO_DBG(printf("radio-socket: probe socket opened session=%lu host=%s fd=%ld open_socket_count=%ld probe_open_socket_count=%ld\n", transport->session_id, transport->host, (long)transport->sock, rb_probe_open_socket_count, rb_probe_open_socket_count);)
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons((unsigned short)port);
@@ -537,16 +538,16 @@ static int rb_probe_transport_open(RbProbeTransport *transport, const char *host
 #else
         sni_set = -1;
 #endif
-        printf("rb-probe TLS: host=%s port=%d sni=%s verify=disabled method=SSLv23_client_method\n",
-               host, port, sni_set > 0 ? host : (sni_set == 0 ? "not-set" : "unavailable"));
+        RADIO_DBG(printf("rb-probe TLS: host=%s port=%d sni=%s verify=disabled method=SSLv23_client_method\n",
+               host, port, sni_set > 0 ? host : (sni_set == 0 ? "not-set" : "unavailable"));)
         ssl_connect_rc = SSL_connect(transport->ssl);
         if (ssl_connect_rc != 1) {
             ssl_error = SSL_get_error(transport->ssl, ssl_connect_rc);
             ssl_lib_error = ERR_get_error();
             if (ssl_lib_error != 0)
                 ERR_error_string_n(ssl_lib_error, ssl_error_buf, sizeof(ssl_error_buf));
-            printf("rb-probe TLS: SSL_connect rc=%d SSL_get_error=%d error=\"%s\" verify=disabled method=SSLv23_client_method\n",
-                   ssl_connect_rc, ssl_error, ssl_error_buf[0] ? ssl_error_buf : "none");
+            RADIO_DBG(printf("rb-probe TLS: SSL_connect rc=%d SSL_get_error=%d error=\"%s\" verify=disabled method=SSLv23_client_method\n",
+                   ssl_connect_rc, ssl_error, ssl_error_buf[0] ? ssl_error_buf : "none");)
             SSL_free(transport->ssl); transport->ssl = NULL;
             SSL_CTX_free(transport->ctx); transport->ctx = NULL;
             rb_probe_transport_close(transport);
@@ -584,7 +585,7 @@ static void rb_probe_transport_close(RbProbeTransport *transport)
             rb_probe_close_socket(transport->sock);
             transport->sock = RB_PROBE_INVALID_SOCKET;
             if (rb_probe_open_socket_count > 0) rb_probe_open_socket_count--;
-            printf("radio-socket: probe socket close session=%lu fd=%ld open_socket_count %ld->%ld probe_open_socket_count %ld->%ld\n", transport->session_id, closing_fd, before, rb_probe_open_socket_count, before, rb_probe_open_socket_count);
+            RADIO_DBG(printf("radio-socket: probe socket close session=%lu fd=%ld open_socket_count %ld->%ld probe_open_socket_count %ld->%ld\n", transport->session_id, closing_fd, before, rb_probe_open_socket_count, before, rb_probe_open_socket_count);)
         }
     }
 }
@@ -713,16 +714,16 @@ static RbStreamCodec rb_probe_detect_codec(const RbProbeUrl *url, const RbStream
                                            const unsigned char *peek, int peek_len)
 {
     if (peek && peek_len >= 3 && peek[0] == 'I' && peek[1] == 'D' && peek[2] == '3') {
-        printf("rb-probe codec: initial byte sniff=ID3 final=MP3\n");
+        RADIO_DBG(printf("rb-probe codec: initial byte sniff=ID3 final=MP3\n");)
         return RB_STREAM_CODEC_MP3;
     }
     if (peek && peek_len >= 2 && peek[0] == 0xff && (peek[1] & 0xe0) == 0xe0 &&
         peek[1] != 0xf1 && peek[1] != 0xf9) {
-        printf("rb-probe codec: initial byte sniff=MPEG frame sync final=MP3\n");
+        RADIO_DBG(printf("rb-probe codec: initial byte sniff=MPEG frame sync final=MP3\n");)
         return RB_STREAM_CODEC_MP3;
     }
     if (peek && peek_len >= 2 && peek[0] == 0xff && (peek[1] == 0xf1 || peek[1] == 0xf9)) {
-        printf("rb-probe codec: initial byte sniff=ADTS final=AAC\n");
+        RADIO_DBG(printf("rb-probe codec: initial byte sniff=ADTS final=AAC\n");)
         return RB_STREAM_CODEC_AAC;
     }
     if (info && info->content_type[0]) {
@@ -956,11 +957,11 @@ static int rb_probe_stream_url_impl(const char *url, RbStreamInfo *info,
 #endif
         return rc;
     }
-    printf("rb-probe codec: final URL=%s content-type=%s URL codec hint=%s initial-bytes=%d\n",
-           current_url, info->content_type, rb_probe_url_has_mp3_hint(&parsed) ? "MP3" : "none", *peek_len);
+    RADIO_DBG(printf("rb-probe codec: final URL=%s content-type=%s URL codec hint=%s initial-bytes=%d\n",
+           current_url, info->content_type, rb_probe_url_has_mp3_hint(&parsed) ? "MP3" : "none", *peek_len);)
     info->codec = rb_probe_detect_codec(&parsed, info, peek_buf, *peek_len);
-    printf("rb-probe codec: final selected codec=%s\n",
-           info->codec == RB_STREAM_CODEC_MP3 ? "MP3" : (info->codec == RB_STREAM_CODEC_AAC ? "AAC" : "unsupported"));
+    RADIO_DBG(printf("rb-probe codec: final selected codec=%s\n",
+           info->codec == RB_STREAM_CODEC_MP3 ? "MP3" : (info->codec == RB_STREAM_CODEC_AAC ? "AAC" : "unsupported"));)
     if (rb_probe_is_hls(&parsed, info)) {
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
         rb_probe_cleanup_amissl();
@@ -968,11 +969,11 @@ static int rb_probe_stream_url_impl(const char *url, RbStreamInfo *info,
         return RB_STREAM_PROBE_ERR_HLS_UNSUPPORTED;
     }
     if (info->content_type[0] && info->codec == RB_STREAM_CODEC_UNKNOWN) {
-        printf("rb-probe cleanup: unsupported cleanup start final_url=%s content_type=%s\n", current_url, info->content_type);
+        RADIO_DBG(printf("rb-probe cleanup: unsupported cleanup start final_url=%s content_type=%s\n", current_url, info->content_type);)
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
         rb_probe_cleanup_amissl();
 #endif
-        printf("rb-probe cleanup: unsupported cleanup end final_state=ERROR codec=unsupported\n");
+        RADIO_DBG(printf("rb-probe cleanup: unsupported cleanup end final_state=ERROR codec=unsupported\n");)
         return RB_STREAM_PROBE_ERR_UNSUPPORTED_CONTENT_TYPE;
     }
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
@@ -1006,7 +1007,7 @@ static int rb_probe_selftest(void)
     if (rb_probe_detect_codec(&url, &info, id3, (int)sizeof(id3)) != RB_STREAM_CODEC_MP3) return 5;
     if (rb_probe_detect_codec(&url, &info, mpeg, (int)sizeof(mpeg)) != RB_STREAM_CODEC_MP3) return 6;
     if (!rb_probe_url_looks_hls("http://example.com/live.m3u8")) return 7;
-    printf("rb-probe selftest: ok\n");
+    RADIO_DBG(printf("rb-probe selftest: ok\n");)
     return 0;
 }
 
@@ -1031,12 +1032,12 @@ int main(int argc, char **argv)
     printf("status: %d\n", info.http_status);
     printf("redirects followed: %d\n", info.redirect_count);
     printf("final url: %s\n", info.final_url);
-    printf("content type: %s\n", info.content_type);
+    RADIO_DBG(printf("content type: %s\n", info.content_type);)
     printf("icy name: %s\n", info.icy_name);
     printf("icy bitrate: %d\n", info.icy_br);
     printf("icy metaint: %d\n", info.icy_metaint);
-    printf("detected codec: %s\n", rb_probe_codec_name(info.codec));
-    printf("peek bytes: %d\n", peek_len);
+    RADIO_DBG(printf("detected codec: %s\n", rb_probe_codec_name(info.codec));)
+    RADIO_DBG(printf("peek bytes: %d\n", peek_len);)
     return 0;
 }
 #endif
