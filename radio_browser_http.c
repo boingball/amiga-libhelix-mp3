@@ -19,6 +19,7 @@
 #include <proto/exec.h>
 #include <proto/bsdsocket.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <sys/ioctl.h>
@@ -92,7 +93,16 @@ static int rb_http_wait_socket(RB_HTTP_SOCKET sock, int for_write, int timeout_s
     else FD_SET(sock, &rfds);
     tv.tv_sec = timeout_sec;
     tv.tv_usec = 0;
+#if defined(AMIGA_M68K)
+    rc = WaitSelect((int)sock + 1,
+        for_write ? NULL : &rfds,
+        for_write ? &wfds : NULL,
+        NULL,
+        &tv,
+        NULL);
+#else
     rc = select((int)sock + 1, for_write ? NULL : &rfds, for_write ? &wfds : NULL, NULL, &tv);
+#endif
     if (rc == 0) return RB_HTTP_ERR_TIMEOUT;
     if (rc < 0) return for_write ? RB_HTTP_ERR_CONNECT : RB_HTTP_ERR_READ;
     return 0;
