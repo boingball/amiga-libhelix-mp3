@@ -179,6 +179,17 @@ static long radio_gui_listbrowser_node_count = 0;
 static long radio_gui_string_count = 0;
 static int radio_atexit_registered = 0;
 
+#if defined(AMIGA_M68K)
+static void radio_release_idle_socketbase(void)
+{
+    if (radio_open_socket_count == 0 && radio_active_stream_tasks == 0 && SocketBase) {
+        CloseLibrary(SocketBase);
+        SocketBase = NULL;
+        printf("radio-socket: playback SocketBase closed after idle cleanup\n");
+    }
+}
+#endif
+
 static void radio_debug_mem_report(unsigned long session_id, const char *where)
 {
 #if defined(AMIGA_M68K)
@@ -908,22 +919,19 @@ void Radio_Close(RadioStream *rs)
     radio_debug_mem_report(rs->session_id, "after stop cleanup");
     radio_resource_summary(rs, "after stop cleanup");
     RADIO_STOP_DEBUG_PRINTF(("radio-stop: stream task exiting / Radio_Close exited session=%lu task_exit_count=%u cleanup_count=%u stop_request_count=%u ssl_free_count=%u socket_close_count=%u decoder_free_count=%u\n", rs->session_id, rs->task_exit_count, rs->cleanup_count, rs->stop_request_count, rs->ssl_free_count, rs->socket_close_count, rs->decoder_free_count));
+#if defined(AMIGA_M68K)
+    radio_release_idle_socketbase();
+#endif
     free(rs);
 }
 
-/* Release the process-wide network libraries exactly once, at application exit.
+/* Final network-library fallback at application exit.
  *
- * SocketBase (bsdsocket.library) and the AmiSSL master library are opened lazily
- * and shared across the probe, the radio_browser search and every playback
- * child; the per-session code only ever opened them (and, for AmiSSL, kept the
- * master open for the program's lifetime so repeated InitAmiSSLMaster() could
- * not relock HTTPS).  Nothing ever *closed* them, so when the app quit it left
- * bsdsocket.library open with a reference held by a now-dead task; the TCP stack
- * then kept stale per-task socket state and the next launch of the app could no
- * longer open a working socket ("Search failed" even though the network is up).
- * Closing them here, in reverse open order (AmiSSL first, since it was handed
- * SocketBase), lets the stack reclaim everything cleanly.  Must run on the main
- * task after every playback child has been stopped and reaped. */
+ * bsdsocket.library is task-sensitive on real Amiga TCP stacks, so the probe,
+ * browser search and playback paths now close SocketBase as soon as their last
+ * socket in that task is gone.  This exit hook only catches any still-open
+ * process-wide AmiSSL master state and a SocketBase that survived an unusual
+ * shutdown path. */
 void Radio_NetworkShutdown(void)
 {
 #if defined(AMIGA_M68K)

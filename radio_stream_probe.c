@@ -77,6 +77,17 @@ static void rb_probe_format_ipv4_be(unsigned long addr_be, char *out, int out_si
 static unsigned long rb_probe_next_session_id = 1;
 static long rb_probe_open_socket_count = 0;
 
+#if defined(AMIGA_M68K) && !defined(RB_STREAM_PROBE_EXTERNAL_SOCKETBASE)
+static void rb_probe_release_idle_socketbase(void)
+{
+    if (rb_probe_open_socket_count == 0 && SocketBase) {
+        CloseLibrary(SocketBase);
+        SocketBase = NULL;
+        printf("radio-socket: probe SocketBase closed after idle cleanup\n");
+    }
+}
+#endif
+
 typedef struct RbProbeUrl {
     char host[RB_PROBE_MAX_HOST];
     char path[RB_PROBE_MAX_PATH];
@@ -438,6 +449,9 @@ static void rb_probe_cleanup_amissl(void)
      * pressed Play on an already-playing stream.  The master base is shared with
      * radio_stream.c via the weak AmiSSLBase/AmiSSLMasterBase symbols and is
      * reclaimed by the OS at program exit. */
+#if !defined(RB_STREAM_PROBE_EXTERNAL_SOCKETBASE)
+    rb_probe_release_idle_socketbase();
+#endif
 }
 
 #endif
@@ -786,6 +800,8 @@ int rb_probe_stream_url(const char *url, RbStreamInfo *info,
     int rc = rb_probe_stream_url_impl(url, info, peek_buf, peek_buf_size, peek_len);
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
     rb_probe_cleanup_amissl();
+#elif defined(AMIGA_M68K) && !defined(RB_STREAM_PROBE_EXTERNAL_SOCKETBASE)
+    rb_probe_release_idle_socketbase();
 #endif
     return rc;
 }

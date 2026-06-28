@@ -46,6 +46,17 @@ typedef struct RbHttpTransport {
     RB_HTTP_SOCKET sock;
 } RbHttpTransport;
 
+#if defined(AMIGA_M68K) && !defined(RB_HTTP_EXTERNAL_SOCKETBASE)
+static void rb_http_release_socketbase(void)
+{
+    if (SocketBase) {
+        CloseLibrary(SocketBase);
+        SocketBase = NULL;
+        printf("radio-socket: browser SocketBase closed after request\n");
+    }
+}
+#endif
+
 static int rb_http_append(char *out, int out_size, int *pos, const char *text)
 {
     if (!out || !pos || out_size <= 0 || !text) return RB_HTTP_ERR_BAD_ARG;
@@ -99,10 +110,20 @@ static int rb_http_transport_open(RbHttpTransport *transport, const char *host, 
 #endif
 
     he = gethostbyname(host);
-    if (!he || !he->h_addr_list || !he->h_addr_list[0]) return RB_HTTP_ERR_DNS;
+    if (!he || !he->h_addr_list || !he->h_addr_list[0]) {
+#if defined(AMIGA_M68K) && !defined(RB_HTTP_EXTERNAL_SOCKETBASE)
+        rb_http_release_socketbase();
+#endif
+        return RB_HTTP_ERR_DNS;
+    }
 
     transport->sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (transport->sock == RB_HTTP_INVALID_SOCKET) return RB_HTTP_ERR_CONNECT;
+    if (transport->sock == RB_HTTP_INVALID_SOCKET) {
+#if defined(AMIGA_M68K) && !defined(RB_HTTP_EXTERNAL_SOCKETBASE)
+        rb_http_release_socketbase();
+#endif
+        return RB_HTTP_ERR_CONNECT;
+    }
 
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
@@ -112,6 +133,9 @@ static int rb_http_transport_open(RbHttpTransport *transport, const char *host, 
     if (connect(transport->sock, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         rb_http_close_socket(transport->sock);
         transport->sock = RB_HTTP_INVALID_SOCKET;
+#if defined(AMIGA_M68K) && !defined(RB_HTTP_EXTERNAL_SOCKETBASE)
+        rb_http_release_socketbase();
+#endif
         return RB_HTTP_ERR_CONNECT;
     }
     return 0;
@@ -123,6 +147,9 @@ static void rb_http_transport_close(RbHttpTransport *transport)
         rb_http_close_socket(transport->sock);
         transport->sock = RB_HTTP_INVALID_SOCKET;
     }
+#if defined(AMIGA_M68K) && !defined(RB_HTTP_EXTERNAL_SOCKETBASE)
+    rb_http_release_socketbase();
+#endif
 }
 
 static int rb_http_transport_send_all(RbHttpTransport *transport,
