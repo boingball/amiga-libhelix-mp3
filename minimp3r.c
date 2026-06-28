@@ -969,6 +969,13 @@ static const char *MrRadioCodecName(const char *contentType)
 	return "";
 }
 
+
+static int MrRadioPlaybackHasStarted(void)
+{
+	return gGuiPlaybackStatus.phase == GUIPLAY_PHASE_PLAYING ||
+		gGuiPlaybackStatus.decodedFrames > 0;
+}
+
 static void MrFormatRadioStreamingStatus(MrApp *app, const char *station, char *status, unsigned long statusSize)
 {
 	const char *name = station;
@@ -1023,10 +1030,11 @@ static int MrSetRadioMetadata(MrApp *app, int updateStatus)
 			sprintf(status, "Stream dropped - reconnecting");
 		else if (radioStatus == RADIO_STATUS_CONNECTING)
 			sprintf(status, "Connecting stream...");
-		else if (radioStatus == RADIO_STATUS_BUFFERING)
+		else if (radioStatus == RADIO_STATUS_BUFFERING && !MrRadioPlaybackHasStarted())
 			sprintf(status, "Buffering - %.100s", station[0] ? station :
 				(app->currentRadioStationName[0] ? app->currentRadioStationName : "Internet Radio"));
-		else if (radioStatus == RADIO_STATUS_PLAYING) {
+		else if (radioStatus == RADIO_STATUS_PLAYING ||
+			(radioStatus == RADIO_STATUS_BUFFERING && MrRadioPlaybackHasStarted())) {
 			if (gGuiPlaybackStatus.decodedFrames > 0)
 				RADIO_DBG(printf("radio-ui: UI state set to PLAYING after first audio frame\n");)
 			MrFormatRadioStreamingStatus(app, station, status, sizeof(status));
@@ -1665,7 +1673,7 @@ static void PollPlaybackStatus(MrApp *app)
 			int updateStatus = (app->lastRadioStatusTick == 0) ||
 				radioStatus != app->lastRadioStatusShown ||
 				((radioStatus == RADIO_STATUS_BUFFERING || radioStatus == RADIO_STATUS_PLAYING) &&
-				 strncmp(app->shownStatus, "Streaming ... ", 14));
+				 MrRadioPlaybackHasStarted() && strncmp(app->shownStatus, "Streaming ", 10));
 			if (updateMeta || updateStatus) {
 				updates += MrSetRadioMetadata(app, updateStatus);
 				if (updateMeta) app->lastRadioMetaTick = tick;
