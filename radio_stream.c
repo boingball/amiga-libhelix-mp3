@@ -134,6 +134,8 @@ struct RadioStream {
     int port, bitrate, metaint, audioUntilMeta, headerDone;
     char contentType[64], title[128], stationName[128], genre[64], streamUrl[128], error[128];
     unsigned char *ring;
+    unsigned char *ringAlloc;
+    unsigned long ringLastWrite;
     unsigned long rpos, wpos, used, size;
     char header[RADIO_HEADER_MAX];
     int headerLen;
@@ -536,12 +538,49 @@ static void radio_copy_bytes(char *dst, size_t dstSize, const unsigned char *src
 }
 
 static void set_error(RadioStream *rs, const char *msg) { if (rs) { radio_copy_string(rs->error,sizeof(rs->error),msg); rs->status = RADIO_STATUS_ERROR; RADIO_OPEN_DEBUG_PRINTF(("radio-open: %s\n", msg ? msg : "error")); } }
-static int ring_write(RadioStream *rs, const unsigned char *p, int n) { int i=0; while (i<n && rs->used<rs->size) { rs->ring[rs->wpos++]=p[i++]; if(rs->wpos>=rs->size)rs->wpos=0; rs->used++; } return i; }
-static int ring_read(RadioStream *rs, unsigned char *p, int n) { int i=0; while (i<n && rs->used) { p[i++]=rs->ring[rs->rpos++]; if(rs->rpos>=rs->size)rs->rpos=0; rs->used--; } return i; }
+static void radio_ring_set_canary(RadioStream *rs);
+static int radio_ring_check_canary(RadioStream *rs, const char *where);
+static int ring_write(RadioStream *rs, const unsigned char *p, int n) { int i=0; if (radio_ring_check_canary(rs, "before ring_write") < 0) return 0; while (i<n && rs->used<rs->size) { rs->ring[rs->wpos++]=p[i++]; if(rs->wpos>=rs->size)rs->wpos=0; rs->used++; } rs->ringLastWrite=(unsigned long)i; radio_ring_check_canary(rs, "after ring_write"); return i; }
+static int ring_read(RadioStream *rs, unsigned char *p, int n) { int i=0; if (radio_ring_check_canary(rs, "before ring_read") < 0) return 0; while (i<n && rs->used) { p[i++]=rs->ring[rs->rpos++]; if(rs->rpos>=rs->size)rs->rpos=0; rs->used--; } radio_ring_check_canary(rs, "after ring_read"); return i; }
 static int ci_starts(const char *s,const char *p){ while(*p) { if(tolower((unsigned char)*s++)!=tolower((unsigned char)*p++)) return 0; } return 1; }
 static int ci_equals(const char *a,const char *b){ while(*a&&*b){ if(tolower((unsigned char)*a++)!=tolower((unsigned char)*b++)) return 0; } return *a==0&&*b==0; }
 static char *trim(char *s){ char *e; while(*s&&isspace((unsigned char)*s))s++; e=s+strlen(s); while(e>s&&isspace((unsigned char)e[-1]))*--e=0; return s; }
 static void close_current_socket(RadioStream *rs);
+
+#define RADIO_RING_CANARY 0x5A
+#define RADIO_RING_GUARD_BYTES 16UL
+static void radio_ring_set_canary(RadioStream *rs)
+{
+    unsigned long i;
+    if (!rs || !rs->ringAlloc || !rs->size) return;
+    for (i = 0; i < RADIO_RING_GUARD_BYTES; i++) {
+        rs->ringAlloc[i] = RADIO_RING_CANARY;
+        rs->ringAlloc[RADIO_RING_GUARD_BYTES + rs->size + i] = RADIO_RING_CANARY;
+    }
+}
+static int radio_ring_check_canary(RadioStream *rs, const char *where)
+{
+    unsigned long i;
+    int bad = 0;
+    if (!rs || !rs->ringAlloc || !rs->size) return 0;
+    for (i = 0; i < RADIO_RING_GUARD_BYTES; i++) {
+        if (rs->ringAlloc[i] != RADIO_RING_CANARY ||
+            rs->ringAlloc[RADIO_RING_GUARD_BYTES + rs->size + i] != RADIO_RING_CANARY) {
+            bad = 1;
+            break;
+        }
+    }
+    if (bad) {
+        printf("radio-canary: CORRUPTED buffer=stream/audio ring session=%lu where=%s expected_capacity=%lu last_write_size=%lu codec=%s url=\"%s\"\n",
+            rs->session_id, where ? where : "", rs->size, rs->ringLastWrite,
+            ((ci_starts(rs->contentType,"audio/aac") || ci_starts(rs->contentType,"audio/aacp") || radio_contains_nocase(rs->path,"aac")) ? "AAC" : "MP3/unknown"),
+            rs->url);
+        rs->stopping = 1;
+        rs->status = RADIO_STATUS_STOPPING;
+        return -1;
+    }
+    return 0;
+}
 
 static int parse_url(RadioStream *rs, const char *url)
 {
@@ -761,7 +800,8 @@ RadioStream *Radio_OpenWithHostAddr(const char *url, int haveHostAddr, unsigned 
     radio_debug_mem_report(rs->session_id, "before stream start");
     rs->status = RADIO_STATUS_CONNECTING;
     rs->size = RADIO_RING_BYTES;
-    rs->ring = (unsigned char *)malloc(rs->size);
+    rs->ringAlloc = (unsigned char *)malloc(rs->size + 2UL * RADIO_RING_GUARD_BYTES);
+    if (rs->ringAlloc) { rs->ring = rs->ringAlloc + RADIO_RING_GUARD_BYTES; radio_ring_set_canary(rs); }
     if (rs->ring) { radio_active_stream_buffer_count++; radio_active_audio_buffer_count++; printf("radio-resource: session=%lu stream/audio buffer allocated active_stream_buffer_count=%ld active_audio_buffer_count=%ld\n", rs->session_id, radio_active_stream_buffer_count, radio_active_audio_buffer_count); }
     if (!rs->ring) {
         rs->size = 0;
@@ -825,13 +865,13 @@ void Radio_Close(RadioStream *rs)
     rs->stream_buffer_free_count++;
     rs->audio_buffer_free_count++;
     if (rs->stream_buffer_free_count > 1) radio_duplicate_cleanup_warning(rs, "stream buffer free", rs->stream_buffer_free_count);
-    else { if (rs->ring) { free(rs->ring); if (radio_active_stream_buffer_count > 0) radio_active_stream_buffer_count--; } }
+    else { if (rs->ringAlloc) { radio_ring_check_canary(rs, "before cleanup"); free(rs->ringAlloc); if (radio_active_stream_buffer_count > 0) radio_active_stream_buffer_count--; } }
     if (rs->audio_buffer_free_count > 1) radio_duplicate_cleanup_warning(rs, "audio buffer free", rs->audio_buffer_free_count);
     else { if (radio_active_audio_buffer_count > 0) radio_active_audio_buffer_count--; }
     rs->decoder_free_count++;
     if (rs->decoder_free_count > 1) radio_duplicate_cleanup_warning(rs, "decoder free", rs->decoder_free_count);
     else { if (radio_active_decoder_count > 0) radio_active_decoder_count--; }
-    rs->ring = NULL;
+    rs->ring = NULL; rs->ringAlloc = NULL;
     rs->size = rs->used = rs->rpos = rs->wpos = 0;
     rs->task_exit_count++;
     if (radio_active_stream_tasks > 0) radio_active_stream_tasks--;
