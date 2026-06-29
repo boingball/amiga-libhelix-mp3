@@ -173,6 +173,7 @@ static const char *rb_parse_station_object(const char *p, RadioBrowserStation *s
         else if (rb_key_equals(key, "bitrate")) p = rb_parse_int_or_bool(p, &station->bitrate);
         else if (rb_key_equals(key, "lastcheckok")) p = rb_parse_int_or_bool(p, &station->lastcheckok);
         else if (rb_key_equals(key, "hls")) p = rb_parse_int_or_bool(p, &station->hls);
+        else if (rb_key_equals(key, "ssl_error")) p = rb_parse_int_or_bool(p, &station->ssl_error);
         else p = rb_skip_value(p);
         p = rb_skip_ws(p);
         if (*p == ',') p++;
@@ -250,10 +251,10 @@ static void rb_print_station(int index, const RadioBrowserStation *station)
     char display[80];
 
     rb_station_display_name(station, display, (int)sizeof(display));
-    printf("%d: name=\"%s\" codec=\"%s\" bitrate=%d countrycode=\"%s\" lastcheckok=%d hls=%d url=\"%s\" url_resolved=\"%s\" play_url=\"%s\"\n",
+    printf("%d: name=\"%s\" codec=\"%s\" bitrate=%d countrycode=\"%s\" lastcheckok=%d hls=%d ssl_error=%d url=\"%s\" url_resolved=\"%s\" play_url=\"%s\"\n",
            index + 1, display, station->codec, station->bitrate,
            station->countrycode, station->lastcheckok, station->hls,
-           station->url, station->url_resolved, rb_station_play_url(station));
+           station->ssl_error, station->url, station->url_resolved, rb_station_play_url(station));
 }
 
 static void rb_print_stations(const RadioBrowserStation *stations, int count)

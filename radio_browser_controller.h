@@ -29,6 +29,9 @@ typedef struct RadioBrowserController {
     int limit;
     int max_bitrate;
     int offset;
+    int hide_hls;
+    int hide_offline;
+    int hide_ssl_error;
 } RadioBrowserController;
 
 enum {
