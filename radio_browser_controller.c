@@ -52,6 +52,19 @@ void rb_controller_init(RadioBrowserController *controller)
     controller->limit = 25;
     controller->max_bitrate = -1;
     controller->offset = 0;
+    controller->hide_hls = 1;
+    controller->hide_offline = 1;
+    controller->hide_ssl_error = 1;
+}
+
+static int rb_controller_station_allowed(const RadioBrowserController *controller,
+                                         const RadioBrowserStation *station)
+{
+    if (!controller || !station) return 0;
+    if (controller->hide_hls && station->hls) return 0;
+    if (controller->hide_offline && station->lastcheckok == 0) return 0;
+    if (controller->hide_ssl_error && station->ssl_error != 0) return 0;
+    return 1;
 }
 
 int rb_controller_search(RadioBrowserController *controller)
@@ -111,9 +124,22 @@ int rb_controller_search(RadioBrowserController *controller)
     controller->raw_station_count = count;
 
 
-    controller->station_count = count;
-    if (count > 0) controller->selected_index = 0;
-    return count;
+    {
+        int i;
+        int kept;
+
+        kept = 0;
+        for (i = 0; i < count; i++) {
+            if (!rb_controller_station_allowed(controller, &controller->stations[i]))
+                continue;
+            if (kept != i)
+                controller->stations[kept] = controller->stations[i];
+            kept++;
+        }
+        controller->station_count = kept;
+        if (kept > 0) controller->selected_index = 0;
+        return kept;
+    }
 }
 
 const RadioBrowserStation *rb_controller_get_station(
@@ -164,6 +190,14 @@ int rb_controller_probe_selected(
     if (station->hls) {
         rb_controller_set_error(controller, "HLS stream not supported");
         return RB_STREAM_PROBE_ERR_HLS_UNSUPPORTED;
+    }
+    if (station->lastcheckok == 0) {
+        rb_controller_set_error(controller, "Station is offline");
+        return RB_CONTROLLER_ERR_NO_SELECTION;
+    }
+    if (station->ssl_error != 0) {
+        rb_controller_set_error(controller, "Station has SSL errors");
+        return RB_CONTROLLER_ERR_NO_SELECTION;
     }
 
     url = rb_station_play_url(station);
@@ -259,6 +293,7 @@ int rb_search_stations(const char *host, const char *name, const char *tag,
             rb_test_copy(stations[out].url, RB_MAX_URL, (st_url)); \
             rb_test_copy(stations[out].codec, RB_MAX_CODEC, "MP3"); \
             stations[out].bitrate = (st_bitrate); \
+            stations[out].lastcheckok = 1; \
             out++; \
         } \
     } while (0)

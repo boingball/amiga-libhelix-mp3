@@ -22,6 +22,7 @@ typedef struct RadioBrowserStation {
     int bitrate;
     int lastcheckok;
     int hls;
+    int ssl_error;
 } RadioBrowserStation;
 
 int rb_parse_stations_json(

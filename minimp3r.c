@@ -412,6 +412,7 @@ typedef struct MrApp {
 	int             rbVisibleCount;
 	int             rbShowHttps;
 	int             rbSchemeMode;
+	int             rbCountryMode;
 	int             rbShowingFavourites;
 	int             rbFavouriteCount;
 	int             rbSelectedFavourite;
@@ -3181,6 +3182,7 @@ enum {
 	RB_GID_SEARCH_TEXT = 300,
 	RB_GID_CODEC,
 	RB_GID_COUNTRY,
+	RB_GID_COUNTRY_CODE,
 	RB_GID_RADIO_RESULTS,
 	RB_GID_SEARCH,
 	RB_GID_PROBE,
@@ -3201,6 +3203,29 @@ static STRPTR kRadioSearchLimitLabels[] = { (STRPTR)"10", (STRPTR)"25", (STRPTR)
 static const int kRadioBitrateMax[] = { -1, 56, 64, 96, 128 };
 static STRPTR kRadioBitrateLabels[] = { (STRPTR)"Any", (STRPTR)"<=56", (STRPTR)"<=64", (STRPTR)"<=96", (STRPTR)"<=128", NULL };
 static STRPTR kRadioSchemeLabels[] = { (STRPTR)"HTTP", (STRPTR)"HTTPS", (STRPTR)"All", NULL };
+static STRPTR kRadioCountryLabels[] = { (STRPTR)"All", (STRPTR)"GB", (STRPTR)"US", (STRPTR)"FR", (STRPTR)"ZA", (STRPTR)"DE", (STRPTR)"NL", NULL };
+
+static const char *RadioCountryFromIndex(int idx)
+{
+	switch (idx) {
+	case 1: return "GB";
+	case 2: return "US";
+	case 3: return "FR";
+	case 4: return "ZA";
+	case 5: return "DE";
+	case 6: return "NL";
+	default: return "";
+	}
+}
+
+static int RadioCountryToIndex(const char *countrycode)
+{
+	int i;
+	if (!countrycode || !countrycode[0]) return 0;
+	for (i = 1; kRadioCountryLabels[i]; i++)
+		if (!strcmp(countrycode, (const char *)kRadioCountryLabels[i])) return i;
+	return 0;
+}
 
 static const char *RadioBitrateFilterLabel(int max_bitrate)
 {
@@ -3318,12 +3343,16 @@ static void RadioRefreshResults(MrApp *app)
 			url = rb_station_play_url(st);
 			reason = "show";
 			if (!RadioStationMatchesScheme(app, st)) { reason = "hidden_scheme"; }
+			else if (st->hls) { reason = "hidden_hls"; }
+			else if (st->lastcheckok == 0) { reason = "hidden_offline"; }
+			else if (st->ssl_error != 0) { reason = "hidden_ssl_error"; }
 			else if (app->rbController.max_bitrate > 0 && st->bitrate == 0) { reason = "hidden_bitrate_unknown"; }
 			else if (app->rbController.max_bitrate > 0 && st->bitrate > app->rbController.max_bitrate) { reason = "hidden_bitrate"; }
 #ifdef MINIAMP3_DEBUG
-			RADIO_DBG(printf("Radio Browser filter: name=\"%s\" scheme=%s codec=%s bitrate=%d max=%d reason=%s\n",
+			RADIO_DBG(printf("Radio Browser filter: name=\"%s\" scheme=%s codec=%s bitrate=%d max=%d country=%s hls=%d lastcheckok=%d ssl_error=%d reason=%s\n",
 				st->name, url && strncmp(url, "https://", 8) == 0 ? "https" : (url && strncmp(url, "http://", 7) == 0 ? "http" : "other"),
-				st->codec, st->bitrate, app->rbController.max_bitrate, reason);)
+				st->codec, st->bitrate, app->rbController.max_bitrate, st->countrycode,
+				st->hls, st->lastcheckok, st->ssl_error, reason);)
 #endif
 			if (reason[0] != 's') continue;
 			row = app->rbVisibleCount++;
@@ -3378,6 +3407,7 @@ static void RadioDoSearch(MrApp *app)
 	struct Gadget *nameGad = FindRadioGadget(app, RB_GID_SEARCH_TEXT);
 	struct Gadget *codecGad = FindRadioGadget(app, RB_GID_CODEC);
 	struct Gadget *countryGad = FindRadioGadget(app, RB_GID_COUNTRY);
+	struct Gadget *countryCodeGad = FindRadioGadget(app, RB_GID_COUNTRY_CODE);
 	struct Gadget *limitGad = FindRadioGadget(app, RB_GID_LIMIT);
 	struct Gadget *bitrateGad = FindRadioGadget(app, RB_GID_BITRATE);
 	STRPTR text;
@@ -3400,6 +3430,12 @@ static void RadioDoSearch(MrApp *app)
 	text = NULL;
 	GT_GetGadgetAttrs(countryGad, app->rbWin, NULL, GTST_String, (ULONG)(void *)&text, TAG_DONE);
 	SafeCopy(app->rbController.countrycode, sizeof(app->rbController.countrycode), text ? (const char *)text : "");
+	v = 0;
+	if (countryCodeGad)
+		GT_GetGadgetAttrs(countryCodeGad, app->rbWin, NULL, GTCY_Active, (ULONG)&v, TAG_DONE);
+	app->rbCountryMode = ClampInt((int)v, 0, 6);
+	if (app->rbCountryMode > 0)
+		SafeCopy(app->rbController.countrycode, sizeof(app->rbController.countrycode), RadioCountryFromIndex(app->rbCountryMode));
 	v = 1;
 	if (limitGad)
 		GT_GetGadgetAttrs(limitGad, app->rbWin, NULL, GTCY_Active, (ULONG)&v, TAG_DONE);
@@ -3427,7 +3463,9 @@ static void RadioDoSearch(MrApp *app)
 	else {
 		char msg[128];
 		int hidden = app->rbController.raw_station_count - app->rbVisibleCount;
-		if (app->rbVisibleCount == 0 && app->rbController.raw_station_count == 0)
+		if (app->rbVisibleCount == 0 && app->rbController.raw_station_count > 0)
+			sprintf(msg, "No stations found after filters");
+		else if (app->rbVisibleCount == 0 && app->rbController.raw_station_count == 0)
 			sprintf(msg, "No stations found");
 		else
 			sprintf(msg, "Found %d stations, showing %d playable (%d hidden)",
@@ -3719,7 +3757,9 @@ static void OpenRadioWindow(MrApp *app)
 		rb_controller_init(&app->rbController);
 		app->rbShowHttps = FALSE;
 		app->rbSchemeMode = 0; /* Default to HTTP; HTTPS remains optional/heavier on real hardware. */
+		app->rbCountryMode = 0;
 	}
+	app->rbCountryMode = RadioCountryToIndex(app->rbController.countrycode);
 	app->rbShowingFavourites = FALSE;
 	app->rbSelectedFavourite = -1;
 	app->rbVisualInfo = GetVisualInfoA(app->win->WScreen, NULL);
@@ -3739,8 +3779,10 @@ static void OpenRadioWindow(MrApp *app)
 	ng.ng_GadgetID = RB_GID_SEARCH_TEXT; gad = CreateGadget(STRING_KIND, gad, &ng, GTST_String, (ULONG)app->rbController.name, GTST_MaxChars, RB_MAX_NAME, GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 390; ng.ng_TopEdge = 24; ng.ng_Width = 90; ng.ng_GadgetText = (UBYTE *)"Codec"; ng.ng_GadgetID = RB_GID_CODEC;
 	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)codecs, GTCY_Active, RadioCodecToIndex(app->rbController.codec), TAG_DONE); if (!gad) goto fail;
-	ng.ng_LeftEdge = 88; ng.ng_TopEdge = 52; ng.ng_Width = 220; ng.ng_GadgetText = (UBYTE *)"Country";
+	ng.ng_LeftEdge = 88; ng.ng_TopEdge = 52; ng.ng_Width = 120; ng.ng_GadgetText = (UBYTE *)"Country";
 	ng.ng_GadgetID = RB_GID_COUNTRY; gad = CreateGadget(STRING_KIND, gad, &ng, GTST_String, (ULONG)app->rbController.countrycode, GTST_MaxChars, RB_MAX_COUNTRY, TAG_DONE); if (!gad) goto fail;
+	ng.ng_LeftEdge = 270; ng.ng_TopEdge = 52; ng.ng_Width = 54; ng.ng_GadgetText = (UBYTE *)"Code"; ng.ng_GadgetID = RB_GID_COUNTRY_CODE; ng.ng_Flags = PLACETEXT_LEFT;
+	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)kRadioCountryLabels, GTCY_Active, app->rbCountryMode, GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 372; ng.ng_TopEdge = 52; ng.ng_Width = 108; ng.ng_GadgetText = (UBYTE *)"URL"; ng.ng_GadgetID = RB_GID_SCHEME; ng.ng_Flags = PLACETEXT_LEFT;
 	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)kRadioSchemeLabels, GTCY_Active, app->rbSchemeMode, GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 88; ng.ng_TopEdge = 80; ng.ng_Width = 90; ng.ng_GadgetText = (UBYTE *)"Limit"; ng.ng_GadgetID = RB_GID_LIMIT; ng.ng_Flags = PLACETEXT_LEFT;
@@ -3825,6 +3867,15 @@ static void HandleRadioWindow(MrApp *app)
 				app->rbSchemeMode = ClampInt((int)active, 0, 2);
 				app->rbShowHttps = (app->rbSchemeMode != 0);
 				RadioRefreshResults(app);
+			}
+			else if (gid == RB_GID_COUNTRY_CODE) {
+				ULONG active = 0;
+				struct Gadget *countryGad = FindRadioGadget(app, RB_GID_COUNTRY);
+				GT_GetGadgetAttrs(gad, app->rbWin, NULL, GTCY_Active, (ULONG)&active, TAG_DONE);
+				app->rbCountryMode = ClampInt((int)active, 0, 6);
+				if (countryGad)
+					GT_SetGadgetAttrs(countryGad, app->rbWin, NULL,
+						GTST_String, (ULONG)RadioCountryFromIndex(app->rbCountryMode), TAG_DONE);
 			}
 			else if (gid == RB_GID_CLOSE) {
 				CloseRadioWindow(app);
