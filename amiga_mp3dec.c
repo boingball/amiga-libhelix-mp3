@@ -475,6 +475,38 @@ typedef struct InputSource {
 	InputReadState lastReadState;
 } InputSource;
 
+
+static void *RadioMp3StageAllocAny(unsigned long bytes, const char *label)
+{
+	void *memory;
+
+	if (bytes == 0)
+		bytes = 1;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	memory = AllocVec(bytes, MEMF_ANY | MEMF_CLEAR);
+#else
+	memory = calloc(1, (size_t)bytes);
+#endif
+	if (memory)
+		fprintf(stderr, "radio-mp3-stage-A: allocated %s %lu bytes at %p\n",
+			label ? label : "buffer", bytes, memory);
+	else
+		fprintf(stderr, "radio-mp3-stage-A: allocation failed for %s %lu bytes\n",
+			label ? label : "buffer", bytes);
+	return memory;
+}
+
+static void RadioMp3StageFreeAny(void *memory)
+{
+	if (!memory)
+		return;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	FreeVec(memory);
+#else
+	free(memory);
+#endif
+}
+
 static void InputSourceInit(InputSource *input, FILE *file);
 #ifdef HAVE_AMIGA_AUDIO_DEVICE
 static void InputSourceInitAmigaDos(InputSource *input, BPTR amigaFile);
@@ -2157,17 +2189,22 @@ static int FillReadBuffer(unsigned char *readBuf, unsigned char *readPtr, int bu
 #if RADIO_DEBUG_MP3_ISOLATION
 static int RadioMp3DumpIsolationBytes(InputSource *input)
 {
-	unsigned char buf[1024];
+	unsigned char *buf;
 	unsigned long total;
 	int idle;
 
 	if (!input || !input->radio)
 		return 0;
 	RADIO_MP3_PATH_BREADCRUMB("isolation dump: prebuffer/dump 128KB begin");
+	buf = (unsigned char *)RadioMp3StageAllocAny(1024UL, "dump buffer");
+	if (!buf) {
+		fprintf(stderr, "MP3 Stage A allocation failed\n");
+		return 0;
+	}
 	total = 0;
 	idle = 0;
 	while (total < RADIO_MP3_DEBUG_DUMP_LIMIT && idle < 500) {
-		int got = (int)InputSourceRead(input, buf, sizeof(buf));
+		int got = (int)InputSourceRead(input, buf, 1024UL);
 		if (got > 0) {
 			RadioDebugMp3DumpBytes(input, buf, got);
 			total += (unsigned long)got;
@@ -2182,6 +2219,7 @@ static int RadioMp3DumpIsolationBytes(InputSource *input)
 		RadioDecodeYield();
 		idle++;
 	}
+	RadioMp3StageFreeAny(buf);
 	RADIO_MP3_PATH_BREADCRUMB("isolation dump: prebuffer/dump 128KB end");
 	fprintf(stderr, "radio-mp3-debug: isolation dump bytes=%lu buffered=%d\n",
 		total, Radio_GetBufferedBytes(input->radio));
@@ -7873,7 +7911,7 @@ cleanup:
 static void RadioMp3StageFreePcm(RadioMp3StagePcm *pcm)
 {
 	if (pcm && pcm->data) {
-		free(pcm->data);
+		RadioMp3StageFreeAny(pcm->data);
 		pcm->data = NULL;
 	}
 	if (pcm)
@@ -7884,30 +7922,36 @@ static int RadioMp3StageDecodeToRam(InputSource *input, HMP3Decoder decoder,
 	const DecodeOptions *opt, DecodeStats *stats, TimingStats *timing,
 	RadioMp3StagePcm *pcm)
 {
-	DecodeStream stream;
+	DecodeStream *stream;
 	unsigned long cap;
 	int n;
 	int targetFrames;
 
+	RADIO_MP3_PATH_BREADCRUMB("radio-mp3-stage-A: function entered");
+	fprintf(stderr, "radio-mp3-stage-A: function entered\n");
 	memset(pcm, 0, sizeof(*pcm));
 	targetFrames = RADIO_MP3_ISOLATION_STAGE_FRAMES;
 	if (targetFrames <= 0)
 		targetFrames = 1;
 	cap = (unsigned long)targetFrames * 2304UL * (opt->stereo ? 2UL : 1UL);
-	pcm->data = (signed char *)malloc((size_t)cap);
-	if (!pcm->data) {
-		fprintf(stderr, "radio-mp3-stage-A: cannot allocate %lu byte RAM buffer\n", cap);
+	pcm->data = (signed char *)RadioMp3StageAllocAny(cap, "decoded S8 buffer");
+	stream = (DecodeStream *)RadioMp3StageAllocAny((unsigned long)sizeof(*stream), "DecodeStream");
+	if (!pcm->data || !stream) {
+		fprintf(stderr, "MP3 Stage A allocation failed\n");
+		RadioMp3StageFreeAny(stream);
+		RadioMp3StageFreePcm(pcm);
 		return -1;
 	}
 	RADIO_MP3_PATH_BREADCRUMB("Stage A: before DecodeStreamInit");
-	DecodeStreamInit(&stream, input, decoder, stats, timing);
+	DecodeStreamInit(stream, input, decoder, stats, timing);
 	while (pcm->bytes < cap && pcm->frames < (unsigned long)targetFrames &&
-		!stream.outOfData && !gPlaybackInterrupted) {
+		!stream->outOfData && !gPlaybackInterrupted) {
 		unsigned long beforeFrames = stats->decodedFrames;
-		n = DecodeStreamFillS8(&stream, opt, pcm->data + pcm->bytes,
+		n = DecodeStreamFillS8(stream, opt, pcm->data + pcm->bytes,
 			(int)(cap - pcm->bytes));
-		if (n < 0 || stream.decodeError) {
+		if (n < 0 || stream->decodeError) {
 			fprintf(stderr, "radio-mp3-stage-A: decode error\n");
+			RadioMp3StageFreeAny(stream);
 			RadioMp3StageFreePcm(pcm);
 			return -1;
 		}
@@ -7929,7 +7973,12 @@ static int RadioMp3StageDecodeToRam(InputSource *input, HMP3Decoder decoder,
 	fprintf(stderr, "radio-mp3-stage-A: decoded frames=%lu produced bytes=%lu (S8 RAM, internal Helix MP3 path, no audio.device)\n",
 		pcm->frames, pcm->bytes);
 	RADIO_MP3_PATH_BREADCRUMB("Stage A: decoded first frames to RAM, no audio.device");
-	return pcm->bytes > 0 ? 0 : -1;
+	RadioMp3StageFreeAny(stream);
+	if (pcm->bytes == 0) {
+		RadioMp3StageFreePcm(pcm);
+		return -1;
+	}
+	return 0;
 }
 
 static int RadioMp3StagePlaySilence(const DecodeOptions *opt, int playbackRate)
@@ -7985,6 +8034,8 @@ static int RadioMp3RunIsolationStage(InputSource *input, HMP3Decoder decoder,
 		RadioMp3DumpIsolationBytes(input);
 	}
 #endif
+	RADIO_MP3_PATH_BREADCRUMB("radio-mp3-stage-A: caller before function call");
+	fprintf(stderr, "radio-mp3-stage-A: caller before function call\n");
 	if (RadioMp3StageDecodeToRam(input, decoder, opt, stats, timing, &pcm) != 0)
 		return 1;
 	playbackRate = pcm.sampleRate > 0 ? pcm.sampleRate : PlaybackOutputSampleRate(opt, stats);
