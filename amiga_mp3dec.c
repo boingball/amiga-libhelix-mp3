@@ -7932,10 +7932,18 @@ static int RadioMp3StageDecodeToRam(InputSource *input, HMP3Decoder decoder,
 	unsigned long captured;
 	unsigned long cap;
 	unsigned long startFrames;
+	HMP3Decoder stageDecoder;
+	int stageDecoderOwned;
 	int n;
 	int idle;
-#if !RADIO_DEBUG_MP3_ISOLATION
+	int syncOffset;
+	int rc;
+	const char *reason;
 	FILE *dumpFile;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	BPTR dumpAmigaFile;
+#else
+	FILE *finiteFile;
 #endif
 
 	RADIO_MP3_PATH_BREADCRUMB("radio-mp3-stage-A: function entered");
@@ -7943,6 +7951,22 @@ static int RadioMp3StageDecodeToRam(InputSource *input, HMP3Decoder decoder,
 	memset(pcm, 0, sizeof(*pcm));
 	memset(&finiteInput, 0, sizeof(finiteInput));
 	cap = 8192UL;
+	capture = NULL;
+	captureScratch = NULL;
+	stream = NULL;
+	stageDecoder = decoder;
+	stageDecoderOwned = 0;
+	n = 0;
+	syncOffset = -1;
+	rc = -1;
+	reason = "uninitialised";
+	dumpFile = NULL;
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	dumpAmigaFile = (BPTR)0;
+#else
+	finiteFile = NULL;
+#endif
+
 	capture = (unsigned char *)RadioMp3StageAllocAny(RADIO_MP3_DEBUG_DUMP_LIMIT,
 		"captured MP3 finite buffer");
 	captureScratch = (unsigned char *)RadioMp3StageAllocAny(1024UL,
@@ -7951,23 +7975,30 @@ static int RadioMp3StageDecodeToRam(InputSource *input, HMP3Decoder decoder,
 	stream = (DecodeStream *)RadioMp3StageAllocAny((unsigned long)sizeof(*stream), "DecodeStream");
 	if (!capture || !captureScratch || !pcm->data || !stream) {
 		fprintf(stderr, "MP3 Stage A allocation failed\n");
-		RadioMp3StageFreeAny(stream);
-		RadioMp3StageFreeAny(captureScratch);
-		RadioMp3StageFreeAny(capture);
-		RadioMp3StageFreePcm(pcm);
-		return -1;
+		reason = "allocation failed";
+		goto cleanup;
+	}
+
+	if (!stageDecoder) {
+		stageDecoder = MP3InitDecoder();
+		stageDecoderOwned = stageDecoder ? 1 : 0;
+	}
+	fprintf(stderr, "radio-mp3-stage-A: decoder pointer before DecodeStreamInit=%p\n",
+		(void *)stageDecoder);
+	if (!stageDecoder) {
+		fprintf(stderr, "radio-mp3-stage-A: decoder is NULL\n");
+		reason = "decoder null";
+		goto cleanup;
 	}
 
 	captured = 0;
 	idle = 0;
-#if !RADIO_DEBUG_MP3_ISOLATION
 	dumpFile = fopen(RADIO_MP3_DEBUG_DUMP_PATH, "wb");
 	if (!dumpFile)
 		fprintf(stderr, "radio-mp3-debug: cannot open dump %s\n", RADIO_MP3_DEBUG_DUMP_PATH);
 	else
 		fprintf(stderr, "radio-mp3-debug: dump path=%s limit=%lu\n",
 			RADIO_MP3_DEBUG_DUMP_PATH, (unsigned long)RADIO_MP3_DEBUG_DUMP_LIMIT);
-#endif
 	RADIO_MP3_PATH_BREADCRUMB("Stage A: capture 128KB from radio before finite decode");
 	while (input && input->radio && captured < RADIO_MP3_DEBUG_DUMP_LIMIT && idle < 500 &&
 		!gPlaybackInterrupted) {
@@ -7978,10 +8009,9 @@ static int RadioMp3StageDecodeToRam(InputSource *input, HMP3Decoder decoder,
 			memcpy(capture + captured, captureScratch, (size_t)got);
 #if RADIO_DEBUG_MP3_ISOLATION
 			RadioDebugMp3DumpBytes(input, captureScratch, got);
-#else
+#endif
 			if (dumpFile)
 				fwrite(captureScratch, 1, (size_t)got, dumpFile);
-#endif
 			captured += (unsigned long)got;
 			idle = 0;
 			continue;
@@ -7995,48 +8025,98 @@ static int RadioMp3StageDecodeToRam(InputSource *input, HMP3Decoder decoder,
 		idle++;
 	}
 	fprintf(stderr, "radio-mp3-stage-A: captured bytes=%lu\n", captured);
+	if (dumpFile) {
+		fclose(dumpFile);
+		dumpFile = NULL;
+	}
 
 	InputSourceClose(input);
 	fprintf(stderr, "radio-mp3-stage-A: radio closed before finite decode\n");
 	RadioMp3StageFreeAny(captureScratch);
 	captureScratch = NULL;
 	if (captured == 0) {
-		RadioMp3StageFreeAny(stream);
-		RadioMp3StageFreeAny(capture);
-		RadioMp3StageFreePcm(pcm);
-		return -1;
+		reason = "captured no bytes";
+		goto cleanup;
 	}
 
-	finiteInput.memory = capture;
-	finiteInput.memorySize = captured;
-	finiteInput.memoryPos = 0;
+	syncOffset = FindValidatedMpegSync(capture, (int)captured);
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	dumpAmigaFile = Open((STRPTR)RADIO_MP3_DEBUG_DUMP_PATH, MODE_OLDFILE);
+	fprintf(stderr, "radio-mp3-stage-A: dump file open result=%p\n", (void *)dumpAmigaFile);
+	if (!dumpAmigaFile) {
+		reason = "dump reopen failed";
+		goto cleanup;
+	}
+	InputSourceInitAmigaDos(&finiteInput, dumpAmigaFile);
+	dumpAmigaFile = (BPTR)0;
+#else
+	finiteFile = fopen(RADIO_MP3_DEBUG_DUMP_PATH, "rb");
+	fprintf(stderr, "radio-mp3-stage-A: dump file open result=%p\n", (void *)finiteFile);
+	if (!finiteFile) {
+		reason = "dump reopen failed";
+		goto cleanup;
+	}
+	InputSourceInit(&finiteInput, finiteFile);
+#endif
+	fprintf(stderr, "radio-mp3-stage-A: before finite DecodeStreamFillS8 dumpOpen=1 decoder=%p maxBytes=%lu syncOffset=%d\n",
+		(void *)stageDecoder, cap, syncOffset);
 	RADIO_MP3_PATH_BREADCRUMB("Stage A: before finite DecodeStreamInit");
-	DecodeStreamInit(stream, &finiteInput, decoder, stats, timing);
+	DecodeStreamInit(stream, &finiteInput, stageDecoder, stats, timing);
 	startFrames = stats->decodedFrames;
-	fprintf(stderr, "radio-mp3-stage-A: before finite DecodeStreamFillS8 maxBytes=%lu\n",
-		cap);
 	n = DecodeStreamFillS8(stream, opt, pcm->data, (int)cap);
 	pcm->frames = stats->decodedFrames >= startFrames ?
 		stats->decodedFrames - startFrames : 0;
-	fprintf(stderr, "radio-mp3-stage-A: after finite DecodeStreamFillS8 produced=%d decodedFrames=%lu decodeError=%d outOfData=%d\n",
-		n, pcm->frames, stream->decodeError, stream->outOfData);
+	fprintf(stderr, "radio-mp3-stage-A: after finite DecodeStreamFillS8 produced=%d decodedFrames=%lu decodeError=%d outOfData=%d bytesLeft=%d eof=%d\n",
+		n, pcm->frames, stream->decodeError, stream->outOfData,
+		stream->bytesLeft, stream->eofReached);
 	if (n < 0 || stream->decodeError) {
-		RadioMp3StageFreeAny(stream);
-		RadioMp3StageFreeAny(capture);
-		RadioMp3StageFreePcm(pcm);
-		return -1;
+		reason = "finite decode error";
+		goto cleanup;
 	}
-	if (n > 0)
-		pcm->bytes = (unsigned long)n;
+	if (n == 0) {
+		fprintf(stderr, "radio-mp3-stage-A: finite decode produced no bytes decodeError=%d outOfData=%d eof=%d bytesLeft=%d\n",
+			stream->decodeError, stream->outOfData, stream->eofReached,
+			stream->bytesLeft);
+		reason = "finite decode produced no bytes";
+		goto cleanup;
+	}
+	pcm->bytes = (unsigned long)n;
 	pcm->sampleRate = stats->outputSampleRate ?
 		stats->outputSampleRate : PlaybackOutputSampleRate(opt, stats);
 	pcm->channels = opt->stereo ? 2 : 1;
 	pcm->bitrate = stats->bitrate;
 	fprintf(stderr, "radio-mp3-stage-A: decoded frames=%lu produced bytes=%lu\n",
 		pcm->frames, pcm->bytes);
+	if (pcm->frames == 0) {
+		reason = "finite decode produced no frames";
+		goto cleanup;
+	}
+	rc = 0;
+	reason = "ok";
+
+cleanup:
+	InputSourceClose(&finiteInput);
+#ifndef HAVE_AMIGA_AUDIO_DEVICE
+	if (finiteFile) {
+		fclose(finiteFile);
+		finiteFile = NULL;
+	}
+#endif
+#ifdef HAVE_AMIGA_AUDIO_DEVICE
+	if (dumpAmigaFile)
+		Close(dumpAmigaFile);
+#endif
+	if (dumpFile)
+		fclose(dumpFile);
 	RadioMp3StageFreeAny(stream);
+	RadioMp3StageFreeAny(captureScratch);
 	RadioMp3StageFreeAny(capture);
-	return pcm->bytes > 0 ? 0 : -1;
+	if (rc != 0)
+		RadioMp3StageFreePcm(pcm);
+	if (stageDecoderOwned && stageDecoder)
+		MP3FreeDecoder(stageDecoder);
+	fprintf(stderr, "radio-mp3-stage-A: returning rc=%d reason=%s\n", rc, reason);
+	return rc;
 }
 
 static int RadioMp3StagePlaySilence(const DecodeOptions *opt, int playbackRate)
