@@ -7927,17 +7927,16 @@ static int RadioMp3StageDecodeToRam(InputSource *input, HMP3Decoder decoder,
 {
 	DecodeStream *stream;
 	unsigned long cap;
+	unsigned long startFrames;
+	clock_t startedAt;
 	int n;
-	int targetFrames;
+	int timedOut;
 
 	RADIO_MP3_PATH_BREADCRUMB("radio-mp3-stage-A: function entered");
 	fprintf(stderr, "radio-mp3-stage-A: function entered\n");
 	memset(pcm, 0, sizeof(*pcm));
-	targetFrames = RADIO_MP3_ISOLATION_STAGE_FRAMES;
-	if (targetFrames <= 0)
-		targetFrames = 1;
-	cap = (unsigned long)targetFrames * 2304UL * (opt->stereo ? 2UL : 1UL);
-	pcm->data = (signed char *)RadioMp3StageAllocAny(cap, "decoded S8 buffer");
+	cap = 8192UL;
+	pcm->data = (signed char *)RadioMp3StageAllocAny(cap, "decoded S8 smoke-test buffer");
 	stream = (DecodeStream *)RadioMp3StageAllocAny((unsigned long)sizeof(*stream), "DecodeStream");
 	if (!pcm->data || !stream) {
 		fprintf(stderr, "MP3 Stage A allocation failed\n");
@@ -7947,38 +7946,55 @@ static int RadioMp3StageDecodeToRam(InputSource *input, HMP3Decoder decoder,
 	}
 	RADIO_MP3_PATH_BREADCRUMB("Stage A: before DecodeStreamInit");
 	DecodeStreamInit(stream, input, decoder, stats, timing);
-	while (pcm->bytes < cap && pcm->frames < (unsigned long)targetFrames &&
-		!stream->outOfData && !gPlaybackInterrupted) {
-		unsigned long beforeFrames = stats->decodedFrames;
-		n = DecodeStreamFillS8(stream, opt, pcm->data + pcm->bytes,
-			(int)(cap - pcm->bytes));
+	startFrames = stats->decodedFrames;
+	startedAt = clock();
+	timedOut = 0;
+	while (!stream->outOfData && !gPlaybackInterrupted) {
+		if (PlaybackElapsedMilliseconds(startedAt, clock()) >= 5000UL) {
+			timedOut = 1;
+			break;
+		}
+		fprintf(stderr, "radio-mp3-stage-A: before DecodeStreamFillS8 maxBytes=%lu\n",
+			cap);
+		n = DecodeStreamFillS8(stream, opt, pcm->data, (int)cap);
+		pcm->frames = stats->decodedFrames >= startFrames ?
+			stats->decodedFrames - startFrames : 0;
+		fprintf(stderr, "radio-mp3-stage-A: after DecodeStreamFillS8 produced=%d decodedFrames=%lu decodeError=%d outOfData=%d\n",
+			n, pcm->frames, stream->decodeError, stream->outOfData);
 		if (n < 0 || stream->decodeError) {
 			fprintf(stderr, "radio-mp3-stage-A: decode error\n");
 			RadioMp3StageFreeAny(stream);
 			RadioMp3StageFreePcm(pcm);
 			return -1;
 		}
-		if (n == 0)
+		if (n > 0) {
+			pcm->bytes = (unsigned long)n;
+			pcm->sampleRate = stats->outputSampleRate ?
+				stats->outputSampleRate : PlaybackOutputSampleRate(opt, stats);
+			pcm->channels = opt->stereo ? 2 : 1;
+			pcm->bitrate = stats->bitrate;
+			fprintf(stderr, "radio-mp3-stage-A: decoded frames=%lu produced bytes=%lu\n",
+				pcm->frames, pcm->bytes);
+			RADIO_MP3_PATH_BREADCRUMB("Stage A: decoded first frames to RAM, no audio.device");
+			RadioMp3StageFreeAny(stream);
+			return 0;
+		}
+		if (pcm->frames >= 3UL)
 			break;
-		pcm->bytes += (unsigned long)n;
-		if (stats->decodedFrames > beforeFrames)
-			pcm->frames += stats->decodedFrames - beforeFrames;
-		else
-			pcm->frames++;
+	}
+	RadioMp3StageFreeAny(stream);
+	if (pcm->frames >= 3UL) {
 		pcm->sampleRate = stats->outputSampleRate ?
 			stats->outputSampleRate : PlaybackOutputSampleRate(opt, stats);
 		pcm->channels = opt->stereo ? 2 : 1;
 		pcm->bitrate = stats->bitrate;
-		fprintf(stderr, "radio-mp3-stage-A: frameCount=%lu sampleRate=%d channels=%d bitrate=%d producedBytes=%lu totalBytes=%lu\n",
-			pcm->frames, pcm->sampleRate, pcm->channels, pcm->bitrate,
-			(unsigned long)n, pcm->bytes);
+		fprintf(stderr, "radio-mp3-stage-A: decoded frames=%lu produced bytes=%lu\n",
+			pcm->frames, pcm->bytes);
+		return 0;
 	}
-	fprintf(stderr, "radio-mp3-stage-A: decoded frames=%lu produced bytes=%lu (S8 RAM, internal Helix MP3 path, no audio.device)\n",
-		pcm->frames, pcm->bytes);
-	fprintf(stderr, "radio-mp3-stage-A: produced bytes=%lu\n", pcm->bytes);
-	RADIO_MP3_PATH_BREADCRUMB("Stage A: decoded first frames to RAM, no audio.device");
-	RadioMp3StageFreeAny(stream);
 	if (pcm->bytes == 0) {
+		if (timedOut || !gPlaybackInterrupted)
+			fprintf(stderr, "radio-mp3-stage-A: no decoded bytes before timeout\n");
 		RadioMp3StageFreePcm(pcm);
 		return -1;
 	}
