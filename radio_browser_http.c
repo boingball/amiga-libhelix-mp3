@@ -251,8 +251,57 @@ static int rb_http_status_is_2xx(const char *response, int len)
     return code >= 200 && code < 300;
 }
 
-int rb_http_get_binary(const char *host, const char *path,
-                       unsigned char *out_body, int out_body_size)
+static int rb_http_ascii_starts_nocase(const char *s, int s_len, const char *prefix)
+{
+    int i;
+
+    for (i = 0; prefix[i]; i++) {
+        unsigned char cs, cp;
+        if (i >= s_len) return 0;
+        cs = (unsigned char)s[i];
+        cp = (unsigned char)prefix[i];
+        if (cs >= 'a' && cs <= 'z') cs = (unsigned char)(cs - 'a' + 'A');
+        if (cp >= 'a' && cp <= 'z') cp = (unsigned char)(cp - 'a' + 'A');
+        if (cs != cp) return 0;
+    }
+    return 1;
+}
+
+/* Pulls "Content-Type: ..." out of the raw header block before it gets
+ * discarded, so callers that care about the response's media type (e.g. the
+ * radio favicon fetch) don't need their own header parser. */
+static void rb_http_extract_content_type(const char *headers, int header_len,
+                                          char *out, int out_size)
+{
+    const char *line;
+    const char *end = headers + header_len;
+
+    if (out && out_size > 0) out[0] = '\0';
+    if (!headers || header_len <= 0 || !out || out_size <= 0) return;
+
+    line = headers;
+    while (line < end) {
+        const char *nl = line;
+        int line_len;
+        while (nl < end && *nl != '\n') nl++;
+        line_len = (int)(nl - line);
+        if (line_len > 0 && line[line_len - 1] == '\r') line_len--;
+        if (line_len > 13 && rb_http_ascii_starts_nocase(line, line_len, "Content-Type:")) {
+            const char *v = line + 13;
+            int v_len = line_len - 13;
+            while (v_len > 0 && *v == ' ') { v++; v_len--; }
+            if (v_len > out_size - 1) v_len = out_size - 1;
+            memcpy(out, v, (size_t)v_len);
+            out[v_len] = '\0';
+            return;
+        }
+        line = nl + 1;
+    }
+}
+
+static int rb_http_get_binary_impl(const char *host, const char *path,
+                       unsigned char *out_body, int out_body_size,
+                       char *out_content_type, int out_content_type_size)
 {
     RbHttpTransport transport;
     char request[RB_HTTP_MAX_REQUEST];
@@ -262,6 +311,7 @@ int rb_http_get_binary(const char *host, const char *path,
     int header_end;
     int body_len;
 
+    if (out_content_type && out_content_type_size > 0) out_content_type[0] = '\0';
     if (!host || !path || !out_body || out_body_size <= 0) return RB_HTTP_ERR_BAD_ARG;
     out_body[0] = '\0';
 
@@ -328,6 +378,9 @@ int rb_http_get_binary(const char *host, const char *path,
         out_body[0] = '\0';
         return RB_HTTP_ERR_STATUS;
     }
+    if (out_content_type && out_content_type_size > 0)
+        rb_http_extract_content_type((const char *)out_body, header_end,
+                                      out_content_type, out_content_type_size);
 
     body_len = len - header_end;
     if (body_len >= out_body_size) {
@@ -337,6 +390,20 @@ int rb_http_get_binary(const char *host, const char *path,
     memmove(out_body, out_body + header_end, (size_t)body_len);
     out_body[body_len] = '\0';
     return body_len;
+}
+
+int rb_http_get_binary(const char *host, const char *path,
+                       unsigned char *out_body, int out_body_size)
+{
+    return rb_http_get_binary_impl(host, path, out_body, out_body_size, NULL, 0);
+}
+
+int rb_http_get_binary_with_type(const char *host, const char *path,
+                       unsigned char *out_body, int out_body_size,
+                       char *out_content_type, int out_content_type_size)
+{
+    return rb_http_get_binary_impl(host, path, out_body, out_body_size,
+                                    out_content_type, out_content_type_size);
 }
 
 int rb_http_get_json(const char *host, const char *path,

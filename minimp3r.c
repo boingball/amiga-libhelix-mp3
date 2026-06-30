@@ -117,6 +117,13 @@
 #define MR_QUALITY_MIN   0
 #define MR_QUALITY_MAX   3
 
+/* Optional Radio Browser station-favicon artwork.  Disable by building with
+ * -DENABLE_RADIO_ARTWORK=0; it never touches stream playback either way. */
+#ifndef ENABLE_RADIO_ARTWORK
+#define ENABLE_RADIO_ARTWORK 1
+#endif
+#define MR_FAVICON_MAX_BYTES (256L * 1024L)
+
 /* How often we poll the shared playback status block while a track plays.
  * Keep the heartbeat responsive, but throttle expensive text redraws below. */
 #define MR_TICK_MICROS   250000UL
@@ -2893,17 +2900,40 @@ static int MrParseHttpUrl(const char *url, char *host, int hostSize, char *path,
 	return 1;
 }
 
+#if ENABLE_RADIO_ARTWORK
+static int MrContentTypeIsJpeg(const char *contentType)
+{
+	return contentType && (ContainsTextNoCase(contentType, "image/jpeg") ||
+		ContainsTextNoCase(contentType, "image/jpg"));
+}
+
+static int MrIsJpegMagic(const unsigned char *data, int bytes)
+{
+	return bytes >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
+}
+
+/* Favicon artwork is fetched from the Radio Browser station's "favicon"
+ * field only, never from the MP3/ICY stream, and only once playback has
+ * already started picking a station (see RadioDoProbeAndPlay).  Any failure
+ * here (bad URL, oversized body, non-JPEG, broken decode) just leaves
+ * artValid 0 and never touches the playback path. */
 static int LoadRadioFaviconJpeg(MrApp *app)
 {
 	char host[128], path[RB_MAX_FAVICON];
-	static unsigned char response[512L * 1024L + 1024L];
+	char contentType[64];
+	static unsigned char response[MR_FAVICON_MAX_BYTES];
 	int bytes;
-	if (!app || !app->currentRadioFavicon[0] || !MrUrlIsJpeg(app->currentRadioFavicon))
+	if (!app || !app->currentRadioFavicon[0])
 		return 0;
 	if (!MrParseHttpUrl(app->currentRadioFavicon, host, (int)sizeof(host), path, (int)sizeof(path)))
 		return 0;
-	bytes = rb_http_get_binary(host, path, response, (int)sizeof(response));
+	bytes = rb_http_get_binary_with_type(host, path, response, (int)sizeof(response),
+		contentType, (int)sizeof(contentType));
 	if (bytes <= 4)
+		return 0;
+	if (!MrUrlIsJpeg(app->currentRadioFavicon) && !MrContentTypeIsJpeg(contentType))
+		return 0;
+	if (!MrIsJpegMagic(response, bytes))
 		return 0;
 	if (DecodeJpegToGrey(response, (unsigned long)bytes, app->artGreyBuf, app->artRGBBuf,
 		MR_ART_W, MR_ART_H, 0) != 0)
@@ -2911,6 +2941,7 @@ static int LoadRadioFaviconJpeg(MrApp *app)
 	app->artValid = 1;
 	return 1;
 }
+#endif /* ENABLE_RADIO_ARTWORK */
 
 static void UpdateArtwork(MrApp *app, MrMp3Info *info)
 {
@@ -2922,8 +2953,10 @@ static void UpdateArtwork(MrApp *app, MrMp3Info *info)
 		DecodeJpegToGrey(info->artData, info->artBytes, app->artGreyBuf, app->artRGBBuf, MR_ART_W, MR_ART_H, info->artIsPng) == 0) {
 		app->artValid = 1;
 		SaveArtworkCache(app);
+#if ENABLE_RADIO_ARTWORK
 	} else if (app->artEnabled && MrIsRadioInput(app->inputName) && LoadRadioFaviconJpeg(app)) {
 		SaveArtworkCache(app);
+#endif
 	}
 	if (app->artColorEnabled && app->artValid)
 		BuildArtColorPens(app);

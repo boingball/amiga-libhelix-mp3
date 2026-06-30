@@ -18,6 +18,18 @@ int rb_http_get_binary(
     int out_body_size
 );
 
+/* Same as rb_http_get_binary(), but also copies out the response's
+ * "Content-Type" header value (truncated, NUL-terminated, empty if absent
+ * or out_content_type is NULL). */
+int rb_http_get_binary_with_type(
+    const char *host,
+    const char *path,
+    unsigned char *out_body,
+    int out_body_size,
+    char *out_content_type,
+    int out_content_type_size
+);
+
 int rb_http_get_json(
     const char *host,
     const char *path,
