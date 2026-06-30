@@ -53,6 +53,7 @@
 #include "picojpeg.h"
 #include "radio_stream.h"
 #include "radio_browser_controller.h"
+#include "radio_browser_http.h"
 
 #define MR_ENV_PREFIX "ENVARC:MiniAMP3"
 #define MR_SETTINGS_VERSION 1
@@ -2874,17 +2875,35 @@ static int MrUrlIsJpeg(const char *url)
 		(ContainsTextNoCase(dot, ".jpg") || ContainsTextNoCase(dot, ".jpeg"));
 }
 
+static int MrParseHttpUrl(const char *url, char *host, int hostSize, char *path, int pathSize)
+{
+	const char *p, *slash;
+	int hostLen;
+	if (!url || strncmp(url, "http://", 7) || !host || hostSize <= 0 || !path || pathSize <= 0)
+		return 0;
+	p = url + 7;
+	slash = strchr(p, '/');
+	if (!slash) slash = p + strlen(p);
+	hostLen = (int)(slash - p);
+	if (hostLen <= 0 || hostLen >= hostSize) return 0;
+	memcpy(host, p, (size_t)hostLen);
+	host[hostLen] = '\0';
+	if (*slash) SafeCopy(path, (size_t)pathSize, slash);
+	else SafeCopy(path, (size_t)pathSize, "/");
+	return 1;
+}
+
 static int LoadRadioFaviconJpeg(MrApp *app)
 {
-	RbStreamInfo info;
+	char host[128], path[RB_MAX_FAVICON];
 	static unsigned char response[512L * 1024L + 1024L];
-	int bytes = 0;
-	int rc;
+	int bytes;
 	if (!app || !app->currentRadioFavicon[0] || !MrUrlIsJpeg(app->currentRadioFavicon))
 		return 0;
-	memset(&info, 0, sizeof(info));
-	rc = rb_probe_stream_url(app->currentRadioFavicon, &info, response, (int)sizeof(response), &bytes);
-	if (rc < 0 || bytes <= 4)
+	if (!MrParseHttpUrl(app->currentRadioFavicon, host, (int)sizeof(host), path, (int)sizeof(path)))
+		return 0;
+	bytes = rb_http_get_binary(host, path, response, (int)sizeof(response));
+	if (bytes <= 4)
 		return 0;
 	if (DecodeJpegToGrey(response, (unsigned long)bytes, app->artGreyBuf, app->artRGBBuf,
 		MR_ART_W, MR_ART_H, 0) != 0)
