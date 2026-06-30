@@ -2882,24 +2882,6 @@ static int MrUrlIsJpeg(const char *url)
 		(ContainsTextNoCase(dot, ".jpg") || ContainsTextNoCase(dot, ".jpeg"));
 }
 
-static int MrParseHttpUrl(const char *url, char *host, int hostSize, char *path, int pathSize)
-{
-	const char *p, *slash;
-	int hostLen;
-	if (!url || strncmp(url, "http://", 7) || !host || hostSize <= 0 || !path || pathSize <= 0)
-		return 0;
-	p = url + 7;
-	slash = strchr(p, '/');
-	if (!slash) slash = p + strlen(p);
-	hostLen = (int)(slash - p);
-	if (hostLen <= 0 || hostLen >= hostSize) return 0;
-	memcpy(host, p, (size_t)hostLen);
-	host[hostLen] = '\0';
-	if (*slash) SafeCopy(path, (size_t)pathSize, slash);
-	else SafeCopy(path, (size_t)pathSize, "/");
-	return 1;
-}
-
 #if ENABLE_RADIO_ARTWORK
 static int MrContentTypeIsJpeg(const char *contentType)
 {
@@ -2914,21 +2896,23 @@ static int MrIsJpegMagic(const unsigned char *data, int bytes)
 
 /* Favicon artwork is fetched from the Radio Browser station's "favicon"
  * field only, never from the MP3/ICY stream, and only once playback has
- * already started picking a station (see RadioDoProbeAndPlay).  Any failure
- * here (bad URL, oversized body, non-JPEG, broken decode) just leaves
- * artValid 0 and never touches the playback path. */
+ * already started picking a station (see RadioDoProbeAndPlay).  The fetch
+ * goes through rb_probe_fetch_binary(), which shares its HTTP/HTTPS/AmiSSL
+ * connection handling with the stream probe used to start playback but is
+ * a separate code path that the probe's stream-playback logic never calls
+ * into -- so this never touches the MP3 stream's SSL read loop.  Any
+ * failure here (bad URL, unsupported TLS, oversized body, non-JPEG, broken
+ * decode) just leaves artValid 0 and never affects playback. */
 static int LoadRadioFaviconJpeg(MrApp *app)
 {
-	char host[128], path[RB_MAX_FAVICON];
 	char contentType[64];
 	static unsigned char response[MR_FAVICON_MAX_BYTES];
-	int bytes;
+	int bytes = 0;
 	if (!app || !app->currentRadioFavicon[0])
 		return 0;
-	if (!MrParseHttpUrl(app->currentRadioFavicon, host, (int)sizeof(host), path, (int)sizeof(path)))
+	if (rb_probe_fetch_binary(app->currentRadioFavicon, response, (int)sizeof(response),
+		&bytes, contentType, (int)sizeof(contentType)) != RB_STREAM_PROBE_OK)
 		return 0;
-	bytes = rb_http_get_binary_with_type(host, path, response, (int)sizeof(response),
-		contentType, (int)sizeof(contentType));
 	if (bytes <= 4)
 		return 0;
 	if (!MrUrlIsJpeg(app->currentRadioFavicon) && !MrContentTypeIsJpeg(contentType))

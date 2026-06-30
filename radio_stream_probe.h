@@ -56,6 +56,22 @@ int rb_probe_stream_url(
     int *peek_len
 );
 
+/* Bounded HTTP/HTTPS GET for non-stream resources (e.g. station favicon
+ * images).  Reuses the same connect/TLS/redirect plumbing as
+ * rb_probe_stream_url() but applies none of that function's codec/HLS
+ * sniffing, so it works for arbitrary content types.  out_buf is filled
+ * with up to out_buf_size bytes of response body; *out_len is the number
+ * of bytes actually read.  out_content_type (optional) receives the
+ * response's Content-Type header, truncated and NUL-terminated. */
+int rb_probe_fetch_binary(
+    const char *url,
+    unsigned char *out_buf,
+    int out_buf_size,
+    int *out_len,
+    char *out_content_type,
+    int out_content_type_size
+);
+
 #ifdef __cplusplus
 }
 #endif

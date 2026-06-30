@@ -998,6 +998,157 @@ static int rb_probe_stream_url_impl(const char *url, RbStreamInfo *info,
     return RB_STREAM_PROBE_OK;
 }
 
+static int rb_probe_fetch_binary_impl(const char *url, unsigned char *out_buf, int out_buf_size,
+                        int *out_len, char *out_content_type, int out_content_type_size)
+{
+    RbProbeUrl parsed;
+    RbProbeTransport transport;
+    RbStreamInfo info;
+    char request[RB_PROBE_MAX_REQUEST];
+    unsigned char header_buf[RB_PROBE_HEADER_BUF + 1];
+    char parse_buf[RB_PROBE_HEADER_BUF + 1];
+    char current_url[RB_PROBE_MAX_URL];
+    char next_url[RB_PROBE_MAX_URL];
+    char location[RB_PROBE_MAX_URL];
+    int rc;
+    int request_len;
+    int total;
+    int header_end;
+    int redirects;
+
+    if (!url || !out_buf || out_buf_size <= 0 || !out_len) return RB_STREAM_PROBE_ERR_BAD_ARG;
+    *out_len = 0;
+    if (out_content_type && out_content_type_size > 0) out_content_type[0] = '\0';
+
+    rc = rb_probe_copy_string(current_url, (int)sizeof(current_url), url);
+    if (rc < 0) return rc;
+    redirects = 0;
+    for (;;) {
+        rb_probe_info_init(&info);
+        location[0] = '\0';
+        *out_len = 0;
+
+        rc = rb_probe_parse_url(current_url, &parsed);
+        if (rc < 0) return rc;
+        rc = rb_probe_build_request(request, (int)sizeof(request), &parsed);
+        if (rc < 0) return rc;
+        request_len = (int)strlen(request);
+        rc = rb_probe_transport_open(&transport, parsed.host, parsed.port, parsed.isSSL, NULL);
+        if (rc < 0) return rc;
+        rc = rb_probe_send_all(&transport, request, request_len);
+        if (rc < 0) {
+            rb_probe_transport_close(&transport);
+            return rc;
+        }
+
+        total = 0;
+        header_end = -1;
+        for (;;) {
+            int want;
+            int n;
+            int body_avail;
+            int copy;
+
+            want = RB_PROBE_HEADER_BUF - total;
+            if (want > RB_PROBE_READ_CHUNK) want = RB_PROBE_READ_CHUNK;
+            if (want <= 0) {
+                rb_probe_transport_close(&transport);
+                return RB_STREAM_PROBE_ERR_HEADERS_TOO_BIG;
+            }
+#if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+            if (transport.isSSL && transport.ssl)
+                n = (int)SSL_read(transport.ssl, (char *)header_buf + total, want);
+            else
+#endif
+            n = (int)recv(transport.sock, (char *)header_buf + total, want, 0);
+            if (n < 0) {
+                rb_probe_transport_close(&transport);
+                return RB_STREAM_PROBE_ERR_RECV;
+            }
+            if (n == 0) {
+                rb_probe_transport_close(&transport);
+                return RB_STREAM_PROBE_ERR_SERVER_CLOSED;
+            }
+            total += n;
+            if (header_end < 0) header_end = rb_probe_find_header_end(header_buf, total);
+            if (header_end >= 0) {
+                body_avail = total - header_end;
+                copy = body_avail;
+                if (copy > out_buf_size - *out_len) copy = out_buf_size - *out_len;
+                if (copy > 0) {
+                    memcpy(out_buf + *out_len, header_buf + header_end, (size_t)copy);
+                    *out_len += copy;
+                }
+                break;
+            }
+        }
+        if (header_end < 0) {
+            rb_probe_transport_close(&transport);
+            return RB_STREAM_PROBE_ERR_HEADERS_TOO_BIG;
+        }
+        memcpy(parse_buf, header_buf, (size_t)header_end);
+        rb_probe_parse_headers(parse_buf, header_end, &info, location, (int)sizeof(location));
+        if (!rb_probe_is_redirect_status(info.http_status)) break;
+        rb_probe_transport_close(&transport);
+        *out_len = 0;
+        if (!location[0]) return RB_STREAM_PROBE_ERR_BAD_URL;
+        if (redirects >= RB_PROBE_MAX_REDIRECTS) return RB_STREAM_PROBE_ERR_TOO_MANY_REDIRECTS;
+        rc = rb_probe_resolve_location(&parsed, location, next_url, (int)sizeof(next_url));
+        if (rc < 0) return rc;
+        redirects++;
+        rc = rb_probe_copy_string(current_url, (int)sizeof(current_url), next_url);
+        if (rc < 0) return rc;
+    }
+
+    /* Drain the remaining body, bounded to out_buf_size -- the caller (e.g.
+     * the radio favicon loader) sizes out_buf_size to its own download cap. */
+    while (*out_len < out_buf_size) {
+        int want;
+        int n;
+
+        want = out_buf_size - *out_len;
+        if (want > RB_PROBE_READ_CHUNK) want = RB_PROBE_READ_CHUNK;
+#if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+        if (transport.isSSL && transport.ssl)
+            n = (int)SSL_read(transport.ssl, (char *)out_buf + *out_len, want);
+        else
+#endif
+        n = (int)recv(transport.sock, (char *)out_buf + *out_len, want, 0);
+        if (n < 0) {
+            rb_probe_transport_close(&transport);
+            return RB_STREAM_PROBE_ERR_RECV;
+        }
+        if (n == 0) break;
+        *out_len += n;
+    }
+    rb_probe_transport_close(&transport);
+
+    if (info.http_status < 200 || info.http_status > 299)
+        return RB_STREAM_PROBE_ERR_HTTP_STATUS;
+    if (out_content_type && out_content_type_size > 0) {
+        int n = (int)strlen(info.content_type);
+        if (n > out_content_type_size - 1) n = out_content_type_size - 1;
+        memcpy(out_content_type, info.content_type, (size_t)n);
+        out_content_type[n] = '\0';
+    }
+    return RB_STREAM_PROBE_OK;
+}
+
+/* Public entry point; see rb_probe_stream_url() above for why the per-task
+ * AmiSSL/socket cleanup always runs regardless of which path returned. */
+int rb_probe_fetch_binary(const char *url, unsigned char *out_buf, int out_buf_size,
+                        int *out_len, char *out_content_type, int out_content_type_size)
+{
+    int rc = rb_probe_fetch_binary_impl(url, out_buf, out_buf_size, out_len,
+                                         out_content_type, out_content_type_size);
+#if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+    rb_probe_cleanup_amissl();
+#elif defined(AMIGA_M68K) && !defined(RB_STREAM_PROBE_EXTERNAL_SOCKETBASE)
+    rb_probe_release_idle_socketbase();
+#endif
+    return rc;
+}
+
 #ifdef RB_STREAM_PROBE_TEST
 static const char *rb_probe_codec_name(RbStreamCodec codec)
 {
