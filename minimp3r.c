@@ -2664,7 +2664,7 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 	pjpeg_image_info_t info;
 	MrPjpegSrc src;
 	unsigned char status;
-	unsigned char xMap[MR_MAX_JPEG_DIM], yMap[MR_MAX_JPEG_DIM];
+	static unsigned char xMap[MR_MAX_JPEG_DIM], yMap[MR_MAX_JPEG_DIM];
 	static unsigned long greyAccum[MR_ART_W * MR_ART_H];
 	static unsigned long rAccum[MR_ART_W * MR_ART_H];
 	static unsigned long gAccum[MR_ART_W * MR_ART_H];

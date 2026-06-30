@@ -1001,15 +1001,23 @@ static int rb_probe_stream_url_impl(const char *url, RbStreamInfo *info,
 static int rb_probe_fetch_binary_impl(const char *url, unsigned char *out_buf, int out_buf_size,
                         int *out_len, char *out_content_type, int out_content_type_size)
 {
-    RbProbeUrl parsed;
-    RbProbeTransport transport;
-    RbStreamInfo info;
-    char request[RB_PROBE_MAX_REQUEST];
-    unsigned char header_buf[RB_PROBE_HEADER_BUF + 1];
-    char parse_buf[RB_PROBE_HEADER_BUF + 1];
-    char current_url[RB_PROBE_MAX_URL];
-    char next_url[RB_PROBE_MAX_URL];
-    char location[RB_PROBE_MAX_URL];
+    /* Static, not stack-local: unlike rb_probe_stream_url_impl() (called
+     * from the playback child process, which gets a generous stack of its
+     * own), this path runs synchronously on the main GUI task from deep
+     * inside menu/event handling.  These buffers alone are >12KB; stacked
+     * on top of whatever the GUI call chain already used, that overran the
+     * GUI task's default stack and corrupted adjacent memory (Guru
+     * 81000005).  Not reentrant, but this function is never called
+     * concurrently with itself. */
+    static RbProbeUrl parsed;
+    static RbProbeTransport transport;
+    static RbStreamInfo info;
+    static char request[RB_PROBE_MAX_REQUEST];
+    static unsigned char header_buf[RB_PROBE_HEADER_BUF + 1];
+    static char parse_buf[RB_PROBE_HEADER_BUF + 1];
+    static char current_url[RB_PROBE_MAX_URL];
+    static char next_url[RB_PROBE_MAX_URL];
+    static char location[RB_PROBE_MAX_URL];
     int rc;
     int request_len;
     int total;
