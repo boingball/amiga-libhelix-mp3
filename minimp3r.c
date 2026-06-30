@@ -1209,7 +1209,13 @@ static void BuildPlaybackArgs(MrApp *app, MrPlayArgs *args)
 			AddArg(args, num);
 		}
 	}
-	if (app->fastMem)
+	/* --fast-mem preloads the *whole input* into Fast RAM up front
+	 * (InputSourcePreloadFastMemory() in amiga_mp3dec.c does an
+	 * end-of-file Seek()/ftell() to size the preload buffer) -- that
+	 * assumes a finite, seekable local file.  A radio stream is neither;
+	 * passing --fast-mem through for radio input pointed that preload
+	 * logic at a live stream socket/handle it was never designed for. */
+	if (app->fastMem && !isRadio)
 		AddArg(args, "--fast-mem");
 	if (useCd32Ultrafast) {
 		AddArg(args, "--fast-lowrate");
