@@ -299,6 +299,80 @@ static void rb_http_extract_content_type(const char *headers, int header_len,
     }
 }
 
+/* Some Radio Browser mirrors switch to "Transfer-Encoding: chunked" once
+ * the response is large enough that they don't buffer it to compute a
+ * Content-Length up front -- observed in practice once the station search
+ * "limit" grows past what fits in one small response (small limits like 10
+ * stay under that threshold and use Content-Length, larger ones like 50
+ * don't).  This client only ever did a raw byte-stream read with no
+ * framing awareness, so a chunked response's hex chunk-size lines ended up
+ * embedded as garbage in what was handed to the JSON parser -- which
+ * correctly rejected it as malformed JSON ("Parse failed"), even though
+ * every byte had actually arrived intact. */
+static int rb_http_is_chunked(const char *headers, int header_len)
+{
+    const char *line = headers;
+    const char *end = headers + header_len;
+
+    if (!headers || header_len <= 0) return 0;
+    while (line < end) {
+        const char *nl = line;
+        int line_len;
+        while (nl < end && *nl != '\n') nl++;
+        line_len = (int)(nl - line);
+        if (line_len > 0 && line[line_len - 1] == '\r') line_len--;
+        if (line_len > 18 && rb_http_ascii_starts_nocase(line, line_len, "Transfer-Encoding:")) {
+            const char *v = line + 18;
+            int v_len = line_len - 18;
+            while (v_len > 0 && *v == ' ') { v++; v_len--; }
+            if (v_len >= 7 && rb_http_ascii_starts_nocase(v, v_len, "chunked"))
+                return 1;
+        }
+        line = nl + 1;
+    }
+    return 0;
+}
+
+/* Decodes RFC 7230 chunked transfer-coding in place (the dechunked body is
+ * always shorter than or equal to its chunked encoding, so compacting
+ * toward the front of the same buffer is safe).  Returns the dechunked
+ * length, or -1 on malformed chunk framing.  Trailer headers after the
+ * final 0-length chunk are ignored; the JSON body never needs them. */
+static int rb_http_dechunk(unsigned char *body, int body_len)
+{
+    int read_pos = 0;
+    int write_pos = 0;
+
+    for (;;) {
+        int chunk_size = 0;
+        int digits = 0;
+
+        while (read_pos < body_len) {
+            unsigned char c = body[read_pos];
+            int v;
+            if (c >= '0' && c <= '9') v = c - '0';
+            else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+            else break;
+            if (chunk_size > (0x7fffffff - v) / 16) return -1;
+            chunk_size = chunk_size * 16 + v;
+            digits++;
+            read_pos++;
+        }
+        if (digits == 0) return -1;
+        while (read_pos < body_len && body[read_pos] != '\r' && body[read_pos] != '\n') read_pos++;
+        if (read_pos + 1 >= body_len || body[read_pos] != '\r' || body[read_pos + 1] != '\n') return -1;
+        read_pos += 2;
+        if (chunk_size == 0) return write_pos;
+        if (chunk_size > body_len - read_pos) return -1;
+        if (write_pos != read_pos) memmove(body + write_pos, body + read_pos, (size_t)chunk_size);
+        write_pos += chunk_size;
+        read_pos += chunk_size;
+        if (read_pos + 1 >= body_len || body[read_pos] != '\r' || body[read_pos + 1] != '\n') return -1;
+        read_pos += 2;
+    }
+}
+
 static int rb_http_get_binary_impl(const char *host, const char *path,
                        unsigned char *out_body, int out_body_size,
                        char *out_content_type, int out_content_type_size)
@@ -386,6 +460,14 @@ static int rb_http_get_binary_impl(const char *host, const char *path,
     if (body_len >= out_body_size) {
         out_body[0] = '\0';
         return RB_HTTP_ERR_BODY_TOO_BIG;
+    }
+    if (rb_http_is_chunked((const char *)out_body, header_end)) {
+        int dechunked_len = rb_http_dechunk(out_body + header_end, body_len);
+        if (dechunked_len < 0) {
+            out_body[0] = '\0';
+            return RB_HTTP_ERR_CHUNKED;
+        }
+        body_len = dechunked_len;
     }
     memmove(out_body, out_body + header_end, (size_t)body_len);
     out_body[body_len] = '\0';

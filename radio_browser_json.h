@@ -1,7 +1,7 @@
 #ifndef RADIO_BROWSER_JSON_H
 #define RADIO_BROWSER_JSON_H
 
-#define RB_MAX_STATIONS   50
+#define RB_MAX_STATIONS   100
 #define RB_UUID_LEN       37
 #define RB_MAX_NAME       256
 #define RB_MAX_URL        512

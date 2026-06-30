@@ -199,13 +199,17 @@ enum {
 /* Option tables (shared with the CLI flag set the decoder understands)      */
 /* ------------------------------------------------------------------------- */
 
+/* 8287 Hz removed: it failed often enough in practice to not be worth
+ * offering, and 8820 Hz already covers the same "lowest available rate"
+ * role.  kRates[MR_RATE_22050_INDEX] must stay "22050" -- several speed/
+ * ultrafast/CD32 code paths below key off that specific rate. */
 static const char * const kRates[] = {
-	"8287", "8820", "11025", "22050", "28600"
+	"8820", "11025", "22050", "28600"
 };
 #define MR_RATE_COUNT  ((int)(sizeof(kRates) / sizeof(kRates[0])))
+#define MR_RATE_22050_INDEX 2
 
 static const STRPTR kRateLabels[] = {
-	(STRPTR)"8287 Hz",
 	(STRPTR)"8820 Hz",
 	(STRPTR)"11025 Hz",
 	(STRPTR)"22050 Hz",
@@ -778,7 +782,7 @@ static void LoadSettings(MrApp *app)
 	app->rateIndex = LoadEnvInt("RateIndex", app->rateIndex, 0, MR_RATE_COUNT - 1);
 	if (app->cd32Ultrafast) {
 		app->mono = 1;
-		app->rateIndex = 3;
+		app->rateIndex = MR_RATE_22050_INDEX;
 	}
 	app->bufferSeconds = LoadEnvInt("BufferSeconds", app->bufferSeconds, 1, 10);
 	app->volumePercent = LoadEnvInt("Volume", app->volumePercent, 0, 100);
@@ -1094,7 +1098,7 @@ static void SetGauge(MrApp *app, int level)
 
 static int SpeedChoiceFromApp(const MrApp *app)
 {
-	if (app->rateIndex == 3 && app->cd32Ultrafast)
+	if (app->rateIndex == MR_RATE_22050_INDEX && app->cd32Ultrafast)
 		return 3;
 	if (app->ultrafast)
 		return 2;
@@ -1105,14 +1109,14 @@ static int SpeedChoiceFromApp(const MrApp *app)
 
 static void UpdateSpeedGadgetChoices(MrApp *app)
 {
-	if (app->rateIndex != 3 && app->cd32Ultrafast) {
+	if (app->rateIndex != MR_RATE_22050_INDEX && app->cd32Ultrafast) {
 		app->cd32Ultrafast = 0;
 		app->ultrafast = 0;
 		app->superfastLowrate = 0;
 	}
 	if (app->win && app->speedGad)
 		SetGadgetAttrs((struct Gadget *)app->speedGad, app->win, NULL,
-			CHOOSER_LabelArray, (ULONG)(app->rateIndex == 3 ? kSpeedLabels : kSpeedLabelsNo22050),
+			CHOOSER_LabelArray, (ULONG)(app->rateIndex == MR_RATE_22050_INDEX ? kSpeedLabels : kSpeedLabelsNo22050),
 			CHOOSER_Selected, (ULONG)SpeedChoiceFromApp(app),
 			TAG_DONE);
 }
@@ -1189,7 +1193,7 @@ static void BuildPlaybackArgs(MrApp *app, MrPlayArgs *args)
 	useMono = app->mono;
 	useFakeStereo = app->fakeStereo;
 	rateIndex = app->rateIndex;
-	if (isRadio && (useCd32Ultrafast || (useUltrafast && useMono && rateIndex == 3))) {
+	if (isRadio && (useCd32Ultrafast || (useUltrafast && useMono && rateIndex == MR_RATE_22050_INDEX))) {
 		useCd32Ultrafast = 0;
 		useUltrafast = 0;
 		useSuperfast = 0;
@@ -2014,7 +2018,7 @@ static int MrOpenWindow(MrApp *app)
 	app->speedGad = (Object *)NewObject(CHOOSER_GetClass(), NULL,
 	                GA_ID, GID_SPEED,
 	                GA_RelVerify, TRUE,
-	                CHOOSER_LabelArray, (ULONG)(app->rateIndex == 3 ? kSpeedLabels : kSpeedLabelsNo22050),
+	                CHOOSER_LabelArray, (ULONG)(app->rateIndex == MR_RATE_22050_INDEX ? kSpeedLabels : kSpeedLabelsNo22050),
 	                CHOOSER_Selected, (ULONG)SpeedChoiceFromApp(app),
 	                TAG_DONE);
 
@@ -3566,8 +3570,23 @@ enum {
 };
 
 
-static const int kRadioSearchLimits[] = { 10, 25, 50 };
-static STRPTR kRadioSearchLimitLabels[] = { (STRPTR)"10", (STRPTR)"25", (STRPTR)"50", NULL };
+static const int kRadioSearchLimits[] = { 10, 25, 50, 100 };
+static STRPTR kRadioSearchLimitLabels[] = { (STRPTR)"10", (STRPTR)"25", (STRPTR)"50", (STRPTR)"100", NULL };
+#define MR_RADIO_SEARCH_LIMIT_COUNT ((int)(sizeof(kRadioSearchLimits) / sizeof(kRadioSearchLimits[0])))
+
+/* Maps a limit value back to its kRadioSearchLimits[] cycle-gadget index;
+ * picks the closest entry rather than the first/last bucket so adding more
+ * limit choices doesn't need a hand-maintained chain of >=/<= comparisons. */
+static int RadioSearchLimitIndex(int limit)
+{
+	int best = 0, bestDist, i;
+	bestDist = limit > kRadioSearchLimits[0] ? limit - kRadioSearchLimits[0] : kRadioSearchLimits[0] - limit;
+	for (i = 1; i < MR_RADIO_SEARCH_LIMIT_COUNT; i++) {
+		int dist = limit > kRadioSearchLimits[i] ? limit - kRadioSearchLimits[i] : kRadioSearchLimits[i] - limit;
+		if (dist < bestDist) { bestDist = dist; best = i; }
+	}
+	return best;
+}
 static const int kRadioBitrateMax[] = { -1, 56, 64, 96, 128 };
 static STRPTR kRadioBitrateLabels[] = { (STRPTR)"Any", (STRPTR)"<=56", (STRPTR)"<=64", (STRPTR)"<=96", (STRPTR)"<=128", NULL };
 static STRPTR kRadioSchemeLabels[] = { (STRPTR)"HTTP", (STRPTR)"HTTPS", (STRPTR)"All", NULL };
@@ -3807,7 +3826,7 @@ static void RadioDoSearch(MrApp *app)
 	v = 1;
 	if (limitGad)
 		GT_GetGadgetAttrs(limitGad, app->rbWin, NULL, GTCY_Active, (ULONG)&v, TAG_DONE);
-	app->rbController.limit = kRadioSearchLimits[ClampInt((int)v, 0, 2)];
+	app->rbController.limit = kRadioSearchLimits[ClampInt((int)v, 0, MR_RADIO_SEARCH_LIMIT_COUNT - 1)];
 	v = 0;
 	if (bitrateGad)
 		GT_GetGadgetAttrs(bitrateGad, app->rbWin, NULL, GTCY_Active, (ULONG)&v, TAG_DONE);
@@ -4157,7 +4176,7 @@ static void OpenRadioWindow(MrApp *app)
 	ng.ng_LeftEdge = 372; ng.ng_TopEdge = 52; ng.ng_Width = 108; ng.ng_GadgetText = (UBYTE *)"URL"; ng.ng_GadgetID = RB_GID_SCHEME; ng.ng_Flags = PLACETEXT_LEFT;
 	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)kRadioSchemeLabels, GTCY_Active, app->rbSchemeMode, GA_RelVerify, TRUE, TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 88; ng.ng_TopEdge = 80; ng.ng_Width = 90; ng.ng_GadgetText = (UBYTE *)"Limit"; ng.ng_GadgetID = RB_GID_LIMIT; ng.ng_Flags = PLACETEXT_LEFT;
-	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)kRadioSearchLimitLabels, GTCY_Active, app->rbController.limit >= 50 ? 2 : (app->rbController.limit <= 10 ? 0 : 1), TAG_DONE); if (!gad) goto fail;
+	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)kRadioSearchLimitLabels, GTCY_Active, RadioSearchLimitIndex(app->rbController.limit), TAG_DONE); if (!gad) goto fail;
 	ng.ng_LeftEdge = 288; ng.ng_TopEdge = 80; ng.ng_Width = 90; ng.ng_GadgetText = (UBYTE *)"Max kbps"; ng.ng_GadgetID = RB_GID_BITRATE; ng.ng_Flags = PLACETEXT_LEFT;
 	gad = CreateGadget(CYCLE_KIND, gad, &ng, GTCY_Labels, (ULONG)kRadioBitrateLabels,
 		GTCY_Active, app->rbController.max_bitrate <= 0 ? 0 : (app->rbController.max_bitrate <= 56 ? 1 : (app->rbController.max_bitrate <= 64 ? 2 : (app->rbController.max_bitrate <= 96 ? 3 : 4))), TAG_DONE); if (!gad) goto fail;
@@ -4759,13 +4778,13 @@ static void SyncFromGadgets(MrApp *app)
 	if (app->fastLowGad && GetAttr(GA_Selected, app->fastLowGad, &v))
 		app->fastLowrate = (v != 0);
 	if (app->speedGad && GetAttr(CHOOSER_Selected, app->speedGad, &v)) {
-		app->cd32Ultrafast = (app->rateIndex == 3 && (int)v == 3);
+		app->cd32Ultrafast = (app->rateIndex == MR_RATE_22050_INDEX && (int)v == 3);
 		app->ultrafast = ((int)v == 2);
 		app->superfastLowrate = ((int)v == 1 || app->cd32Ultrafast);
 		if (app->cd32Ultrafast) {
 			app->fastLowrate = 1;
 			app->mono = 1;
-			app->rateIndex = 3;
+			app->rateIndex = MR_RATE_22050_INDEX;
 		} else if (app->ultrafast)
 			app->fastLowrate = 0;
 	}
@@ -4797,7 +4816,7 @@ int main(int argc, char **argv)
 
 	/* Defaults that match a typical 030 setup. */
 	app.magic = MR_APP_MAGIC;
-	app.rateIndex = 2;		/* 11025 Hz */
+	app.rateIndex = 1;		/* 11025 Hz */
 	app.qualityIndex = 2;		/* Normal   */
 	app.mono = 0;
 	app.fastMem = 0;

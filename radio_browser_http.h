@@ -10,6 +10,7 @@
 #define RB_HTTP_ERR_STATUS       (-7)
 #define RB_HTTP_ERR_BAD_ARG      (-8)
 #define RB_HTTP_ERR_TIMEOUT      (-9)
+#define RB_HTTP_ERR_CHUNKED      (-10)
 
 int rb_http_get_binary(
     const char *host,
