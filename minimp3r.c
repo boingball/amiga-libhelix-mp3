@@ -2613,6 +2613,51 @@ static int MrMcuSampleOffset(const pjpeg_image_info_t *info, int x, int y)
 	return (blockY * blocksPerRow + blockX) * 64 + (y & 7) * 8 + (x & 7);
 }
 
+static const char *PjpegStatusName(int status)
+{
+	switch (status) {
+	case 0: return "OK";
+	case PJPG_NO_MORE_BLOCKS: return "NO_MORE_BLOCKS";
+	case PJPG_BAD_DHT_COUNTS: return "BAD_DHT_COUNTS";
+	case PJPG_BAD_DHT_INDEX: return "BAD_DHT_INDEX";
+	case PJPG_BAD_DHT_MARKER: return "BAD_DHT_MARKER";
+	case PJPG_BAD_DQT_MARKER: return "BAD_DQT_MARKER";
+	case PJPG_BAD_DQT_TABLE: return "BAD_DQT_TABLE";
+	case PJPG_BAD_PRECISION: return "BAD_PRECISION";
+	case PJPG_BAD_HEIGHT: return "BAD_HEIGHT";
+	case PJPG_BAD_WIDTH: return "BAD_WIDTH";
+	case PJPG_TOO_MANY_COMPONENTS: return "TOO_MANY_COMPONENTS";
+	case PJPG_BAD_SOF_LENGTH: return "BAD_SOF_LENGTH";
+	case PJPG_BAD_VARIABLE_MARKER: return "BAD_VARIABLE_MARKER";
+	case PJPG_BAD_DRI_LENGTH: return "BAD_DRI_LENGTH";
+	case PJPG_BAD_SOS_LENGTH: return "BAD_SOS_LENGTH";
+	case PJPG_BAD_SOS_COMP_ID: return "BAD_SOS_COMP_ID";
+	case PJPG_W_EXTRA_BYTES_BEFORE_MARKER: return "EXTRA_BYTES_BEFORE_MARKER";
+	case PJPG_NO_ARITHMITIC_SUPPORT: return "NO_ARITHMETIC_SUPPORT";
+	case PJPG_UNEXPECTED_MARKER: return "UNEXPECTED_MARKER";
+	case PJPG_NOT_JPEG: return "NOT_JPEG";
+	case PJPG_UNSUPPORTED_MARKER: return "UNSUPPORTED_MARKER";
+	case PJPG_BAD_DQT_LENGTH: return "BAD_DQT_LENGTH";
+	case PJPG_TOO_MANY_BLOCKS: return "TOO_MANY_BLOCKS";
+	case PJPG_UNDEFINED_QUANT_TABLE: return "UNDEFINED_QUANT_TABLE";
+	case PJPG_UNDEFINED_HUFF_TABLE: return "UNDEFINED_HUFF_TABLE";
+	case PJPG_NOT_SINGLE_SCAN: return "NOT_SINGLE_SCAN (progressive JPEG unsupported)";
+	case PJPG_UNSUPPORTED_COLORSPACE: return "UNSUPPORTED_COLORSPACE";
+	case PJPG_UNSUPPORTED_SAMP_FACTORS: return "UNSUPPORTED_SAMP_FACTORS";
+	case PJPG_DECODE_ERROR: return "DECODE_ERROR";
+	case PJPG_BAD_RESTART_MARKER: return "BAD_RESTART_MARKER";
+	case PJPG_ASSERTION_ERROR: return "ASSERTION_ERROR";
+	case PJPG_BAD_SOS_SPECTRAL: return "BAD_SOS_SPECTRAL";
+	case PJPG_BAD_SOS_SUCCESSIVE: return "BAD_SOS_SUCCESSIVE";
+	case PJPG_STREAM_READ_ERROR: return "STREAM_READ_ERROR";
+	case PJPG_NOTENOUGHMEM: return "NOTENOUGHMEM";
+	case PJPG_UNSUPPORTED_COMP_IDENT: return "UNSUPPORTED_COMP_IDENT";
+	case PJPG_UNSUPPORTED_QUANT_TABLE: return "UNSUPPORTED_QUANT_TABLE";
+	case PJPG_UNSUPPORTED_MODE: return "UNSUPPORTED_MODE";
+	default: return "UNKNOWN";
+	}
+}
+
 static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegBytes,
 	unsigned char *greyOut, unsigned char *rgbOut, int outW, int outH, int isPng)
 {
@@ -2639,16 +2684,30 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 	memset(bAccum, 0, sizeof(bAccum));
 	memset(greyCount, 0, sizeof(greyCount));
 	status = pjpeg_decode_init(&info, MrPjpegCb, &src, 0);
-	if (status != 0 || info.m_width <= 0 || info.m_height <= 0 ||
-		info.m_width > MR_MAX_JPEG_DIM || info.m_height > MR_MAX_JPEG_DIM)
+	if (status != 0) {
+		RADIO_DBG(printf("radio-art: pjpeg_decode_init failed status=%d (%s)\n",
+			(int)status, PjpegStatusName((int)status));)
 		return -1;
+	}
+	if (info.m_width <= 0 || info.m_height <= 0 ||
+		info.m_width > MR_MAX_JPEG_DIM || info.m_height > MR_MAX_JPEG_DIM) {
+		RADIO_DBG(printf("radio-art: jpeg dimensions out of range %dx%d (max %d)\n",
+			(int)info.m_width, (int)info.m_height, MR_MAX_JPEG_DIM);)
+		return -1;
+	}
+	RADIO_DBG(printf("radio-art: jpeg %dx%d comps=%d scan-type=%d\n",
+		(int)info.m_width, (int)info.m_height, (int)info.m_comps, (int)info.m_scanType);)
 	for (i = 0; i < info.m_width; i++) xMap[i] = (unsigned char)((i * outW) / info.m_width);
 	for (i = 0; i < info.m_height; i++) yMap[i] = (unsigned char)((i * outH) / info.m_height);
 	for (mcuIndex = 0; mcuIndex < info.m_MCUSPerRow * info.m_MCUSPerCol; mcuIndex++) {
 		int mcuX, mcuY, y;
 		status = pjpeg_decode_mcu();
 		if (status == PJPG_NO_MORE_BLOCKS) break;
-		if (status != 0) return -1;
+		if (status != 0) {
+			RADIO_DBG(printf("radio-art: pjpeg_decode_mcu failed at mcu=%d status=%d (%s)\n",
+				mcuIndex, (int)status, PjpegStatusName((int)status));)
+			return -1;
+		}
 		mcuX = (mcuIndex % info.m_MCUSPerRow) * info.m_MCUWidth;
 		mcuY = (mcuIndex / info.m_MCUSPerRow) * info.m_MCUHeight;
 		for (y = 0; y < info.m_MCUHeight; y++) {
@@ -3054,33 +3113,47 @@ static void DrawArtPanel(MrApp *app)
 		 * text, which the layout can repaint over (leaving it blank).  For
 		 * radio input, label it with what we actually tried so it's visible
 		 * at a glance whether the favicon pipeline ran at all: "Blank" when
-		 * the station has no favicon URL, or "No art (EXT)" naming the
-		 * rejected file type, so a station icon swap is visibly noticed even
-		 * when nothing renders. */
-		char label[24];
-		int labelLen, textW;
+		 * the station has no favicon URL, or "No art" plus the rejected file
+		 * type, so a station icon swap is visibly noticed even when nothing
+		 * renders.  The panel is only MR_ART_W (64px) wide, too narrow for
+		 * "No art (WEBP)" on one line, so fall back to a second line for the
+		 * extension rather than silently dropping the label when it
+		 * wouldn't fit. */
+		char line1[16], line2[16];
+		int line1Len, line2Len, line1W, line2W;
+		line2[0] = '\0';
 		if (MrIsRadioInput(app->inputName)) {
 			if (!app->currentRadioFavicon[0]) {
-				SafeCopy(label, sizeof(label), "Blank");
+				SafeCopy(line1, sizeof(line1), "Blank");
 			} else {
 				char ext[16];
 				MrUrlExtensionUpper(app->currentRadioFavicon, ext, sizeof(ext));
-				if (ext[0]) sprintf(label, "No art (%s)", ext);
-				else SafeCopy(label, sizeof(label), "No art");
+				SafeCopy(line1, sizeof(line1), "No art");
+				if (ext[0]) sprintf(line2, "(%s)", ext);
 			}
 		} else {
-			SafeCopy(label, sizeof(label), "No art");
+			SafeCopy(line1, sizeof(line1), "No art");
 		}
 		SetAPen(rp, 0);
 		RectFill(rp, ox, oy, ox + w - 1, oy + h - 1);
-		labelLen = (int)strlen(label);
-		if (labelLen > 0 && h >= 8) {
-			textW = TextLength(rp, label, labelLen);
-			if (textW <= w) {
-				SetAPen(rp, 1);
-				Move(rp, ox + (w - textW) / 2, oy + h / 2 + 2);
-				Text(rp, label, labelLen);
+		line1Len = (int)strlen(line1);
+		line2Len = (int)strlen(line2);
+		line1W = line1Len > 0 ? TextLength(rp, line1, line1Len) : 0;
+		line2W = line2Len > 0 ? TextLength(rp, line2, line2Len) : 0;
+		SetAPen(rp, 1);
+		if (line2Len > 0 && h >= 18) {
+			/* Two centered lines: label on top, extension underneath. */
+			if (line1W <= w) {
+				Move(rp, ox + (w - line1W) / 2, oy + h / 2 - 2);
+				Text(rp, line1, line1Len);
 			}
+			if (line2W <= w) {
+				Move(rp, ox + (w - line2W) / 2, oy + h / 2 + 9);
+				Text(rp, line2, line2Len);
+			}
+		} else if (line1Len > 0 && h >= 8 && line1W <= w) {
+			Move(rp, ox + (w - line1W) / 2, oy + h / 2 + 2);
+			Text(rp, line1, line1Len);
 		}
 	}
 }
