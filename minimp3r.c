@@ -2882,6 +2882,35 @@ static int MrUrlIsJpeg(const char *url)
 		(ContainsTextNoCase(dot, ".jpg") || ContainsTextNoCase(dot, ".jpeg"));
 }
 
+/* Uppercased file extension (without the dot) of a URL's path, e.g. "PNG"
+ * for ".../icon.png?x=1".  Empty if there's no recognizable extension.
+ * Used only to label the artwork placeholder so it's visible at a glance
+ * which favicon type was rejected (".ico", ".png", ...). */
+static void MrUrlExtensionUpper(const char *url, char *out, int outSize)
+{
+	const char *q, *dot;
+	int len, i, j;
+	if (!out || outSize <= 0) return;
+	out[0] = '\0';
+	if (!url || !url[0]) return;
+	q = strchr(url, '?');
+	len = (int)(q ? (q - url) : (int)strlen(url));
+	dot = url + len;
+	while (dot > url && dot[-1] != '/' && dot[-1] != ':') dot--;
+	while (*dot && dot < url + len && *dot != '.') dot++;
+	if (dot >= url + len) return;
+	dot++;
+	for (i = 0, j = 0; dot + i < url + len && dot[i] && j < outSize - 1; i++) {
+		unsigned char c = (unsigned char)dot[i];
+		if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+		if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+			out[j++] = (char)c;
+		else
+			break;
+	}
+	out[j] = '\0';
+}
+
 #if ENABLE_RADIO_ARTWORK
 static int MrContentTypeIsJpeg(const char *contentType)
 {
@@ -3021,14 +3050,37 @@ static void DrawArtPanel(MrApp *app)
 			}
 		}
 	} else {
-		/* Paint our own "No art" panel rather than relying on the button's
-		 * text, which the layout can repaint over (leaving it blank). */
+		/* Paint our own placeholder panel rather than relying on the button's
+		 * text, which the layout can repaint over (leaving it blank).  For
+		 * radio input, label it with what we actually tried so it's visible
+		 * at a glance whether the favicon pipeline ran at all: "Blank" when
+		 * the station has no favicon URL, or "No art (EXT)" naming the
+		 * rejected file type, so a station icon swap is visibly noticed even
+		 * when nothing renders. */
+		char label[24];
+		int labelLen, textW;
+		if (MrIsRadioInput(app->inputName)) {
+			if (!app->currentRadioFavicon[0]) {
+				SafeCopy(label, sizeof(label), "Blank");
+			} else {
+				char ext[16];
+				MrUrlExtensionUpper(app->currentRadioFavicon, ext, sizeof(ext));
+				if (ext[0]) sprintf(label, "No art (%s)", ext);
+				else SafeCopy(label, sizeof(label), "No art");
+			}
+		} else {
+			SafeCopy(label, sizeof(label), "No art");
+		}
 		SetAPen(rp, 0);
 		RectFill(rp, ox, oy, ox + w - 1, oy + h - 1);
-		if (w >= 48 && h >= 8) {
-			SetAPen(rp, 1);
-			Move(rp, ox + (w - 48) / 2, oy + h / 2 + 2);
-			Text(rp, "No art", 6);
+		labelLen = (int)strlen(label);
+		if (labelLen > 0 && h >= 8) {
+			textW = TextLength(rp, label, labelLen);
+			if (textW <= w) {
+				SetAPen(rp, 1);
+				Move(rp, ox + (w - textW) / 2, oy + h / 2 + 2);
+				Text(rp, label, labelLen);
+			}
 		}
 	}
 }
