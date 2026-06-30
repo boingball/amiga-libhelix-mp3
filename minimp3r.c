@@ -2676,6 +2676,171 @@ static const char *PjpegStatusName(int status)
 	}
 }
 
+
+static int MrJpegHasSof2(const unsigned char *data, unsigned long bytes)
+{
+	unsigned long p = 2;
+	if (!data || bytes < 4 || data[0] != 0xff || data[1] != 0xd8) return 0;
+	while (p + 3 < bytes) {
+		unsigned int m, len;
+		while (p < bytes && data[p] != 0xff) p++;
+		while (p < bytes && data[p] == 0xff) p++;
+		if (p >= bytes) break;
+		m = data[p++];
+		if (m == 0xc2) return 1;
+		if (m == 0xd9 || m == 0xda) break;
+		if (m >= 0xd0 && m <= 0xd7) continue;
+		if (p + 1 >= bytes) break;
+		len = ((unsigned int)data[p] << 8) | data[p + 1];
+		if (len < 2 || p + len > bytes) break;
+		p += len;
+	}
+	return 0;
+}
+
+typedef struct MrJpegHuffTab {
+	unsigned char valid;
+	unsigned char size[256];
+	unsigned short code[256];
+	unsigned char sym[256];
+	int count;
+} MrJpegHuffTab;
+
+typedef struct MrProgComp {
+	unsigned char id, h, v, tq, td;
+	int bw, bh, prevDc;
+	unsigned char haveDc;
+} MrProgComp;
+
+typedef struct MrProgBits {
+	const unsigned char *p, *end;
+	unsigned int bits;
+	int bitcnt;
+} MrProgBits;
+
+static int MrJpegReadBits(MrProgBits *br, int n)
+{
+	int v = 0;
+	while (n-- > 0) {
+		if (br->bitcnt <= 0) {
+			int c;
+			if (br->p >= br->end) return -1;
+			c = *br->p++;
+			if (c == 0xff) {
+				if (br->p < br->end && *br->p == 0x00) br->p++;
+				else return -1;
+			}
+			br->bits = (unsigned int)c;
+			br->bitcnt = 8;
+		}
+		v = (v << 1) | (int)((br->bits >> 7) & 1);
+		br->bits <<= 1;
+		br->bitcnt--;
+	}
+	return v;
+}
+
+static int MrJpegDecodeHuff(MrProgBits *br, const MrJpegHuffTab *ht)
+{
+	unsigned short code = 0;
+	int len, i;
+	if (!ht || !ht->valid) return -1;
+	for (len = 1; len <= 16; len++) {
+		int b = MrJpegReadBits(br, 1);
+		if (b < 0) return -1;
+		code = (unsigned short)((code << 1) | b);
+		for (i = 0; i < ht->count; i++)
+			if (ht->size[i] == len && ht->code[i] == code)
+				return ht->sym[i];
+	}
+	return -1;
+}
+
+static int MrJpegReceiveExtend(MrProgBits *br, int s)
+{
+	int v;
+	if (s == 0) return 0;
+	if (s < 0 || s > 11) return -40999;
+	v = MrJpegReadBits(br, s);
+	if (v < 0) return -40999;
+	if (v < (1 << (s - 1))) v += ((-1) << s) + 1;
+	return v;
+}
+
+static int MrJpegFindEntropyEnd(const unsigned char *p, const unsigned char *end)
+{
+	const unsigned char *s = p;
+	while (s + 1 < end) {
+		if (s[0] == 0xff && s[1] != 0x00) {
+			if (s[1] >= 0xd0 && s[1] <= 0xd7) { s += 2; continue; }
+			break;
+		}
+		s++;
+	}
+	return (int)(s - p);
+}
+
+static int DecodeProgressiveJpegDcPreviewToGrey(const unsigned char *jpg, unsigned long bytes,
+	unsigned char *greyOut, unsigned char *rgbOut, int outW, int outH)
+{
+	static short dc[3][(MR_MAX_JPEG_DIM / 8) * (MR_MAX_JPEG_DIM / 8)];
+	static unsigned long greyAccum[MR_ART_W * MR_ART_H], rAccum[MR_ART_W * MR_ART_H], gAccum[MR_ART_W * MR_ART_H], bAccum[MR_ART_W * MR_ART_H];
+	static unsigned short greyCount[MR_ART_W * MR_ART_H];
+	MrJpegHuffTab hdc[4]; MrProgComp comp[3];
+	unsigned short qdc[4];
+	unsigned long p = 2; int width = 0, height = 0, comps = 0, maxh = 1, maxv = 1, sof2 = 0, anyDc = 0, i;
+	memset(hdc, 0, sizeof(hdc)); memset(qdc, 0, sizeof(qdc)); memset(comp, 0, sizeof(comp)); memset(dc, 0, sizeof(dc));
+	if (!jpg || bytes < 4 || !greyOut || outW <= 0 || outW > MR_ART_W || outH <= 0 || outH > MR_ART_H || jpg[0] != 0xff || jpg[1] != 0xd8) return -1;
+	while (p + 3 < bytes) {
+		unsigned int m, len;
+		while (p < bytes && jpg[p] != 0xff) p++;
+		while (p < bytes && jpg[p] == 0xff) p++;
+		if (p >= bytes) break;
+		m = jpg[p++];
+		if (m == 0xd9) break;
+		if (m >= 0xd0 && m <= 0xd7) continue;
+		if (p + 1 >= bytes) return -1;
+		len = ((unsigned int)jpg[p] << 8) | jpg[p + 1];
+		if (len < 2 || p + len > bytes) return -1;
+		if (m == 0xdb) {
+			unsigned long e = p + len; p += 2;
+			while (p < e) { unsigned int t = jpg[p++]; if ((t >> 4) || (t & 15) > 3 || p + 64 > e) return -1; qdc[t & 15] = jpg[p]; p += 64; }
+			continue;
+		}
+		if (m == 0xc2) {
+			unsigned long s = p + 2; int c;
+			sof2 = 1; if (len < 8 || jpg[s] != 8) return -1;
+			height = ((int)jpg[s+1] << 8) | jpg[s+2]; width = ((int)jpg[s+3] << 8) | jpg[s+4]; comps = jpg[s+5];
+			if (width <= 0 || height <= 0 || width > MR_MAX_JPEG_DIM || height > MR_MAX_JPEG_DIM || (comps != 1 && comps != 3) || len != (unsigned)(8 + comps * 3)) return -1;
+			for (c = 0, s += 6; c < comps; c++, s += 3) { comp[c].id = jpg[s]; comp[c].h = jpg[s+1] >> 4; comp[c].v = jpg[s+1] & 15; comp[c].tq = jpg[s+2]; if (!comp[c].h || !comp[c].v || comp[c].tq > 3) return -1; if (comp[c].h > maxh) maxh = comp[c].h; if (comp[c].v > maxv) maxv = comp[c].v; }
+			for (c = 0; c < comps; c++) { comp[c].bw = (width * comp[c].h + maxh * 8 - 1) / (maxh * 8); comp[c].bh = (height * comp[c].v + maxv * 8 - 1) / (maxv * 8); if (comp[c].bw * comp[c].bh > (MR_MAX_JPEG_DIM / 8) * (MR_MAX_JPEG_DIM / 8)) return -1; }
+		} else if (m == 0xc4) {
+			unsigned long e = p + len; p += 2;
+			while (p < e) { unsigned int tc, th, n = 0, k; unsigned short code = 0; if (p + 17 > e) return -1; tc = jpg[p] >> 4; th = jpg[p] & 15; p++; for (i = 0; i < 16; i++) n += jpg[p+i]; if (tc != 0 || th > 3 || p + 16 + n > e || n > 256) return -1; p += 16; hdc[th].count = 0; for (i = 1; i <= 16; i++) { int cnt = jpg[p - 17 + i]; for (k = 0; k < (unsigned)cnt; k++) { int idx = hdc[th].count++; hdc[th].size[idx] = i; hdc[th].code[idx] = code++; hdc[th].sym[idx] = jpg[p++]; } code <<= 1; } hdc[th].valid = 1; }
+			continue;
+		} else if (m == 0xda) {
+			unsigned long s = p + 2; int ns, Ss, Se, Ah, Al, scanComp[3], c, mi, mx, my, by, bx; const unsigned char *ep; MrProgBits br;
+			if (!sof2 || len < 6) return -1; ns = jpg[s++]; if (ns < 1 || ns > comps || len != (unsigned)(6 + ns * 2)) return -1;
+			for (i = 0; i < ns; i++, s += 2) { for (c = 0; c < comps && comp[c].id != jpg[s]; c++); if (c >= comps || (jpg[s+1] & 15)) return -1; comp[c].td = jpg[s+1] >> 4; scanComp[i] = c; }
+			Ss = jpg[s++]; Se = jpg[s++]; Ah = jpg[s] >> 4; Al = jpg[s] & 15;
+			ep = jpg + p + len; i = MrJpegFindEntropyEnd(ep, jpg + bytes); br.p = ep; br.end = ep + i; br.bits = 0; br.bitcnt = 0; p += len + i;
+			if (Ss == 0 && Se == 0 && Ah == 0) {
+				mx = (width + maxh * 8 - 1) / (maxh * 8); my = (height + maxv * 8 - 1) / (maxv * 8);
+				for (mi = 0; mi < mx * my; mi++) for (i = 0; i < ns; i++) { c = scanComp[i]; for (by = 0; by < comp[c].v; by++) for (bx = 0; bx < comp[c].h; bx++) { int x = (mi % mx) * comp[c].h + bx, y = (mi / mx) * comp[c].v + by, sym, diff; if (x >= comp[c].bw || y >= comp[c].bh) continue; sym = MrJpegDecodeHuff(&br, &hdc[comp[c].td]); diff = MrJpegReceiveExtend(&br, sym); if (sym < 0 || diff == -40999) return -1; comp[c].prevDc += diff; dc[c][y * comp[c].bw + x] = (short)(comp[c].prevDc << Al); comp[c].haveDc = 1; anyDc = 1; } }
+			}
+			continue;
+		}
+		p += len;
+	}
+	if (!sof2 || !anyDc || !comp[0].haveDc) return -1;
+	memset(greyOut, 0x80, (size_t)(outW * outH)); if (rgbOut) memset(rgbOut, 0x80, (size_t)(outW * outH * 3)); memset(greyAccum,0,sizeof(greyAccum)); memset(rAccum,0,sizeof(rAccum)); memset(gAccum,0,sizeof(gAccum)); memset(bAccum,0,sizeof(bAccum)); memset(greyCount,0,sizeof(greyCount));
+	for (i = 0; i < width * height; i++) { int x = i % width, y = i / width, dst = (y * outH / height) * outW + (x * outW / width); int yb = (y * comp[0].v * comp[0].bh) / height / comp[0].v, xb = (x * comp[0].h * comp[0].bw) / width / comp[0].h; int Y = 128 + (dc[0][yb * comp[0].bw + xb] * (int)qdc[comp[0].tq] + 4) / 8; int R = Y, G = Y, B = Y; if (Y < 0) Y = 0; else if (Y > 255) Y = 255; if (comps == 3 && comp[1].haveDc && comp[2].haveDc) { int cbx = x * comp[1].bw / width, cby = y * comp[1].bh / height, crx = x * comp[2].bw / width, cry = y * comp[2].bh / height; int Cb = 128 + (dc[1][cby * comp[1].bw + cbx] * (int)qdc[comp[1].tq] + 4) / 8; int Cr = 128 + (dc[2][cry * comp[2].bw + crx] * (int)qdc[comp[2].tq] + 4) / 8; R = Y + ((359 * (Cr - 128)) >> 8); G = Y - ((88 * (Cb - 128) + 183 * (Cr - 128)) >> 8); B = Y + ((454 * (Cb - 128)) >> 8); if (R<0)R=0; else if(R>255)R=255; if(G<0)G=0; else if(G>255)G=255; if(B<0)B=0; else if(B>255)B=255; }
+		greyAccum[dst] += (77UL * R + 150UL * G + 29UL * B + 128UL) >> 8; rAccum[dst] += R; gAccum[dst] += G; bAccum[dst] += B; if (greyCount[dst] != 0xffff) greyCount[dst]++; }
+	for (i = 0; i < outW * outH; i++) if (greyCount[i]) { unsigned short c = greyCount[i]; greyOut[i] = (unsigned char)((greyAccum[i] + c / 2) / c); if (rgbOut) { rgbOut[i*3] = (unsigned char)((rAccum[i] + c / 2) / c); rgbOut[i*3+1] = (unsigned char)((gAccum[i] + c / 2) / c); rgbOut[i*3+2] = (unsigned char)((bAccum[i] + c / 2) / c); } }
+	RADIO_DBG(printf("radio-art: progressive JPEG DC preview used\n");)
+	return 0;
+}
+
 static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegBytes,
 	unsigned char *greyOut, unsigned char *rgbOut, int outW, int outH, int isPng)
 {
@@ -2703,6 +2868,12 @@ static int DecodeJpegToGrey(const unsigned char *jpegData, unsigned long jpegByt
 	memset(greyCount, 0, sizeof(greyCount));
 	status = pjpeg_decode_init(&info, MrPjpegCb, &src, 0);
 	if (status != 0) {
+		if (MrJpegHasSof2(jpegData, jpegBytes)) {
+			RADIO_DBG(printf("radio-art: progressive JPEG detected\n");)
+			if (DecodeProgressiveJpegDcPreviewToGrey(jpegData, jpegBytes, greyOut, rgbOut, outW, outH) == 0)
+				return 0;
+			RADIO_DBG(printf("radio-art: progressive JPEG DC preview unsupported\n");)
+		}
 		RADIO_DBG(printf("radio-art: pjpeg_decode_init failed status=%d (%s)\n",
 			(int)status, PjpegStatusName((int)status));)
 		return -1;
