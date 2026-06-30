@@ -3128,7 +3128,14 @@ static void RefreshFileInfoAndTags(MrApp *app)
 		SetReadonlyString(app->trackGad, app->win, app->shownTrack, sizeof(app->shownTrack), "Live");
 		SetReadonlyString(app->genreGad, app->win, app->shownGenre, sizeof(app->shownGenre), "-");
 		SetReadonlyString(app->fileInfoGad, app->win, app->shownFileInfo, sizeof(app->shownFileInfo), "Internet Stream");
-		UpdateRatingDisplay(app); UpdateTimeDisplay(app); SetGauge(app, 0); SetStatus(app, "Internet Radio ready.");
+		UpdateRatingDisplay(app); UpdateTimeDisplay(app); SetGauge(app, 0);
+		/* Radio has no local MP3/ID3 art, only an optional station favicon,
+		 * so this is the only place that drives LoadRadioFaviconJpeg() for
+		 * radio input -- without it, switching stations (or "Reload Art
+		 * from File") never re-attempts the favicon fetch, and any layout
+		 * repaint of the placeholder gadget is never redrawn. */
+		UpdateArtwork(app, NULL);
+		SetStatus(app, app->artValid ? "Internet Radio ready." : "Internet Radio ready (No art).");
 		return;
 	}
 	ReadMp3Info(app->inputName, &info);
