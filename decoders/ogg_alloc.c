@@ -19,7 +19,19 @@
 #include <exec/types.h>
 #include <exec/memory.h>
 
+/* magic distinguishes a live allocation from one this shim already freed:
+ * Tremor/libogg is third-party code this module cannot audit at the source
+ * level, and a double free() reaching straight through to Exec's FreeMem()
+ * is what corrupts the memory free-list (observed on real hardware as
+ * AN_FreeTwice/AN_BadFreeAddr alerts on the very first OGG stream of a
+ * session).  Catching a repeat free() here and turning it into a logged
+ * no-op is a safety net around a bug this module can't otherwise pin down,
+ * not a fix for whatever in Tremor/libogg is calling free() twice. */
+#define OGG_ALLOC_LIVE_MAGIC   0x4F41474CUL /* 'OAGL' */
+#define OGG_ALLOC_FREED_MAGIC  0x4F414652UL /* 'OAFR' */
+
 typedef struct OggAllocHeader {
+    unsigned long magic;
     unsigned long size;
 } OggAllocHeader;
 
@@ -83,6 +95,7 @@ void *OggModuleMalloc(size_t bytes)
     if (!hdr)
         return NULL;
 
+    hdr->magic = OGG_ALLOC_LIVE_MAGIC;
     hdr->size = payload;
     return (void *)(hdr + 1);
 }
@@ -110,6 +123,8 @@ void *OggModuleRealloc(void *ptr, size_t bytes)
     }
 
     oldHdr = ((OggAllocHeader *)ptr) - 1;
+    if (oldHdr->magic != OGG_ALLOC_LIVE_MAGIC)
+        return NULL;
     oldSize = oldHdr->size;
     newPtr = OggModuleMalloc(bytes);
     if (!newPtr)
@@ -132,6 +147,14 @@ void OggModuleFree(void *ptr)
         return;
 
     hdr = ((OggAllocHeader *)ptr) - 1;
+    if (hdr->magic != OGG_ALLOC_LIVE_MAGIC) {
+        /* Already freed by an earlier call (or never a valid allocation from
+         * this shim): do NOT trust hdr->size/hdr and hand it to FreeMem --
+         * that is exactly how a double free corrupts Exec's memory
+         * free-list.  Treat as a no-op instead. */
+        return;
+    }
+    hdr->magic = OGG_ALLOC_FREED_MAGIC;
     total = hdr->size + (unsigned long)sizeof(OggAllocHeader);
     OggExecFreeMem(hdr, total);
 }
