@@ -760,15 +760,25 @@ static RbStreamCodec rb_probe_detect_codec(const RbProbeUrl *url, const RbStream
         RADIO_DBG(printf("rb-probe codec: initial byte sniff=ADTS final=AAC\n");)
         return RB_STREAM_CODEC_AAC;
     }
+    if (peek && peek_len >= 4 && peek[0] == 'O' && peek[1] == 'g' && peek[2] == 'g' && peek[3] == 'S') {
+        RADIO_DBG(printf("rb-probe codec: initial byte sniff=OggS final=OGG\n");)
+        return RB_STREAM_CODEC_OGG;
+    }
     if (info && info->content_type[0]) {
         if (rb_probe_contains_nocase(info->content_type, "audio/mpeg") ||
             rb_probe_contains_nocase(info->content_type, "audio/mp3")) return RB_STREAM_CODEC_MP3;
         if (rb_probe_contains_nocase(info->content_type, "audio/aac") ||
             rb_probe_contains_nocase(info->content_type, "audio/aacp") ||
             rb_probe_contains_nocase(info->content_type, "audio/x-aac")) return RB_STREAM_CODEC_AAC;
+        if (rb_probe_contains_nocase(info->content_type, "audio/ogg") ||
+            rb_probe_contains_nocase(info->content_type, "application/ogg") ||
+            rb_probe_contains_nocase(info->content_type, "audio/vorbis") ||
+            rb_probe_contains_nocase(info->content_type, "audio/x-vorbis")) return RB_STREAM_CODEC_OGG;
     }
     if (url && (rb_probe_contains_nocase(url->path, ".aac") || rb_probe_contains_nocase(url->path, ".aacp")))
         return RB_STREAM_CODEC_AAC;
+    if (url && (rb_probe_contains_nocase(url->path, ".ogg") || rb_probe_contains_nocase(url->path, ".oga")))
+        return RB_STREAM_CODEC_OGG;
     if (rb_probe_url_has_mp3_hint(url))
         return RB_STREAM_CODEC_MP3;
     return RB_STREAM_CODEC_UNKNOWN;
@@ -1014,7 +1024,7 @@ static int rb_probe_stream_url_impl(const char *url, RbStreamInfo *info,
            current_url, info->content_type, rb_probe_url_has_mp3_hint(&parsed) ? "MP3" : "none", *peek_len);)
     info->codec = rb_probe_detect_codec(&parsed, info, peek_buf, *peek_len);
     RADIO_DBG(printf("rb-probe codec: final selected codec=%s\n",
-           info->codec == RB_STREAM_CODEC_MP3 ? "MP3" : (info->codec == RB_STREAM_CODEC_AAC ? "AAC" : "unsupported"));)
+           info->codec == RB_STREAM_CODEC_MP3 ? "MP3" : (info->codec == RB_STREAM_CODEC_AAC ? "AAC" : (info->codec == RB_STREAM_CODEC_OGG ? "OGG" : "unsupported")));)
     if (rb_probe_is_hls(&parsed, info)) {
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
         rb_probe_cleanup_amissl();
@@ -1205,6 +1215,7 @@ static const char *rb_probe_codec_name(RbStreamCodec codec)
     switch (codec) {
     case RB_STREAM_CODEC_MP3: return "MP3";
     case RB_STREAM_CODEC_AAC: return "AAC";
+    case RB_STREAM_CODEC_OGG: return "OGG";
     default: return "unknown";
     }
 }
