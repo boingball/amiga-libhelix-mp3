@@ -4,3 +4,6 @@
 [submodule "decoders/esp8266audio"]
 	path = decoders/esp8266audio
 	url = https://github.com/earlephilhower/ESP8266Audio
+[submodule "decoders/tremor"]
+	path = decoders/tremor
+	url = https://github.com/pschatzmann/arduino-libvorbis-tremor
