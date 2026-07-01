@@ -4916,6 +4916,11 @@ static const char *RadioDecoderExtFromContentType(const char *contentType)
 	if (StrCaseStarts(contentType, "audio/flac") ||
 		StrCaseStarts(contentType, "audio/x-flac"))
 		return "flac";
+	if (StrCaseStarts(contentType, "audio/ogg") ||
+		StrCaseStarts(contentType, "audio/vorbis") ||
+		StrCaseStarts(contentType, "audio/x-vorbis") ||
+		StrCaseStarts(contentType, "application/ogg"))
+		return "ogg";
 	if (StrCaseStarts(contentType, "audio/mpeg") ||
 		StrCaseStarts(contentType, "audio/mp3"))
 		return "mp3";
@@ -4946,6 +4951,8 @@ static const char *RadioDecoderExtFromUrlOrType(const char *url, const char *con
 		StrCaseCmp(ext, "aacp") == 0 ||
 		StrCaseCmp(ext, "flac") == 0 ||
 		StrCaseCmp(ext, "fla") == 0 ||
+		StrCaseCmp(ext, "ogg") == 0 ||
+		StrCaseCmp(ext, "oga") == 0 ||
 		StrCaseCmp(ext, "mp3") == 0))
 		return StrCaseCmp(ext, "aacp") == 0 ? "aac" : ext;
 	if (RadioUrlHasMp3Hint(url))
