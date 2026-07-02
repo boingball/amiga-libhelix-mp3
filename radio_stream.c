@@ -8,6 +8,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
+#include "miniamp_memguard.h"
 
 #ifndef RADIO_RING_BYTES
 #define RADIO_RING_BYTES 65536UL
@@ -195,16 +196,14 @@ static long radio_gui_listbrowser_node_count = 0;
 static long radio_gui_string_count = 0;
 static int radio_atexit_registered = 0;
 
-#if defined(AMIGA_M68K)
-static void radio_release_idle_socketbase(void)
-{
-    if (radio_open_socket_count == 0 && radio_active_stream_tasks == 0 && SocketBase) {
-        CloseLibrary(SocketBase);
-        SocketBase = NULL;
-        RADIO_DBG(printf("radio-socket: playback SocketBase closed after idle cleanup\n"););
-    }
-}
-#endif
+/* bsdsocket.library and AmiSSL are opened once by Radio_NetworkInit() at app
+ * startup and closed once by Radio_NetworkShutdown() at app exit -- these
+ * count those two events specifically (expected to reach 1 each over an
+ * entire run), as opposed to the per-connection socket/SSL/SSL_CTX counts
+ * above which are expected to churn constantly. */
+static long radio_socket_library_open_count = 0;
+static long radio_socket_library_close_count = 0;
+static long radio_amissl_cleanup_count = 0;
 
 static void radio_debug_mem_report(unsigned long session_id, const char *where)
 {
@@ -365,29 +364,66 @@ static int radio_ssl_global_init(RadioStream *rs)
     if (!SocketBase) {
         SocketBase = OpenLibrary("bsdsocket.library", 4);
         if (!SocketBase) { set_error(rs, "AmiSSL unavailable: bsdsocket.library unavailable"); return -1; }
+        radio_socket_library_open_count++;
+        RADIO_DBG(printf("radio-netinit: bsdsocket.library opened socket_library_open_count=%ld\n", radio_socket_library_open_count););
     }
-    if (AmiSSLBase && radio_amissl_initialized) return 0;
-    if (!AmiSSLMasterBase) {
-        AmiSSLMasterBase = OpenLibrary("amisslmaster.library", AMISSLMASTER_MIN_VERSION);
-        if (!AmiSSLMasterBase) { set_error(rs, "AmiSSL unavailable: amisslmaster.library unavailable"); return -1; }
-        if (!InitAmiSSLMaster(AMISSL_CURRENT_VERSION, TRUE)) {
-            CloseLibrary(AmiSSLMasterBase); AmiSSLMasterBase = NULL;
-            set_error(rs, "AmiSSL init failed"); return -1;
+    /* radio_amissl_initialized (this file's own flag, NOT AmiSSLBase) is
+     * "have I, this task, called InitAmiSSL() yet" -- AmiSSLBase now stays
+     * open for the whole app's lifetime (see Radio_NetworkInit()/
+     * Radio_NetworkShutdown()) rather than being opened and closed on every
+     * station switch, per amissl.library's own recommendation ("share the
+     * AmiSSL instance opened from your main process and have each
+     * [subprocess] simply call InitAmiSSLA() instead of ... opening AmiSSL
+     * for every process"). Checking AmiSSLBase itself here would be wrong
+     * now: it stays non-NULL across every task, so it can no longer answer
+     * "has *this* task called InitAmiSSL()" the way it used to when the
+     * library was opened and closed per session.
+     *
+     * Each task must still call its own InitAmiSSL(), paired with its own
+     * CleanupAmiSSL() -- that part of the per-task contract is unchanged and
+     * still required; only the library-level open/close moved to app
+     * startup/shutdown. Reusing another task's InitAmiSSL() result without
+     * calling InitAmiSSL() again in this task is what crashes inside
+     * SSL_CTX_new()/SSL_new(). */
+    if (radio_amissl_initialized) return 0;
+    if (!AmiSSLBase) {
+        /* Library not open yet (Radio_NetworkInit() didn't get to it, or
+         * this is a build that calls straight into radio_ssl_global_init()
+         * without it) -- lazily open it here exactly as before. Whoever
+         * gets here first opens it for the rest of the app's lifetime. */
+        if (!AmiSSLMasterBase) {
+            AmiSSLMasterBase = OpenLibrary("amisslmaster.library", AMISSLMASTER_MIN_VERSION);
+            if (!AmiSSLMasterBase) { set_error(rs, "AmiSSL unavailable: amisslmaster.library unavailable"); return -1; }
+            if (!InitAmiSSLMaster(AMISSL_CURRENT_VERSION, TRUE)) {
+                CloseLibrary(AmiSSLMasterBase); AmiSSLMasterBase = NULL;
+                set_error(rs, "AmiSSL init failed"); return -1;
+            }
+        }
+        if (OpenAmiSSLTags(AMISSL_CURRENT_VERSION,
+                           AmiSSL_UsesOpenSSLStructs, TRUE,
+                           AmiSSL_GetAmiSSLBase, (ULONG)&AmiSSLBase,
+                           AmiSSL_GetAmiSSLExtBase, (ULONG)&AmiSSLExtBase,
+                           AmiSSL_SocketBase, (ULONG)SocketBase,
+                           AmiSSL_ErrNoPtr, (ULONG)&errno,
+                           TAG_DONE) != 0) {
+            set_error(rs, "AmiSSL unavailable"); return -1;
         }
     }
-    if (OpenAmiSSLTags(AMISSL_CURRENT_VERSION,
-                       AmiSSL_UsesOpenSSLStructs, TRUE,
-                       AmiSSL_GetAmiSSLBase, (ULONG)&AmiSSLBase,
-                       AmiSSL_GetAmiSSLExtBase, (ULONG)&AmiSSLExtBase,
-                       AmiSSL_SocketBase, (ULONG)SocketBase,
-                       AmiSSL_ErrNoPtr, (ULONG)&errno,
-                       TAG_DONE) != 0) {
-        set_error(rs, "AmiSSL unavailable"); return -1;
-    }
+    /* Deliberately using AmiSSL's own auto-allocated timer.device port here
+     * (not AmiSSL_TimerPort with one of our own) -- a caller-supplied port
+     * was tried and reverted after it correlated with the playback child
+     * going completely unresponsive to StopPlayback()'s SIGBREAKF_CTRL_C
+     * while mid-SSL_connect() (WANT_READ), timing out the parent instead of
+     * the usual clean abort. Whatever AmiSSL's default timer-port wiring
+     * does differently from a bare CreateMsgPort() one, it's required for
+     * SSL_connect()'s own retry/timeout handling to keep noticing external
+     * signals -- so leave it alone. */
     if (InitAmiSSL(AmiSSL_SocketBase, (ULONG)SocketBase,
                    AmiSSL_ErrNoPtr, (ULONG)&errno,
                    TAG_DONE) != 0) {
-        CloseAmiSSL(); AmiSSLBase = NULL; AmiSSLExtBase = NULL;
+        /* Do NOT CloseAmiSSL() here: this task may not be the one that
+         * opened the shared library, and other tasks (or a later retry)
+         * may still need it -- only Radio_NetworkShutdown() closes it. */
         set_error(rs, "AmiSSL init failed"); return -1;
     }
     radio_amissl_initialized = 1;
@@ -405,29 +441,25 @@ static void radio_ssl_global_cleanup(void)
         CleanupAmiSSL(TAG_DONE);
         if (radio_amissl_init_count > 0) radio_amissl_init_count--;
         radio_amissl_initialized = 0;
+        radio_amissl_cleanup_count++;
+        RADIO_DBG(printf("radio-netshutdown: AmiSSL cleaned up amissl_cleanup_count=%ld\n", radio_amissl_cleanup_count););
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: CleanupAmiSSL done\n"));
     } else {
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: CleanupAmiSSL skipped\n"));
     }
-    if (AmiSSLBase) {
-        RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: CloseAmiSSL start base=%p\n", (void *)AmiSSLBase));
-        CloseAmiSSL();
-        AmiSSLBase = NULL;
-        AmiSSLExtBase = NULL;
-        RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: CloseAmiSSL done\n"));
-    } else {
-        RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: CloseAmiSSL skipped\n"));
-    }
-    /* Keep amisslmaster.library open for the lifetime of the program.  AmiSSL
-     * requires InitAmiSSLMaster() to run exactly once; only the per-task
-     * OpenAmiSSL()/CloseAmiSSL() pair above is allowed to repeat.  The previous
-     * code closed and re-opened the master library on every stream stop, so a
-     * stop->probe->start cycle (Play pressed on an already-playing stream) re-ran
-     * InitAmiSSLMaster() several times in quick succession and wedged the next
-     * HTTPS connection, freezing the machine.  The master base is shared with
-     * radio_stream_probe.c through the weak AmiSSLMasterBase symbol and the OS
-     * reclaims it at program exit. */
-    RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: amisslmaster kept open master=%p\n", (void *)AmiSSLMasterBase));
+    /* Keep the shared AmiSSL instance (AmiSSLBase/AmiSSLExtBase) *and*
+     * amisslmaster.library open for the lifetime of the program now --
+     * CloseAmiSSL() is called exactly once, from Radio_NetworkShutdown(),
+     * not after every session. AmiSSL requires InitAmiSSLMaster() to run
+     * exactly once; only the per-task InitAmiSSL()/CleanupAmiSSL() pair
+     * above is allowed to repeat. The previous code closed and re-opened
+     * the master library on every stream stop, so a stop->probe->start
+     * cycle (Play pressed on an already-playing stream) re-ran
+     * InitAmiSSLMaster() several times in quick succession and wedged the
+     * next HTTPS connection, freezing the machine.  AmiSSLBase/
+     * AmiSSLMasterBase are shared with radio_stream_probe.c through their
+     * weak symbols and the OS reclaims them at program exit regardless. */
+    RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: AmiSSL base kept open base=%p master=%p\n", (void *)AmiSSLBase, (void *)AmiSSLMasterBase));
     RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: AmiSSL global cleanup complete\n"));
     RADIO_DBG(printf("radio-ssl-diag: cleanup EXIT  initialized=%d base=%p ext=%p master=%p\n", radio_amissl_initialized, (void *)AmiSSLBase, (void *)AmiSSLExtBase, (void *)AmiSSLMasterBase););
 }
@@ -549,23 +581,27 @@ static void radio_ssl_close_stream_mode(RadioStream *rs, RadioCloseMode mode)
         shutdown_called ? "called" : "skipped", (void *)rs->ssl, (void *)rs->ctx, (long)rs->sock, radio_open_socket_count););
     if (rs->ssl && !rs->sslFreed) {
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: SSL_free start session=%lu ssl=%p ctx=%p fd=%ld\n", rs->session_id, (void *)rs->ssl, (void *)rs->ctx, (long)rs->sock));
+        radio_debug_mem_report(rs->session_id, "before SSL_free");
         rs->ssl_free_count++;
         SSL_free(rs->ssl);
         rs->sslFreed = 1;
         if (radio_active_ssl_count > 0) radio_active_ssl_count--;
         rs->ssl = NULL;
         rs->sslHandshakeDone = 0;
+        radio_debug_mem_report(rs->session_id, "after SSL_free");
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: SSL_free done\n"));
     } else {
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: SSL_free skipped\n"));
     }
     if (rs->ctx && !rs->ctxFreed) {
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: SSL_CTX_free start session=%lu ctx=%p fd=%ld\n", rs->session_id, (void *)rs->ctx, (long)rs->sock));
+        radio_debug_mem_report(rs->session_id, "before SSL_CTX_free");
         rs->ssl_ctx_free_count++;
         SSL_CTX_free(rs->ctx);
         rs->ctxFreed = 1;
         if (radio_active_ssl_ctx_count > 0) radio_active_ssl_ctx_count--;
         rs->ctx = NULL;
+        radio_debug_mem_report(rs->session_id, "after SSL_CTX_free");
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: SSL_CTX_free done\n"));
     } else {
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: SSL_CTX_free skipped\n"));
@@ -588,20 +624,33 @@ static void radio_ssl_close_stream(RadioStream *rs) { radio_ssl_close_stream_mod
 static int radio_wait_connected(RadioStream *rs, struct sockaddr_in *sa)
 {
     int tries;
+    RADIO_DBG(printf("radio-connect: session=%lu wait_connected enter fd=%ld host=%s\n", rs ? rs->session_id : 0, rs ? (long)rs->sock : -1L, rs ? rs->host : ""););
     /* ~6s budget at 40ms/poll; generous for a slow stream server. */
     for (tries = 0; tries < 150; tries++) {
         long e;
-        if (radio_is_stopping(rs))
+        int cr;
+        if (radio_is_stopping(rs)) {
+            RADIO_DBG(printf("radio-connect: session=%lu wait_connected stopping tries=%d\n", rs ? rs->session_id : 0, tries););
             return -1;
+        }
         radio_backoff_sleep();
-        if (radio_is_stopping(rs))
+        if (radio_is_stopping(rs)) {
+            RADIO_DBG(printf("radio-connect: session=%lu wait_connected stopping tries=%d\n", rs ? rs->session_id : 0, tries););
             return -1;
-        if (connect(rs->sock, (struct sockaddr *)sa, sizeof(*sa)) == 0)
+        }
+        cr = connect(rs->sock, (struct sockaddr *)sa, sizeof(*sa));
+        if (cr == 0) {
+            RADIO_DBG(printf("radio-connect: session=%lu wait_connected connected tries=%d\n", rs ? rs->session_id : 0, tries););
             return 0;
+        }
         e = radio_sock_errno();
-        if (e == EISCONN)
+        RADIO_DBG(printf("radio-connect: session=%lu wait_connected tries=%d cr=%d errno=%ld\n", rs ? rs->session_id : 0, tries, cr, e););
+        if (e == EISCONN) {
+            RADIO_DBG(printf("radio-connect: session=%lu wait_connected connected (EISCONN) tries=%d\n", rs ? rs->session_id : 0, tries););
             return 0;
+        }
     }
+    RADIO_DBG(printf("radio-connect: session=%lu wait_connected timed out\n", rs ? rs->session_id : 0););
     return -1;
 }
 
@@ -783,9 +832,12 @@ static int connect_http(RadioStream *rs){
     radio_set_nonblocking(rs->sock);
     memset(&sa,0,sizeof(sa)); sa.sin_family=AF_INET; sa.sin_port=htons((unsigned short)rs->port); sa.sin_addr=rs->hostAddr;
     if (radio_is_stopping(rs)) { close_current_socket(rs); return -1; }
+    RADIO_DBG(printf("radio-connect: session=%lu initial connect() fd=%ld host=%s port=%d\n", rs->session_id, (long)rs->sock, rs->host, rs->port););
     cr=connect(rs->sock,(struct sockaddr*)&sa,sizeof(sa));
+    RADIO_DBG(printf("radio-connect: session=%lu initial connect() cr=%d errno=%ld\n", rs->session_id, cr, cr < 0 ? radio_sock_errno() : 0L););
     if(cr<0 && radio_wait_connected(rs,&sa)!=0){ close_current_socket(rs); set_error(rs,"TCP connect failed"); RADIO_OPEN_DEBUG_PRINTF(("radio-open: connect failed to %s:%d\n", rs->host, rs->port)); return -1; }
     if (radio_is_stopping(rs)) { close_current_socket(rs); return -1; }
+    RADIO_DBG(printf("radio-connect: session=%lu TCP connected, starting SSL/HTTP request phase isSSL=%d\n", rs->session_id, rs->isSSL););
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
     if (rs->isSSL) {
         if (radio_ssl_connect(rs) != 0) { close_current_socket(rs); return -1; }
@@ -806,6 +858,23 @@ static void radio_abort_current_socket(RadioStream *rs)
         long closing_fd = (long)rs->sock;
         long before_all = radio_open_socket_count;
         long before_playback = radio_playback_open_socket_count;
+#if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+        /* rs->ssl (if any) still has this fd wired into its BIO via
+         * SSL_set_fd(), but SSL_free() for this session doesn't run until
+         * much later (close_current_socket_mode(), after Radio_Close()) --
+         * this is the immediate abort path used to unblock a live session
+         * right away. In the gap between closing the fd here and SSL_free()
+         * finally running, bsdsocket.library is free to hand the same fd
+         * number to an unrelated socket opened by another task sharing this
+         * SocketBase (e.g. a probe/favicon fetch). Detach the BIO's fd now,
+         * before it goes stale, so SSL_free()'s internal cleanup can never
+         * later touch a since-reused fd -- this is the SSL_free()-crashes
+         * (AN_BadFreeAddr) case tied to aborting a live/playing stream. */
+        if (rs->ssl) {
+            BIO *rbio = SSL_get_rbio(rs->ssl);
+            if (rbio) BIO_set_fd(rbio, -1, BIO_NOCLOSE);
+        }
+#endif
         RADIO_CLEANUP_DEBUG_PRINTF(("radio-cleanup: abort CloseSocket start fd=%ld\n", (long)rs->sock));
         rs->socket_close_count++;
         radio_close_socket(rs->sock);
@@ -1071,25 +1140,21 @@ void Radio_Close(RadioStream *rs)
     if (radio_active_stream_tasks > 0) radio_active_stream_tasks--;
     if (radio_active_stream_sessions > 0) radio_active_stream_sessions--;
 #if defined(AMIGA_M68K) && defined(HAVE_AMISSL)
+    /* bsdsocket.library and amisslmaster.library are process-wide resources
+     * kept open for the whole app run, but the per-task AmiSSL context
+     * (OpenAmiSSL()/InitAmiSSL() in radio_ssl_global_init()) must be closed
+     * by this task before it exits -- see the comment there. Each new
+     * playback session runs in a freshly spawned child task/process, so
+     * this always correctly runs once per task. */
     rs->amissl_cleanup_count++;
     radio_ssl_global_cleanup();
 #endif
     radio_debug_mem_report(rs->session_id, "after stop cleanup");
     radio_resource_summary(rs, "after stop cleanup");
     RADIO_STOP_DEBUG_PRINTF(("radio-stop: stream task exiting / Radio_Close exited session=%lu task_exit_count=%u cleanup_count=%u stop_request_count=%u ssl_free_count=%u socket_close_count=%u decoder_free_count=%u\n", rs->session_id, rs->task_exit_count, rs->cleanup_count, rs->stop_request_count, rs->ssl_free_count, rs->socket_close_count, rs->decoder_free_count));
-#if defined(AMIGA_M68K)
-    radio_release_idle_socketbase();
-#endif
     free(rs);
 }
 
-/* Final network-library fallback at application exit.
- *
- * bsdsocket.library is task-sensitive on real Amiga TCP stacks, so the probe,
- * browser search and playback paths now close SocketBase as soon as their last
- * socket in that task is gone.  This exit hook only catches any still-open
- * process-wide AmiSSL master state and a SocketBase that survived an unusual
- * shutdown path. */
 void Radio_GetNetworkStats(long *active_stream_sessions, long *active_stream_tasks,
     long *open_socket_count, long *active_ssl_count, long *active_ssl_ctx_count)
 {
@@ -1118,12 +1183,46 @@ void Radio_GetNetworkBases(void **socket_base, void **amissl_base, void **amissl
 #endif
 }
 
+/* Open bsdsocket.library exactly once, at application startup, instead of
+ * once per probe/station/favicon fetch: unlike the per-task AmiSSL context
+ * (see radio_ssl_global_init()), bsdsocket.library is a plain shared
+ * AmigaOS library with no per-task ownership requirement, so it's safe to
+ * keep open for the app's lifetime. AmiSSL itself (amisslmaster.library
+ * aside, which was already kept open) stays lazily initialized per-task as
+ * before: each probe and each playback child still opens and closes its own
+ * per-task AmiSSL context around its own use, because reusing a context
+ * opened by a *different* task crashes inside SSL_CTX_new()/SSL_new(). */
+void Radio_NetworkInit(void)
+{
+#if defined(AMIGA_M68K)
+    if (!SocketBase) {
+        SocketBase = OpenLibrary("bsdsocket.library", 4);
+        if (SocketBase) {
+            radio_socket_library_open_count++;
+            RADIO_DBG(printf("radio-netinit: bsdsocket.library opened socket_library_open_count=%ld\n", radio_socket_library_open_count););
+        }
+    }
+#endif
+}
+
+/* Final network-library teardown at application exit, called only after
+ * every playback child has been stopped and reaped.  This is now the only
+ * place bsdsocket.library/AmiSSL are closed. */
 void Radio_NetworkShutdown(void)
 {
 #if defined(AMIGA_M68K)
 #if defined(HAVE_AMISSL)
-    if (radio_amissl_initialized || AmiSSLBase)
+    if (radio_amissl_initialized)
         radio_ssl_global_cleanup();           /* closes any still-open per-task AmiSSL */
+    /* AmiSSLBase/AmiSSLExtBase are now opened once for the whole app's
+     * lifetime (see radio_ssl_global_init()) rather than per station switch,
+     * so this is the one and only place that closes them. */
+    if (AmiSSLBase) {
+        RADIO_DBG(printf("radio-netshutdown: closing shared AmiSSL instance base=%p\n", (void *)AmiSSLBase););
+        CloseAmiSSL();
+        AmiSSLBase = NULL;
+        AmiSSLExtBase = NULL;
+    }
     if (AmiSSLMasterBase) {
         CloseLibrary(AmiSSLMasterBase);
         AmiSSLMasterBase = NULL;
@@ -1133,7 +1232,13 @@ void Radio_NetworkShutdown(void)
     if (SocketBase) {
         CloseLibrary(SocketBase);
         SocketBase = NULL;
+        radio_socket_library_close_count++;
+        RADIO_DBG(printf("radio-netshutdown: bsdsocket.library closed socket_library_close_count=%ld\n", radio_socket_library_close_count););
     }
+    RADIO_DBG(printf("radio-netshutdown: final counters socket_library_open_count=%ld socket_library_close_count=%ld amissl_init_count=%ld amissl_cleanup_count=%ld active_socket_count=%ld active_ssl_count=%ld\n",
+        radio_socket_library_open_count, radio_socket_library_close_count,
+        radio_amissl_init_count, radio_amissl_cleanup_count,
+        radio_open_socket_count, radio_active_ssl_count););
 #endif
 }
 
@@ -1158,6 +1263,23 @@ int Radio_Pump(RadioStream *rs)
             int e = SSL_get_error(rs->ssl, n);
             RADIO_DBG(printf("radio-ssl-read: session=%lu SSL_get_error=%d ret=%d fd=%ld\n", rs->session_id, e, n, (long)rs->sock));
             if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) wb = 1;
+            else {
+                /* Not a "call again later" condition -- a real record-layer
+                 * failure (bad MAC, unexpected message, truncated record,
+                 * ...). The handshake-failure path already logs the
+                 * OpenSSL/AmiSSL error-queue detail behind SSL_get_error()'s
+                 * bare numeric code; this path never did, so a read fault
+                 * like this had no detail to go on. This SSL object is about
+                 * to be torn down via close_current_socket()/SSL_free()
+                 * right after this. */
+                unsigned long ssl_lib_error = ERR_get_error();
+                char ssl_error_buf[160];
+                ssl_error_buf[0] = '\0';
+                if (ssl_lib_error != 0)
+                    ERR_error_string_n(ssl_lib_error, ssl_error_buf, sizeof(ssl_error_buf));
+                RADIO_DBG(printf("radio-ssl-read: session=%lu read failed ssl_error=%d lib_error=%08lx (%s)\n",
+                    rs->session_id, e, ssl_lib_error, ssl_error_buf[0] ? ssl_error_buf : "none"));
+            }
         }
     } else
 #endif

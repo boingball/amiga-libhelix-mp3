@@ -28,6 +28,7 @@
 #include "ogg_alloc.h"
 #include "tremor/src/tremor/ivorbiscodec.h"
 #include "tremor/src/tremor/ivorbisfile.h"
+#include "../miniamp_memguard.h"
 
 #define OGG_MODULE_BUILD_ID "OGG MODULE BUILD MARKER 12345 rev 1"
 
@@ -218,9 +219,11 @@ static void OggClose(DecHandle handle)
 {
     OggState *st = (OggState *)handle;
     if (!st) return;
+    MiniMem_CheckAll("before OGG/Tremor cleanup");
     if (st->vfOpen)
         ov_clear(&st->vf);
     OggModuleFree(st);
+    MiniMem_CheckAll("after OGG/Tremor cleanup");
 }
 
 static struct DecoderModuleInfo gOggInfo = {

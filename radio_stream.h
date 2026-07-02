@@ -49,6 +49,13 @@ const char *Radio_GetError(RadioStream *rs);
 int Radio_GetBitrate(RadioStream *rs);
 int Radio_GetBufferedBytes(RadioStream *rs);
 const char *Radio_StatusText(RadioStatus status);
+/* Open the process-wide network libraries (bsdsocket.library + AmiSSL)
+ * exactly once, at application startup.  Safe to call more than once (a
+ * no-op if already open) and safe even if the caller never uses HTTPS.
+ * Every probe/browser/stream connection still opens and closes its own
+ * socket and, for HTTPS, its own SSL/SSL_CTX -- only the shared libraries
+ * stay open for the app's lifetime instead of being reopened per request. */
+void Radio_NetworkInit(void);
 /* Release the process-wide network libraries (AmiSSL master + bsdsocket.library)
  * exactly once, at application exit.  Call only after every playback child has
  * been stopped and reaped.  Safe to call when nothing was ever opened. */
@@ -75,6 +82,7 @@ static const char *Radio_GetContentType(RadioStream *rs) { (void)rs; return ""; 
 static const char *Radio_GetError(RadioStream *rs) { (void)rs; return "radio support not built"; }
 static int Radio_GetBitrate(RadioStream *rs) { (void)rs; return 0; }
 static int Radio_GetBufferedBytes(RadioStream *rs) { (void)rs; return 0; }
+static void Radio_NetworkInit(void) { }
 static void Radio_NetworkShutdown(void) { }
 static void Radio_GetNetworkStats(long *active_stream_sessions, long *active_stream_tasks,
     long *open_socket_count, long *active_ssl_count, long *active_ssl_ctx_count)

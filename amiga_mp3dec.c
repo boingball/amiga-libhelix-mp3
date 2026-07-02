@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "miniamp_memguard.h"
 #include "radio_stream.h"
 #include <time.h>
 #include <stdarg.h>
@@ -110,6 +111,25 @@ static size_t MiniAmp3Fwrite(const void *ptr, size_t size, size_t nmemb, FILE *s
 		return nmemb;
 	return fwrite(ptr, size, nmemb, stream);
 }
+
+#ifdef RADIO_DEBUG
+/* Bypasses MiniAmp3ConsoleSuppressed() entirely -- defined before the
+ * printf -> MiniAmp3Printf redirect below, so its own vprintf() call is the
+ * real C library one, not the suppressible wrapper.  Every other printf()
+ * in this file goes silent for the whole radio playback child (Embedded
+ * Playback sets gMiniAmp3EmbeddedPlayback for its entire run), which is why
+ * PrintPlaybackCleanupStatus()'s playback buffer canary result -- the one
+ * diagnostic that reports on AllocMem-based buffers the malloc-based
+ * MiniMem guard cannot see -- never showed up in any radio session log. */
+static void RadioDebugUnsuppressedPrintf(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	vprintf(fmt, ap);
+	va_end(ap);
+	fflush(stdout);
+}
+#endif
 
 #define printf MiniAmp3Printf
 #define fprintf MiniAmp3Fprintf
@@ -5842,8 +5862,25 @@ static void PlaybackCleanupStatusInit(PlaybackCleanupStatus *status)
 static void PrintPlaybackCleanupStatus(const DecodeOptions *opt,
 	const PlaybackCleanupStatus *status)
 {
+	/* --debug-cleanup normally gates this (it's noisy for a plain CLI
+	 * decode), but a RADIO_DEBUG build already commits to noisy diagnostic
+	 * logging everywhere else -- and the playback buffer canary check this
+	 * prints is otherwise invisible in every radio session log, since
+	 * nothing in the radio streaming path ever passes --debug-cleanup to
+	 * the playback child. */
+#ifndef RADIO_DEBUG
 	if (!opt->debugCleanup || !status)
 		return;
+#else
+	(void)opt;
+	if (!status)
+		return;
+	/* MiniAmp3Printf (see the printf redirect above) silently drops
+	 * everything for the entire radio playback child, so route this
+	 * specific diagnostic around it instead. */
+#undef printf
+#define printf RadioDebugUnsuppressedPrintf
+#endif
 	printf("debug-cleanup: outstanding audio IOs completed/aborted: %lu/%lu\n",
 		status->ioCompleted, status->ioAborted);
 	printf("debug-cleanup: audio.device closed: %s (%lu)\n",
@@ -5858,6 +5895,10 @@ static void PrintPlaybackCleanupStatus(const DecodeOptions *opt,
 		status->workBuffersFreed);
 	printf("debug-cleanup: playback buffer canaries: %s (%lu errors)\n",
 		status->canaryErrors ? "CORRUPTED" : "ok", status->canaryErrors);
+#ifdef RADIO_DEBUG
+#undef printf
+#define printf MiniAmp3Printf
+#endif
 }
 
 static unsigned int AmigaPalAudioPeriod(int outputRate)
@@ -10128,6 +10169,7 @@ int main(int argc, char **argv)
 		AmigaFreeNormalizedArgs(&normalized);
 		return 1;
 	}
+	MiniMem_CheckAll("after decoder init");
 
 	if (opt.play && opt.stereo)
 		fprintf(stderr, "Stereo playback needs significantly more CPU and may underrun on 030.\n");
@@ -10314,6 +10356,7 @@ int main(int argc, char **argv)
 #endif
 		printf("radio-teardown: MP3 path MP3FreeDecoder start\n");
 		MP3FreeDecoder(decoder);
+		MiniMem_CheckAll("after decoder cleanup");
 		printf("radio-teardown: MP3 path InputSourceClose start\n");
 		InputSourceClose(&input);
 		CloseInputFile(&infile, opt.debugCleanup);
@@ -10673,6 +10716,7 @@ int main(int argc, char **argv)
 	}
 
 	MP3FreeDecoder(decoder);
+	MiniMem_CheckAll("after decoder cleanup");
 	InputSourceClose(&input);
 	CloseInputFile(&infile, opt.debugCleanup);
 	if (outfile)

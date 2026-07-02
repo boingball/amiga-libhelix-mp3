@@ -55,13 +55,12 @@ typedef struct RbHttpTransport {
 } RbHttpTransport;
 
 #if defined(AMIGA_M68K) && !defined(RB_HTTP_EXTERNAL_SOCKETBASE)
+/* bsdsocket.library is now opened once by Radio_NetworkInit() at app startup
+ * and closed once by Radio_NetworkShutdown() at app exit (see radio_stream.c)
+ * instead of per-request -- this is now a deliberate no-op, kept so its call
+ * sites below don't all need to be removed individually. */
 static void rb_http_release_socketbase(void)
 {
-    if (SocketBase) {
-        CloseLibrary(SocketBase);
-        SocketBase = NULL;
-        RADIO_DBG(printf("radio-socket: browser SocketBase closed after request\n");)
-    }
 }
 #endif
 

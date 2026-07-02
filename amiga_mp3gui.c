@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "miniamp_memguard.h"
 
 #if defined(AMIGA_M68K)
 #define main HelixAmp3CliMain
@@ -2199,8 +2200,10 @@ static int DecodeJpegToGreyMode(const unsigned char *jpegData, unsigned long jpe
 	memset(greyCount, 0, sizeof(greyCount));
 	status = pjpeg_decode_init(&info, pjpeg_cb, &src, reduce ? 1 : 0);
 	if (status != 0 || info.m_width <= 0 || info.m_height <= 0 ||
-		info.m_width > MAX_JPEG_DIM || info.m_height > MAX_JPEG_DIM)
+		info.m_width > MAX_JPEG_DIM || info.m_height > MAX_JPEG_DIM) {
+		pjpeg_decode_free();
 		return -1;
+	}
 	for (i = 0; i < info.m_width; i++)
 		xMap[i] = (unsigned char)((i * outW) / info.m_width);
 	for (i = 0; i < info.m_height; i++)
@@ -2215,8 +2218,10 @@ static int DecodeJpegToGreyMode(const unsigned char *jpegData, unsigned long jpe
 		status = pjpeg_decode_mcu();
 		if (status == PJPG_NO_MORE_BLOCKS)
 			break;
-		if (status != 0)
+		if (status != 0) {
+			pjpeg_decode_free();
 			return -1;
+		}
 		mcuX = (mcuIndex % info.m_MCUSPerRow) * info.m_MCUWidth;
 		mcuY = (mcuIndex / info.m_MCUSPerRow) * info.m_MCUHeight;
 		if (reduce) {
@@ -2251,6 +2256,7 @@ static int DecodeJpegToGreyMode(const unsigned char *jpegData, unsigned long jpe
 			greyOut[i] = (unsigned char)((greyAccum[i] +
 				(greyCount[i] / 2)) / greyCount[i]);
 	}
+	pjpeg_decode_free();
 	if (elapsedMicros)
 		*elapsedMicros = ArtElapsedMicros(t0s, t0u);
 	return 0;
@@ -2398,6 +2404,7 @@ static void FinishArtDecode(HelixAmp3Gui *gui, int ok)
 	ArtDecodeState *st = &gui->artDecode;
 	int i;
 
+	pjpeg_decode_free();
 	if (ok) {
 #ifdef MINIAMP3_DEBUG
 		unsigned long totalMicros = ArtElapsedMicros(st->startSecs, st->startMicros);
@@ -2473,6 +2480,7 @@ static void CancelArtDecode(HelixAmp3Gui *gui)
 		return;
 	st->active = 0;
 	gui->artLoading = 0;
+	pjpeg_decode_free();
 	ReleaseArtColorPens(gui);
 	DrawArtPanel(gui);
 }
@@ -2763,6 +2771,7 @@ static void StartArtDecode(HelixAmp3Gui *gui)
 	status = pjpeg_decode_init(&st->info, pjpeg_cb, &st->src, st->reduce);
 	if (status != 0 || st->info.m_width <= 0 || st->info.m_height <= 0 ||
 		st->info.m_width > MAX_JPEG_DIM || st->info.m_height > MAX_JPEG_DIM) {
+		pjpeg_decode_free();
 		DrawArtPanel(gui);
 		return;
 	}
