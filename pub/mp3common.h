@@ -51,15 +51,21 @@
 #define NGRANS_MPEG1	2
 #define NGRANS_MPEG2	1
 
-/* 11-bit syncword if MPEG 2.5 extensions are enabled */
-/*
+/* 11-bit syncword, so MPEG 2.5 frames are found as well as MPEG 1 and 2.
+ * The decoder core has always handled 2.5 - samplerateTab, bitrateTab and
+ * sfBandTable all carry its row, and UnpackFrameHeader() maps version index 0
+ * to MPEG25 - but with the 12-bit syncword below, MP3FindSyncWord() never
+ * matched one of its frames (their second header byte is 0xe2/0xe3, not
+ * 0xf2/0xf3), so an 8/11.025/12 kHz file decoded to nothing at all. Those are
+ * exactly the rates a low-bitrate encode for Paula lands on. */
 #define	SYNCWORDH		0xff
 #define	SYNCWORDL		0xe0
-*/
 
 /* 12-bit syncword if MPEG 1,2 only are supported */
+/*
 #define	SYNCWORDH		0xff
 #define	SYNCWORDL		0xf0
+*/
 
 typedef struct _MP3DecInfo {
 	/* pointers to platform-specific data structures */

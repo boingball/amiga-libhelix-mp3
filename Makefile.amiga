@@ -573,6 +573,17 @@ flac-lpc-ref-test:
 		tests/flac_lpc_ref_test.c -o flac_lpc060_ref_test
 	./flac_lpc060_ref_test
 
+# Host decode test for MPEG-2.5 Layer III (8/11.025/12 kHz). Helix carries the
+# tables for it, but pub/mp3common.h chooses between an 11-bit syncword (which
+# matches MPEG-2.5 frames as well as MPEG-1/2) and a 12-bit one (which does
+# not); with the 12-bit form those files decoded to nothing at all. This pins
+# the choice and the decode behind it.
+mpeg25-decode-test:
+	$(HOSTCC) -O2 -std=gnu99 -DAMIGA_M68K -Ipub -Ireal \
+		tests/mpeg25_decode_test.c mp3dec.c mp3tabs.c real/*.c \
+		-o mpeg25_decode_test
+	./mpeg25_decode_test
+
 # Host test for bounded ICY RadioInfo XML extraction. Bauer's streams place a
 # full XML document in StreamTitle; this must never reach the GUI as markup.
 radio-metadata-test:
@@ -642,5 +653,6 @@ clean:
 	rm -f $(TARGET) $(FAST030_TARGET) $(PROF030_TARGET) $(FAST030_HALFASM_TEST_TARGET) $(GUI_TARGET) $(GUIR_TARGET) $(GUI_TARGET).freeall-discovery $(GUIR_TARGET).freeall-discovery $(GUI_TARGET).freeall-heads $(GUIR_TARGET).freeall-heads $(GUI_HALFASM_TEST_TARGET) \
 		amissl_https_get amissl_ssl_free_repro amissl_spawn_repro amissl_exec_repro amissl_child_worker_repro rb_stream_probe_test \
 		aac_mulshift60_ref_test ogg_mulshift60_ref_test wma_mulshift030_ref_test wma_mulshift060_ref_test \
-		flac_lpc030_ref_test flac_lpc060_ref_test polyphase60_ref_test radio_metadata_test
+		flac_lpc030_ref_test flac_lpc060_ref_test polyphase60_ref_test radio_metadata_test \
+		mpeg25_decode_test
 	$(MAKE) -C decoders clean
