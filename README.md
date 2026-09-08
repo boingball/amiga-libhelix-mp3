@@ -146,7 +146,7 @@ The `fast030` target name is retained for compatibility. The actual target CPU i
 
 | Format | Status | Notes |
 |---|---:|---|
-| MP3 | Working | Main supported format. Helix fixed-point decoder with m68k optimisation. |
+| MP3 | Working | Main supported format. Helix fixed-point decoder with m68k optimisation. Layer III in all three versions: MPEG-1 (32/44.1/48 kHz), MPEG-2 (16/22.05/24 kHz) and MPEG-2.5 (8/11.025/12 kHz). |
 | AAC-LC ADTS | Working | External `aac.decoder` module. ADTS `.aac` streams/files only. |
 | FLAC | Working | External `flac.decoder` module. Performance depends heavily on CPU, output rate and file complexity. |
 | Ogg Vorbis | Working | External `ogg.decoder` using the fixed-point Tremor decoder and libogg. |

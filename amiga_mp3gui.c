@@ -1468,15 +1468,40 @@ static int IsMpegSyncHeader(const unsigned char *h)
 		h[1] == 0xf3 || h[1] == 0xf2 || h[1] == 0xe3 || h[1] == 0xe2);
 }
 
+/* Header version field: 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5 (1 is reserved
+ * and never gets here - IsMpegSyncHeader() does not accept it). */
+static int MpegVersionIndex(const unsigned char *h)
+{
+	switch ((h[1] >> 3) & 0x03) {
+	case 3:  return 0;			/* MPEG-1   */
+	case 2:  return 1;			/* MPEG-2   */
+	default: return 2;			/* MPEG-2.5 */
+	}
+}
+
 static void ReadMpegInfo(FILE *f, Mp3Tags *tags, long *firstFrameOffset)
 {
-	static const int bitrateTab[16] = {
-		0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0
+	/* IsMpegSyncHeader() accepts MPEG-1, MPEG-2 and MPEG-2.5 Layer III, so
+	 * the fields behind the sync have to be read against the version they
+	 * belong to: the halved and quartered sample rates, and Layer III's
+	 * separate low sampling frequency bitrate list. Read as MPEG-1
+	 * regardless, an 11.025 kHz 32 kbit/s file was reported as 44.1 kHz and
+	 * 128 kbit/s. Indexing is [version][field], 0 = MPEG-1, 1 = MPEG-2,
+	 * 2 = MPEG-2.5. */
+	static const int bitrateTab[3][16] = {
+		{ 0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0 },
+		{ 0,  8, 16, 24, 32, 40, 48, 56,  64,  80,  96, 112, 128, 144, 160, 0 },
+		{ 0,  8, 16, 24, 32, 40, 48, 56,  64,  80,  96, 112, 128, 144, 160, 0 }
 	};
-	static const int samplerateTab[4] = { 44100, 48000, 32000, 0 };
+	static const int samplerateTab[3][4] = {
+		{ 44100, 48000, 32000, 0 },
+		{ 22050, 24000, 16000, 0 },
+		{ 11025, 12000,  8000, 0 }
+	};
 	unsigned char h[4];
 	int b;
 	int idx;
+	int ver;
 
 	if (firstFrameOffset)
 		*firstFrameOffset = -1L;
@@ -1492,10 +1517,11 @@ static void ReadMpegInfo(FILE *f, Mp3Tags *tags, long *firstFrameOffset)
 			long pos = ftell(f);
 			if (firstFrameOffset && pos >= 4)
 				*firstFrameOffset = pos - 4;
+			ver = MpegVersionIndex(h);
 			idx = (h[2] >> 4) & 0x0f;
-			tags->bitrateKbps = bitrateTab[idx];
+			tags->bitrateKbps = bitrateTab[ver][idx];
 			idx = (h[2] >> 2) & 0x03;
-			tags->sampleRate = samplerateTab[idx];
+			tags->sampleRate = samplerateTab[ver][idx];
 			tags->channelMode = (h[3] >> 6) & 0x03;
 			tags->modeExtension = (h[3] >> 4) & 0x03;
 			tags->channels = (tags->channelMode == 3) ? 1 : 2;
